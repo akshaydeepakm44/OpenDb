@@ -1,0 +1,66 @@
+import os
+import sys
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+# Ensure Windows event loop policy
+if sys.platform == 'win32':
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
+
+from app.config import settings
+from app.persistence.database import init_db
+from app.api import health, crawl, documents, schemas
+
+logging.basicConfig(
+    level=settings.LOG_LEVEL,
+    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Initializing OpenDB FastAPI Application...")
+    init_db()
+    yield
+    logger.info("Shutting down OpenDB application.")
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    description="OpenDB Universal Domain-Aware Web Crawling & Ingestion API",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Enable CORS for React Frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include Routers
+app.include_router(health.router, prefix="/api")
+app.include_router(crawl.router, prefix="/api")
+app.include_router(documents.router, prefix="/api")
+app.include_router(schemas.router, prefix="/api")
+
+@app.get("/")
+def root():
+    return {
+        "message": "Welcome to OpenDB Ingestion Pipeline API",
+        "docs": "/docs",
+        "health": "/api/health"
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

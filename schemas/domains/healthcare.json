@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "domain": "Healthcare",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "organization_name": { "type": ["string", "null"] },
+    "facility_type": { "type": ["string", "null"] },
+    "specializations": { "type": "array", "items": { "type": "string" } },
+    "services": { "type": "array", "items": { "type": "string" } },
+    "doctors": { "type": "array", "items": { "type": "string" } },
+    "departments": { "type": "array", "items": { "type": "string" } },
+    "locations": { "type": "array", "items": { "type": "string" } },
+    "contact_information": { "type": ["string", "null"] },
+    "accreditations": { "type": "array", "items": { "type": "string" } }
+  }
+}

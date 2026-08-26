@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpenDB Universal Resource Schema",
+  "type": "object",
+  "properties": {
+    "resource_id": { "type": ["string", "null"] },
+    "canonical_name": { "type": ["string", "null"] },
+    "title": { "type": ["string", "null"] },
+    "description": { "type": ["string", "null"] },
+    "url": { "type": "string" },
+    "domain": { "type": ["string", "null"] },
+    "subdomain": { "type": ["string", "null"] },
+    "entity_type": { "type": ["string", "null"] },
+    "source_id": { "type": ["string", "null"] },
+    "document_id": { "type": ["string", "null"] },
+    "language": { "type": ["string", "null"] },
+    "country": { "type": ["string", "null"] },
+    "location": { "type": ["string", "null"] },
+    "status": { "type": ["string", "null"] },
+    "confidence": { "type": ["number", "null"] },
+    "created_at": { "type": ["string", "null"] },
+    "updated_at": { "type": ["string", "null"] }
+  },
+  "required": ["url"]
+}

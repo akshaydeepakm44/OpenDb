@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "domain": "Technology",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "company_name": { "type": ["string", "null"] },
+    "products": { "type": "array", "items": { "type": "string" } },
+    "services": { "type": "array", "items": { "type": "string" } },
+    "industry": { "type": ["string", "null"] },
+    "founded_year": { "type": ["integer", "null"] },
+    "headquarters": { "type": ["string", "null"] },
+    "employees": { "type": ["string", "integer", "null"] },
+    "technologies": { "type": "array", "items": { "type": "string" } },
+    "leadership": { "type": "array", "items": { "type": "string" } },
+    "locations": { "type": "array", "items": { "type": "string" } },
+    "contact_information": { "type": ["string", "null"] }
+  }
+}
