@@ -16,7 +16,7 @@ if sys.platform == 'win32':
 
 from app.config import settings
 from app.persistence.database import init_db
-from app.api import health, crawl, documents, schemas
+from app.api import health, crawl, documents, schemas, agent
 
 logging.basicConfig(
     level=settings.LOG_LEVEL,
@@ -49,6 +49,7 @@ app.add_middleware(
 
 # Include Routers
 app.include_router(health.router, prefix="/api")
+app.include_router(agent.router, prefix="/api")
 app.include_router(crawl.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 app.include_router(schemas.router, prefix="/api")

@@ -252,3 +252,68 @@ class CrawlError(Base):
     timestamp = Column(DateTime(timezone=True), default=utc_now)
 
     crawl_job = relationship("CrawlJob", back_populates="errors")
+
+class AgentState(Base):
+    __tablename__ = "agent_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    status = Column(String(50), nullable=False, default='PAUSED')
+    current_domain = Column(String(100), nullable=True)
+    current_subdomain = Column(String(100), nullable=True)
+    current_keyword = Column(Text, nullable=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    state_data = Column(JSON, default=dict)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+class SearchHistory(Base):
+    __tablename__ = "search_history"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    keyword = Column(Text, nullable=False)
+    domain = Column(String(100), nullable=True)
+    sources_found = Column(Integer, default=0)
+    relevant_sources = Column(Integer, default=0)
+    entities_discovered = Column(Integer, default=0)
+    batch_id = Column(String(36), nullable=True)
+    is_fallback = Column(Boolean, default=False)
+    log_message = Column(Text, nullable=True)
+    executed_at = Column(DateTime(timezone=True), default=utc_now)
+
+class BatchResult(Base):
+    __tablename__ = "batch_results"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    status = Column(String(50), default="RUNNING")
+    searches_planned = Column(Integer, default=0)
+    searches_executed = Column(Integer, default=0)
+    urls_discovered = Column(Integer, default=0)
+    urls_crawled = Column(Integer, default=0)
+    entities_discovered = Column(Integer, default=0)
+    entities_verified = Column(Integer, default=0)
+    duplicates_removed = Column(Integer, default=0)
+    feedback_generated = Column(Boolean, default=False)
+    started_at = Column(DateTime(timezone=True), default=utc_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+class KeywordPerformance(Base):
+    __tablename__ = "keyword_performance"
+
+    keyword = Column(Text, primary_key=True)
+    domain = Column(String(100), nullable=True)
+    usage_count = Column(Integer, default=0)
+    success_rate = Column(Numeric(5, 4), default=0)
+    last_used = Column(DateTime(timezone=True), default=utc_now)
+    is_deprecated = Column(Boolean, default=False)
+    feedback_notes = Column(Text, nullable=True)
+
+class VerificationRecord(Base):
+    __tablename__ = "verification_records"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    universal_record_id = Column(String(36), ForeignKey("universal_records.id", ondelete="CASCADE"), nullable=False)
+    is_verified = Column(Boolean, default=False)
+    confidence = Column(Numeric(5, 4), default=0)
+    verification_notes = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), default=utc_now)
+    
+    universal_record = relationship("UniversalRecord")

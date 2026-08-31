@@ -13,3 +13,6 @@ lxml>=5.1.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 python-multipart>=0.0.9
+minio>=7.2.5
+redis>=5.0.0
+celery>=5.3.6

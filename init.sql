@@ -193,6 +193,64 @@ CREATE TABLE IF NOT EXISTS crawl_errors (
     timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Agent and Discovery Tracking Schema
+CREATE TABLE IF NOT EXISTS agent_state (
+    id SERIAL PRIMARY KEY,
+    status VARCHAR(50) NOT NULL DEFAULT 'PAUSED',
+    current_domain VARCHAR(100),
+    current_subdomain VARCHAR(100),
+    current_keyword TEXT,
+    last_run_at TIMESTAMPTZ,
+    state_data JSONB DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS search_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    keyword TEXT NOT NULL,
+    domain VARCHAR(100),
+    sources_found INT DEFAULT 0,
+    relevant_sources INT DEFAULT 0,
+    entities_discovered INT DEFAULT 0,
+    batch_id UUID,
+    executed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS batch_results (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    status VARCHAR(50) DEFAULT 'RUNNING',
+    searches_planned INT DEFAULT 0,
+    searches_executed INT DEFAULT 0,
+    urls_discovered INT DEFAULT 0,
+    urls_crawled INT DEFAULT 0,
+    entities_discovered INT DEFAULT 0,
+    entities_verified INT DEFAULT 0,
+    duplicates_removed INT DEFAULT 0,
+    feedback_generated BOOLEAN DEFAULT FALSE,
+    started_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS keyword_performance (
+    keyword TEXT PRIMARY KEY,
+    domain VARCHAR(100),
+    usage_count INT DEFAULT 0,
+    success_rate DECIMAL(5,4) DEFAULT 0,
+    last_used TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    is_deprecated BOOLEAN DEFAULT FALSE,
+    feedback_notes TEXT
+);
+
+-- Entity Verification Schema
+CREATE TABLE IF NOT EXISTS verification_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    universal_record_id UUID REFERENCES universal_records(id) ON DELETE CASCADE,
+    is_verified BOOLEAN DEFAULT FALSE,
+    confidence DECIMAL(5,4) DEFAULT 0,
+    verification_notes TEXT,
+    verified_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Seed Initial Domains
 INSERT INTO domains (name, description) VALUES
 ('Technology', 'Technology companies, software, hardware, IT services')

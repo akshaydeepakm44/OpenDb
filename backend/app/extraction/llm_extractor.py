@@ -7,10 +7,13 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+import httpx
+
 class LLMExtractor:
     def __init__(self):
         self.api_key = settings.OPENAI_API_KEY
-        self.model = settings.LLM_MODEL
+        self.model = settings.QWEN_MODEL_NAME or settings.LLM_MODEL
+        self.ollama_url = settings.OLLAMA_BASE_URL
 
     async def extract_domain_data(
         self,
@@ -20,16 +23,39 @@ class LLMExtractor:
         page_url: str
     ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """
-        Extract domain data using schema instructions.
+        Extract domain data using schema instructions via Qwen / LLM or Heuristics.
         Returns: (domain_data_dict, evidence_list)
         """
         properties = schema_def.get("properties", {})
+        prompt = self._build_prompt(text_content, domain_name, properties)
         
-        # If API key is available, use LiteLLM / OpenAI API call
+        # 1. Try Qwen via Ollama Local Endpoint (http://localhost:11434)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(
+                    f"{self.ollama_url.rstrip('/')}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "format": "json",
+                        "stream": False,
+                        "options": {"temperature": 0.0}
+                    }
+                )
+                if res.status_code == 200:
+                    content = res.json().get("message", {}).get("content", "")
+                    parsed = json.loads(content)
+                    domain_data = parsed.get("domain_data", {})
+                    evidence_list = parsed.get("evidence", [])
+                    logger.info(f"Qwen model ({self.model}) successfully extracted fields for {page_url}")
+                    return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
+        except Exception as qwen_err:
+            logger.debug(f"Ollama Qwen endpoint unready ({qwen_err}), trying OpenAI / LiteLLM API...")
+
+        # 2. Try LiteLLM / OpenAI API call if key is present
         if self.api_key and self.api_key.strip():
             try:
                 import litellm
-                prompt = self._build_prompt(text_content, domain_name, properties)
                 response = await litellm.acompletion(
                     model=self.model,
                     api_key=self.api_key,
@@ -41,24 +67,24 @@ class LLMExtractor:
                 parsed = json.loads(content)
                 domain_data = parsed.get("domain_data", {})
                 evidence_list = parsed.get("evidence", [])
-                
-                # Format evidence list
-                formatted_evidence = []
-                for ev in evidence_list:
-                    formatted_evidence.append({
-                        "field": ev.get("field"),
-                        "value": ev.get("value"),
-                        "source_url": page_url,
-                        "text_snippet": ev.get("evidence_text") or ev.get("text_snippet"),
-                        "confidence": ev.get("confidence", 0.90)
-                    })
-
-                return self._enforce_schema_nulls(domain_data, properties), formatted_evidence
+                return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
             except Exception as e:
                 logger.warning(f"LLM extraction failed or unconfigured, falling back to rule extraction: {e}")
 
-        # Heuristic / Deterministic Semantic Extractor Fallback
+        # 3. Heuristic / Deterministic Semantic Extractor Fallback
         return self._heuristic_semantic_extraction(text_content, domain_name, properties, page_url)
+
+    def _format_evidence(self, evidence_list: List[Dict[str, Any]], page_url: str) -> List[Dict[str, Any]]:
+        formatted_evidence = []
+        for ev in evidence_list:
+            formatted_evidence.append({
+                "field": ev.get("field"),
+                "value": ev.get("value"),
+                "source_url": page_url,
+                "text_snippet": ev.get("evidence_text") or ev.get("text_snippet"),
+                "confidence": ev.get("confidence", 0.90)
+            })
+        return formatted_evidence
 
     def _build_prompt(self, text: str, domain: str, properties: Dict[str, Any]) -> str:
         fields_str = json.dumps(list(properties.keys()))

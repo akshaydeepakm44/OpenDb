@@ -13,7 +13,40 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
+  redis:
+    image: redis:7-alpine
+    container_name: opendb_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio
+    container_name: opendb_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  searxng:
+    image: searxng/searxng
+    container_name: opendb_searxng
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - searxng_data:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+
   backend:
+    profiles: ["app"]
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -22,13 +55,20 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://admin:password123@postgres:5432/opendb
-      - RAW_STORAGE_DIR=/app/data
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=admin
+      - MINIO_SECRET_KEY=password123
+      - REDIS_URL=redis://redis:6379/0
+      - SEARXNG_URL=http://searxng:8080
     volumes:
       - ./data:/app/data
     depends_on:
       - postgres
+      - redis
+      - minio
 
   frontend:
+    profiles: ["app"]
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -40,3 +80,5 @@ services:
 
 volumes:
   postgres_data:
+  minio_data:
+  searxng_data:

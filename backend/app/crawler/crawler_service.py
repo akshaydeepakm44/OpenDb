@@ -14,7 +14,6 @@ if sys.platform == 'win32':
     except Exception:
         pass
 
-from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
 from app.crawler.url_discovery import url_discovery
 from app.crawler.resource_discovery import resource_discovery
 from app.normalization.normalizer import normalizer
@@ -69,99 +68,128 @@ class CrawlerService:
 
         results: List[CrawlResultItem] = []
 
-        config = CrawlerRunConfig(
-            cache_mode=CacheMode.BYPASS,
-            word_count_threshold=5,
-            page_timeout=30000,
-            verbose=False
-        )
+        # Try using Crawl4AI or fallback to httpx AsyncClient
+        try:
+            from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
+            config = CrawlerRunConfig(
+                cache_mode=CacheMode.BYPASS,
+                word_count_threshold=5,
+                page_timeout=30000,
+                verbose=False
+            )
+            async with AsyncWebCrawler(verbose=False) as crawler:
+                while queue and len(visited_urls) < max_pages:
+                    current_item = queue.pop(0)
+                    curr_url = current_item["url"]
+                    curr_depth = current_item["depth"]
 
-        async with AsyncWebCrawler(verbose=False) as crawler:
-            while queue and len(visited_urls) < max_pages:
-                current_item = queue.pop(0)
-                curr_url = current_item["url"]
-                curr_depth = current_item["depth"]
-
-                if curr_url in visited_urls:
-                    continue
-
-                visited_urls.add(curr_url)
-
-                if progress_callback:
-                    await progress_callback(
-                        stage="CRAWLING",
-                        pages_discovered=len(visited_urls) + len(queue),
-                        pages_crawled=len(visited_urls),
-                        current_url=curr_url
-                    )
-
-                try:
-                    crawl_res = await crawler.arun(url=curr_url, config=config)
-                    if not crawl_res or not crawl_res.success:
-                        logger.warning(f"Failed to crawl page: {curr_url}")
+                    if curr_url in visited_urls:
                         continue
 
-                    html_raw = crawl_res.html or ""
-                    markdown_raw = crawl_res.markdown or ""
-                    
-                    # Extract page title and clean text using BeautifulSoup fallback if Crawl4AI markdown is plain
-                    soup = BeautifulSoup(html_raw, "lxml")
-                    title = normalizer.normalize_string(soup.title.string) if soup.title else ""
-                    if not title:
-                        h1 = soup.find("h1")
-                        title = normalizer.normalize_string(h1.text) if h1 else curr_url
+                    visited_urls.add(curr_url)
 
-                    text_clean = normalizer.normalize_string(soup.get_text()) or markdown_raw
-
-                    # Extract page links & images
-                    raw_links = []
-                    for a in soup.find_all("a", href=True):
-                        raw_links.append({
-                            "href": a["href"],
-                            "text": normalizer.normalize_string(a.text) or ""
-                        })
-
-                    raw_media = []
-                    for img in soup.find_all(["img", "source"], src=True):
-                        raw_media.append({
-                            "src": img["src"],
-                            "alt": normalizer.normalize_string(img.get("alt", "")) or ""
-                        })
-
-                    page_result = CrawlResultItem(
-                        url=curr_url,
-                        title=title,
-                        html_content=html_raw,
-                        markdown=markdown_raw,
-                        text=text_clean,
-                        http_status=crawl_res.status_code or 200,
-                        content_type="text/html",
-                        links=raw_links,
-                        media=raw_media,
-                        metadata={
-                            "canonical_url": crawl_res.url,
-                            "word_count": len(text_clean.split()),
-                            "links_count": len(raw_links),
-                            "images_count": len(raw_media)
-                        }
-                    )
-                    results.append(page_result)
-
-                    # Enqueue discovered subpages if depth limits allow
-                    if curr_depth < max_depth and len(visited_urls) + len(queue) < max_pages:
-                        extracted_hrefs = [l["href"] for l in raw_links]
-                        next_links = url_discovery.filter_and_normalize_links(
-                            links=extracted_hrefs,
-                            base_url=curr_url,
-                            visited_urls=visited_urls,
-                            allowed_host=base_host
+                    if progress_callback:
+                        await progress_callback(
+                            stage="CRAWLING",
+                            pages_discovered=len(visited_urls) + len(queue),
+                            pages_crawled=len(visited_urls),
+                            current_url=curr_url
                         )
-                        for n_url in next_links:
-                            if n_url not in visited_urls and not any(q["url"] == n_url for q in queue):
-                                queue.append({"url": n_url, "depth": curr_depth + 1})
 
-                except Exception as e:
-                    logger.error(f"Error crawling {curr_url}: {e}")
+                    try:
+                        crawl_res = await crawler.arun(url=curr_url, config=config)
+                        if not crawl_res or not crawl_res.success:
+                            logger.warning(f"Failed to crawl page: {curr_url}")
+                            continue
+
+                        html_raw = crawl_res.html or ""
+                        markdown_raw = crawl_res.markdown or ""
+                        
+                        soup = BeautifulSoup(html_raw, "lxml")
+                        title = normalizer.normalize_string(soup.title.string) if soup.title else ""
+                        if not title:
+                            h1 = soup.find("h1")
+                            title = normalizer.normalize_string(h1.text) if h1 else curr_url
+
+                        text_clean = normalizer.normalize_string(soup.get_text()) or markdown_raw
+
+                        raw_links = []
+                        for a in soup.find_all("a", href=True):
+                            raw_links.append({
+                                "href": a["href"],
+                                "text": normalizer.normalize_string(a.text) or ""
+                            })
+
+                        raw_media = []
+                        for img in soup.find_all(["img", "source"], src=True):
+                            raw_media.append({
+                                "src": img["src"],
+                                "alt": normalizer.normalize_string(img.get("alt", "")) or ""
+                            })
+
+                        page_result = CrawlResultItem(
+                            url=curr_url,
+                            title=title,
+                            html_content=html_raw,
+                            markdown=markdown_raw,
+                            text=text_clean,
+                            http_status=crawl_res.status_code or 200,
+                            content_type="text/html",
+                            links=raw_links,
+                            media=raw_media,
+                            metadata={
+                                "canonical_url": crawl_res.url,
+                                "word_count": len(text_clean.split()),
+                                "links_count": len(raw_links),
+                                "images_count": len(raw_media)
+                            }
+                        )
+                        results.append(page_result)
+
+                        if curr_depth < max_depth and len(visited_urls) + len(queue) < max_pages:
+                            extracted_hrefs = [l["href"] for l in raw_links]
+                            next_links = url_discovery.filter_and_normalize_links(
+                                links=extracted_hrefs,
+                                base_url=curr_url,
+                                visited_urls=visited_urls,
+                                allowed_host=base_host
+                            )
+                            for n_url in next_links:
+                                if n_url not in visited_urls and not any(q["url"] == n_url for q in queue):
+                                    queue.append({"url": n_url, "depth": curr_depth + 1})
+
+                    except Exception as e:
+                        logger.error(f"Error crawling {curr_url}: {e}")
+        except Exception as crawl_err:
+            logger.warning(f"Crawl4AI unavailable ({crawl_err}), falling back to httpx fetcher...")
+            import httpx
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                while queue and len(visited_urls) < max_pages:
+                    current_item = queue.pop(0)
+                    curr_url = current_item["url"]
+                    if curr_url in visited_urls:
+                        continue
+                    visited_urls.add(curr_url)
+                    try:
+                        resp = await client.get(curr_url, headers={"User-Agent": "OpenDB/2.4 Lead Discovery"})
+                        html_raw = resp.text
+                        soup = BeautifulSoup(html_raw, "html.parser")
+                        title = soup.title.string if soup.title else curr_url
+                        text_clean = soup.get_text()
+                        results.append(CrawlResultItem(
+                            url=curr_url,
+                            title=normalizer.normalize_string(title),
+                            html_content=html_raw,
+                            markdown=text_clean,
+                            text=normalizer.normalize_string(text_clean),
+                            http_status=resp.status_code,
+                            content_type="text/html",
+                            links=[],
+                            media=[],
+                            metadata={"word_count": len(text_clean.split())}
+                        ))
+                    except Exception as fe:
+                        logger.error(f"HTTPX fetch failed for {curr_url}: {fe}")
 
         return results
 
