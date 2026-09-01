@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
@@ -5,7 +6,8 @@ from sqlalchemy.orm import Session
 from app.persistence.models import (
     Source, Domain, Subdomain, CrawlJob, Document, DocumentVersion,
     Resource, ResourceLink, UniversalRecord, DomainRecord,
-    ExtractedFact, Evidence, ExtractionRun, SchemaDefinition, CrawlError
+    ExtractedFact, Evidence, ExtractionRun, SchemaDefinition, CrawlError,
+    Metadata
 )
 
 logger = logging.getLogger(__name__)
@@ -201,6 +203,54 @@ class Repository:
         db.commit()
         db.refresh(dom_rec)
 
+        # ── Register in metadata table ─────────────────────────────────────
+        # 1. Track the domain
+        if class_info.get("domain"):
+            Repository.upsert_metadata(
+                db,
+                entity_type="domain",
+                entity_key=class_info["domain"],
+                domain=class_info["domain"],
+                source_table="domains",
+                source_id=str(domain_obj.id) if domain_obj else None,
+                extra={"subdomain": class_info.get("subdomain"), "confidence": univ_data.get("confidence")}
+            )
+        # 2. Track the subdomain
+        if class_info.get("subdomain"):
+            Repository.upsert_metadata(
+                db,
+                entity_type="subdomain",
+                entity_key=class_info["subdomain"],
+                domain=class_info.get("domain"),
+                subdomain=class_info["subdomain"],
+                source_table="subdomains",
+                extra={"confidence": univ_data.get("confidence")}
+            )
+        # 3. Track the URL (entity presence)
+        if univ_data.get("url"):
+            Repository.upsert_metadata(
+                db,
+                entity_type="url",
+                entity_key=univ_data["url"],
+                domain=class_info.get("domain"),
+                subdomain=class_info.get("subdomain"),
+                source_table="universal_records",
+                source_id=str(univ_rec.id),
+                extra={"canonical_name": univ_data.get("canonical_name"), "title": univ_data.get("title")}
+            )
+        # 4. Track the canonical name as a keyword
+        if univ_data.get("canonical_name"):
+            Repository.upsert_metadata(
+                db,
+                entity_type="keyword",
+                entity_key=univ_data["canonical_name"].lower(),
+                domain=class_info.get("domain"),
+                subdomain=class_info.get("subdomain"),
+                source_table="universal_records",
+                source_id=str(univ_rec.id),
+                extra={"confidence": univ_data.get("confidence")}
+            )
+
         # Store Extracted Facts & Evidence
         for k, v in domain_data.items():
             val_str = json.dumps(v) if isinstance(v, (list, dict)) else (str(v) if v is not None else None)
@@ -246,5 +296,101 @@ class Repository:
         )
         db.add(err)
         db.commit()
+
+    # ─── Metadata Registry Helpers ───────────────────────────────────────────
+
+    @staticmethod
+    def upsert_metadata(
+        db: Session,
+        entity_type: str,
+        entity_key: str,
+        domain: Optional[str] = None,
+        subdomain: Optional[str] = None,
+        is_present: bool = True,
+        source_table: Optional[str] = None,
+        source_id: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None
+    ) -> Metadata:
+        """Insert or update a metadata registry entry."""
+        record = db.query(Metadata).filter(
+            Metadata.entity_type == entity_type,
+            Metadata.entity_key == entity_key
+        ).first()
+
+        if record:
+            record.is_present = is_present
+            record.domain = domain or record.domain
+            record.subdomain = subdomain or record.subdomain
+            record.source_table = source_table or record.source_table
+            record.source_id = source_id or record.source_id
+            if extra:
+                record.extra = {**(record.extra or {}), **extra}
+        else:
+            record = Metadata(
+                entity_type=entity_type,
+                entity_key=entity_key,
+                domain=domain,
+                subdomain=subdomain,
+                is_present=is_present,
+                source_table=source_table,
+                source_id=str(source_id) if source_id else None,
+                extra=extra or {}
+            )
+            db.add(record)
+        db.commit()
+        db.refresh(record)
+        return record
+
+    @staticmethod
+    def check_presence(
+        db: Session,
+        entity_type: str,
+        entity_key: str
+    ) -> bool:
+        """Returns True if the entity is registered and is_present=True."""
+        record = db.query(Metadata).filter(
+            Metadata.entity_type == entity_type,
+            Metadata.entity_key == entity_key,
+            Metadata.is_present == True
+        ).first()
+        return record is not None
+
+    @staticmethod
+    def mark_absent(
+        db: Session,
+        entity_type: str,
+        entity_key: str
+    ) -> bool:
+        """Mark an entity as no longer present (soft delete)."""
+        record = db.query(Metadata).filter(
+            Metadata.entity_type == entity_type,
+            Metadata.entity_key == entity_key
+        ).first()
+        if record:
+            record.is_present = False
+            db.commit()
+            return True
+        return False
+
+    @staticmethod
+    def search_metadata(
+        db: Session,
+        entity_type: Optional[str] = None,
+        domain: Optional[str] = None,
+        subdomain: Optional[str] = None,
+        is_present: Optional[bool] = True
+    ) -> List[Metadata]:
+        """Query the metadata registry with optional filters."""
+        q = db.query(Metadata)
+        if entity_type:
+            q = q.filter(Metadata.entity_type == entity_type)
+        if domain:
+            q = q.filter(Metadata.domain == domain)
+        if subdomain:
+            q = q.filter(Metadata.subdomain == subdomain)
+        if is_present is not None:
+            q = q.filter(Metadata.is_present == is_present)
+        return q.order_by(Metadata.updated_at.desc()).all()
+
 
 repo = Repository()

@@ -1,4 +1,10 @@
--- OpenDB PostgreSQL Ingestion & Extraction Core Schema
+-- OpenDB PostgreSQL Schema
+-- Requires pgvector extension for semantic search
+
+-- Enable pgvector
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- ─── Core Lookup Tables ───────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS sources (
     id SERIAL PRIMARY KEY,
@@ -25,6 +31,32 @@ CREATE TABLE IF NOT EXISTS subdomains (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ─── Metadata Table ───────────────────────────────────────────────────────────
+-- Central registry that tracks every entity type in the system.
+-- Allows fast lookup: "does a domain/subdomain/entity/keyword exist?"
+-- Used during crawl, retrieval, and deduplication.
+CREATE TABLE IF NOT EXISTS metadata (
+    id SERIAL PRIMARY KEY,
+    entity_type  VARCHAR(100) NOT NULL,   -- 'domain','subdomain','keyword','url','schema','batch'
+    entity_key   TEXT NOT NULL,            -- the value being tracked (e.g. 'Technology', 'healthcare.org')
+    domain       VARCHAR(100),             -- optional parent domain
+    subdomain    VARCHAR(100),             -- optional parent subdomain
+    is_present   BOOLEAN DEFAULT TRUE,     -- TRUE = exists/active, FALSE = deprecated/removed
+    source_table VARCHAR(100),             -- which table this entry points to
+    source_id    TEXT,                     -- FK value in that table (string to handle UUIDs/ints)
+    extra        JSONB DEFAULT '{}'::jsonb,-- any extra metadata (count, score, notes)
+    created_at   TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (entity_type, entity_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_metadata_entity_type  ON metadata (entity_type);
+CREATE INDEX IF NOT EXISTS idx_metadata_entity_key   ON metadata (entity_key);
+CREATE INDEX IF NOT EXISTS idx_metadata_domain        ON metadata (domain);
+CREATE INDEX IF NOT EXISTS idx_metadata_is_present    ON metadata (is_present);
+
+-- ─── Crawl Jobs ───────────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS crawl_jobs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     starting_url TEXT NOT NULL,
@@ -47,6 +79,8 @@ CREATE TABLE IF NOT EXISTS crawl_jobs (
     finished_at TIMESTAMPTZ
 );
 
+-- ─── Documents ────────────────────────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     source_id INT REFERENCES sources(id) ON DELETE SET NULL,
@@ -64,9 +98,13 @@ CREATE TABLE IF NOT EXISTS documents (
     word_count INT DEFAULT 0,
     links_count INT DEFAULT 0,
     images_count INT DEFAULT 0,
+    content_embedding vector(384),   -- pgvector: 384-dim for all-MiniLM-L6-v2
     retrieved_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_documents_content_embedding
+    ON documents USING ivfflat (content_embedding vector_cosine_ops) WITH (lists = 100);
 
 CREATE TABLE IF NOT EXISTS document_versions (
     id SERIAL PRIMARY KEY,
@@ -76,6 +114,8 @@ CREATE TABLE IF NOT EXISTS document_versions (
     raw_path TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ─── Resources ────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS resources (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -104,6 +144,8 @@ CREATE TABLE IF NOT EXISTS resource_links (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ─── Universal & Domain Records ───────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS universal_records (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     document_id UUID REFERENCES documents(id) ON DELETE CASCADE,
@@ -119,10 +161,14 @@ CREATE TABLE IF NOT EXISTS universal_records (
     location TEXT,
     status VARCHAR(50),
     confidence DECIMAL(5,4),
-    metadata JSONB DEFAULT '{}'::jsonb,
+    metadata_json JSONB DEFAULT '{}'::jsonb,  -- renamed from 'metadata' (reserved word)
+    entity_embedding vector(384),              -- pgvector: entity semantic search
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_universal_records_entity_embedding
+    ON universal_records USING ivfflat (entity_embedding vector_cosine_ops) WITH (lists = 100);
 
 CREATE TABLE IF NOT EXISTS domain_records (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -133,6 +179,8 @@ CREATE TABLE IF NOT EXISTS domain_records (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ─── Extraction Tracking ──────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS extracted_facts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -193,7 +241,8 @@ CREATE TABLE IF NOT EXISTS crawl_errors (
     timestamp TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Agent and Discovery Tracking Schema
+-- ─── Agent & Discovery Tracking ───────────────────────────────────────────────
+
 CREATE TABLE IF NOT EXISTS agent_state (
     id SERIAL PRIMARY KEY,
     status VARCHAR(50) NOT NULL DEFAULT 'PAUSED',
@@ -213,6 +262,8 @@ CREATE TABLE IF NOT EXISTS search_history (
     relevant_sources INT DEFAULT 0,
     entities_discovered INT DEFAULT 0,
     batch_id UUID,
+    is_fallback BOOLEAN DEFAULT FALSE,
+    log_message TEXT,
     executed_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -241,7 +292,6 @@ CREATE TABLE IF NOT EXISTS keyword_performance (
     feedback_notes TEXT
 );
 
--- Entity Verification Schema
 CREATE TABLE IF NOT EXISTS verification_records (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     universal_record_id UUID REFERENCES universal_records(id) ON DELETE CASCADE,
@@ -251,19 +301,18 @@ CREATE TABLE IF NOT EXISTS verification_records (
     verified_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
--- Seed Initial Domains
-INSERT INTO domains (name, description) VALUES
-('Technology', 'Technology companies, software, hardware, IT services')
-ON CONFLICT (name) DO NOTHING;
+-- ─── Seed Domains ─────────────────────────────────────────────────────────────
 
 INSERT INTO domains (name, description) VALUES
-('Healthcare', 'Hospitals, clinics, medical services, healthcare organizations')
+    ('Technology', 'Technology companies, software, hardware, IT services'),
+    ('Healthcare',  'Hospitals, clinics, medical services, healthcare organizations'),
+    ('Education',   'Universities, schools, online learning, educational institutions'),
+    ('Business',    'General business enterprises, services, products, corporate data')
 ON CONFLICT (name) DO NOTHING;
 
-INSERT INTO domains (name, description) VALUES
-('Education', 'Universities, schools, online learning, educational institutions')
-ON CONFLICT (name) DO NOTHING;
+-- ─── Seed Metadata rows for domains ──────────────────────────────────────────
 
-INSERT INTO domains (name, description) VALUES
-('Business', 'General business enterprises, services, products, corporate data')
-ON CONFLICT (name) DO NOTHING;
+INSERT INTO metadata (entity_type, entity_key, domain, is_present, source_table, extra)
+    SELECT 'domain', name, name, TRUE, 'domains', jsonb_build_object('description', description)
+    FROM domains
+ON CONFLICT (entity_type, entity_key) DO NOTHING;

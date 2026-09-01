@@ -1,84 +1,180 @@
 services:
+  # ─── PostgreSQL + pgvector ────────────────────────────────────────────────
   postgres:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: opendb_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password123
-      POSTGRES_DB: opendb
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password123}
+      POSTGRES_DB: ${POSTGRES_DB:-opendb}
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-opendb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
+  # ─── Redis (internal only, password-protected) ────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: opendb_redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # No public port — only accessible by services within Docker network
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-opendb_redis_secret}
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-opendb_redis_secret}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
+  # ─── MinIO (S3-compatible object storage) ─────────────────────────────────
   minio:
-    image: minio/minio
+    image: minio/minio:latest
     container_name: opendb_minio
     restart: unless-stopped
     environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: password123
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"   # S3 API — localhost only
+      - "9001:9001"              # MinIO Console
     volumes:
       - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
+  # ─── MinIO bucket initializer (runs once) ─────────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: opendb_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set opendb http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin123};
+      mc mb opendb/raw-pages          --ignore-existing;
+      mc mb opendb/raw-documents      --ignore-existing;
+      mc mb opendb/raw-media          --ignore-existing;
+      mc mb opendb/processed-markdown --ignore-existing;
+      mc mb opendb/processed-text     --ignore-existing;
+      mc mb opendb/processed-extracted --ignore-existing;
+      mc mb opendb/manifests          --ignore-existing;
+      echo 'MinIO buckets initialized.';
+      exit 0;
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+
+  # ─── SearXNG (self-hosted meta-search) ───────────────────────────────────
   searxng:
-    image: searxng/searxng
+    image: searxng/searxng:latest
     container_name: opendb_searxng
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"    # internal only
     volumes:
-      - searxng_data:/etc/searxng
+      - ./searxng:/etc/searxng:rw
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8080/
+      - SEARXNG_BASE_URL=http://searxng:8080/
 
+  # ─── Backend API ──────────────────────────────────────────────────────────
   backend:
-    profiles: ["app"]
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: opendb_backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
+    env_file: .env
     environment:
-      - DATABASE_URL=postgresql://admin:password123@postgres:5432/opendb
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=admin
-      - MINIO_SECRET_KEY=password123
-      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_SECURE=false
+      - STORAGE_BACKEND=minio
       - SEARXNG_URL=http://searxng:8080
+      - SCHEMAS_DIR=/app/schemas
     volumes:
+      - ./schemas:/app/schemas:ro
       - ./data:/app/data
     depends_on:
-      - postgres
-      - redis
-      - minio
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
+  # ─── Celery Worker (async task executor) ─────────────────────────────────
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: opendb_celery
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,default
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_SECURE=false
+      - STORAGE_BACKEND=minio
+      - SEARXNG_URL=http://searxng:8080
+      - SCHEMAS_DIR=/app/schemas
+    volumes:
+      - ./schemas:/app/schemas:ro
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  # ─── Frontend UI ──────────────────────────────────────────────────────────
   frontend:
-    profiles: ["app"]
     build:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: opendb_frontend
+    restart: unless-stopped
     ports:
-      - "3000:80"
+      - "3001:80"
     depends_on:
       - backend
 
 volumes:
   postgres_data:
+  redis_data:
   minio_data:
-  searxng_data:

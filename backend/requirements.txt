@@ -16,3 +16,5 @@ python-multipart>=0.0.9
 minio>=7.2.5
 redis>=5.0.0
 celery>=5.3.6
+pgvector>=0.2.0
+

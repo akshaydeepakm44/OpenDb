@@ -28,8 +28,22 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Initializing OpenDB FastAPI Application...")
     init_db()
+
+    # §10 — Auto-resume agent if it was RUNNING before container restart
+    try:
+        from app.agent.discovery_agent import discovery_agent
+        discovery_agent.resume_if_was_running()
+    except Exception as e:
+        logger.warning(f"Agent auto-resume skipped: {e}")
+
     yield
     logger.info("Shutting down OpenDB application.")
+    # Signal agent loop to stop cleanly
+    try:
+        from app.agent.discovery_agent import discovery_agent
+        discovery_agent.is_running_loop = False
+    except Exception:
+        pass
 
 app = FastAPI(
     title=settings.APP_NAME,

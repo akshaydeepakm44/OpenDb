@@ -8,8 +8,38 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.persistence.database import Base
 
+# pgvector: graceful fallback if not installed in environment
+try:
+    from pgvector.sqlalchemy import Vector
+    HAS_PGVECTOR = True
+except ImportError:
+    HAS_PGVECTOR = False
+    Vector = None
+
 def utc_now():
     return datetime.now(timezone.utc)
+
+
+class Metadata(Base):
+    """
+    Central metadata registry — answers 'does X exist in the system?'
+    entity_type: 'domain' | 'subdomain' | 'keyword' | 'url' | 'schema' | 'batch'
+    entity_key:  the actual value (e.g. 'Technology', 'healthcare.org')
+    is_present:  True = active/exists, False = deprecated/removed
+    """
+    __tablename__ = "metadata"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    entity_type  = Column(String(100), nullable=False)
+    entity_key   = Column(Text, nullable=False)
+    domain       = Column(String(100), nullable=True)
+    subdomain    = Column(String(100), nullable=True)
+    is_present   = Column(Boolean, default=True)
+    source_table = Column(String(100), nullable=True)
+    source_id    = Column(Text, nullable=True)
+    extra        = Column(JSONB, default=dict)
+    created_at   = Column(DateTime(timezone=True), default=utc_now)
+    updated_at   = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 class Source(Base):
     __tablename__ = "sources"
@@ -90,6 +120,7 @@ class Document(Base):
     word_count = Column(Integer, default=0)
     links_count = Column(Integer, default=0)
     images_count = Column(Integer, default=0)
+    content_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True)  # pgvector 384-dim
     retrieved_at = Column(DateTime(timezone=True), default=utc_now)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
@@ -158,10 +189,11 @@ class UniversalRecord(Base):
     country = Column(String(100), nullable=True)
     location = Column(Text, nullable=True)
     status = Column(String(50), nullable=True)
-    confidence = Column(Numeric(5, 4), nullable=True)
-    metadata_json = Column(JSON, default=dict)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    confidence    = Column(Numeric(5, 4), nullable=True)
+    metadata_json = Column(JSONB, default=dict)                                              # matches DB column metadata_json
+    entity_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True) # pgvector 384-dim
+    created_at    = Column(DateTime(timezone=True), default=utc_now)
+    updated_at    = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     document = relationship("Document", back_populates="universal_records")
     domain_records = relationship("DomainRecord", back_populates="universal_record")
@@ -241,8 +273,8 @@ class SchemaDefinition(Base):
 class CrawlError(Base):
     __tablename__ = "crawl_errors"
 
-    id = Column(Integer, primary_key=True, index=True)
-    crawl_job_id = Column(String(36), ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    crawl_job_id = Column(String(36), ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=True)  # nullable — agent tasks have no job
     document_id = Column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
     url = Column(Text, nullable=False)
     stage = Column(String(100), nullable=False)
@@ -252,6 +284,24 @@ class CrawlError(Base):
     timestamp = Column(DateTime(timezone=True), default=utc_now)
 
     crawl_job = relationship("CrawlJob", back_populates="errors")
+
+
+class CrawlActivityLog(Base):
+    """
+    Live crawl activity log — one row per URL crawled by the agent.
+    Surfaced in the 'Live Crawl Activity Stream' tab of the UI.
+    """
+    __tablename__ = "crawl_activity_log"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    url = Column(Text, nullable=False)
+    domain = Column(String(100), nullable=True)
+    stage = Column(String(100), nullable=False)   # SEARCH | CRAWL | EXTRACT | VERIFY | FILTER
+    status = Column(String(50), nullable=False)   # OK | FILTERED | DUPLICATE | ERROR
+    message = Column(Text, nullable=True)
+    entity_name = Column(Text, nullable=True)     # if entity was resolved
+    batch_id = Column(String(36), nullable=True)
+    timestamp = Column(DateTime(timezone=True), default=utc_now)
 
 class AgentState(Base):
     __tablename__ = "agent_state"

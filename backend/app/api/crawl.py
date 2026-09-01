@@ -173,6 +173,24 @@ async def execute_crawl_pipeline(job_id: str, request_data: Dict[str, Any]):
         db.close()
 
 
+def _run_crawl_pipeline_sync(job_id: str, request_data: Dict[str, Any]):
+    """Sync wrapper — BackgroundTasks runs in a threadpool with no event loop.
+    We create our own so the async pipeline actually executes."""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(execute_crawl_pipeline(job_id, request_data))
+    except Exception as e:
+        logger.error(f"Crawl pipeline wrapper failed for job {job_id}: {e}")
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
+
+
 @router.post("")
 def start_crawl_job(request: CrawlRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     target_domain = request.domain or "Technology"
@@ -203,7 +221,7 @@ def start_crawl_job(request: CrawlRequest, background_tasks: BackgroundTasks, db
         "max_pages": request.max_pages or 20
     }
 
-    background_tasks.add_task(execute_crawl_pipeline, job.id, req_data)
+    background_tasks.add_task(_run_crawl_pipeline_sync, job.id, req_data)
 
     return {
         "job_id": job.id,

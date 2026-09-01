@@ -2,12 +2,12 @@ import os
 import asyncio
 import httpx
 import redis
+from minio import Minio
 from sqlalchemy import text
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.persistence.database import get_db
-from app.storage.file_storage import file_storage
 
 router = APIRouter()
 
@@ -37,8 +37,15 @@ def _check_redis() -> str:
 
 def _check_minio() -> str:
     try:
-        if file_storage.client.bucket_exists(file_storage.bucket_name):
-            return "online"
+        client = Minio(
+            settings.MINIO_ENDPOINT,
+            access_key=settings.MINIO_ACCESS_KEY,
+            secret_key=settings.MINIO_SECRET_KEY,
+            secure=settings.MINIO_SECURE,
+        )
+        # list_buckets() is a lightweight call that confirms connectivity + auth
+        client.list_buckets()
+        return "online"
     except Exception:
         pass
     return "down"
@@ -63,13 +70,13 @@ async def services_health_check(db: Session = Depends(get_db)):
 
     async def check_red():
         try:
-            return await asyncio.wait_for(asyncio.to_thread(_check_redis), timeout=0.2)
+            return await asyncio.wait_for(asyncio.to_thread(_check_redis), timeout=2.0)
         except Exception:
             return "down"
 
     async def check_min():
         try:
-            return await asyncio.wait_for(asyncio.to_thread(_check_minio), timeout=0.2)
+            return await asyncio.wait_for(asyncio.to_thread(_check_minio), timeout=2.0)
         except Exception:
             return "down"
 

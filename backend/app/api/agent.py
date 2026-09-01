@@ -13,9 +13,11 @@ from app.agent.discovery_agent import discovery_agent
 from app.persistence.models import (
     BatchResult, KeywordPerformance, UniversalRecord, DomainRecord,
     Document, ExtractedFact, Evidence, VerificationRecord, CrawlError,
-    SearchHistory
+    SearchHistory, CrawlActivityLog
 )
 from app.storage.file_storage import file_storage
+from app.cache.redis_cache import cache_get, cache_set
+from app.haystack.pipelines import get_retrieval_pipeline, search_documents
 
 router = APIRouter(prefix="/agent", tags=["Autonomous Discovery Agent"])
 
@@ -140,19 +142,61 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         db.rollback()
         search_stream = []
 
-    # 7. Failure / Retry Stream
-    errors = db.query(CrawlError).order_by(CrawlError.timestamp.desc()).limit(15).all()
-    failure_stream = [
-        {
-            "id": err.id,
-            "url": err.url,
-            "stage": err.stage,
-            "error_type": err.error_type,
-            "error_message": err.error_message,
-            "timestamp": err.timestamp.isoformat() if err.timestamp else None
-        }
-        for err in errors
-    ]
+    # 7. Live Crawl Activity Stream (all stages: SEARCH, CRAWL, EXTRACT, FILTER, DUPLICATE, ERROR)
+    crawl_activity_stream = []
+    try:
+        activities = (
+            db.query(CrawlActivityLog)
+            .order_by(CrawlActivityLog.timestamp.desc())
+            .limit(60)
+            .all()
+        )
+        for a in activities:
+            stage_colors = {
+                "SEARCH": "#38bdf8",
+                "CRAWL": "#a78bfa",
+                "EXTRACT": "#34d399",
+                "FILTER": "#f59e0b",
+                "VERIFY": "#10b981",
+            }
+            crawl_activity_stream.append({
+                "id": a.id,
+                "url": a.url,
+                "domain": a.domain or "General",
+                "stage": a.stage,
+                "status": a.status,
+                "message": a.message or "",
+                "entity_name": a.entity_name,
+                "batch_id": a.batch_id,
+                "stage_color": stage_colors.get(a.stage, "#94a3b8"),
+                "timestamp": a.timestamp.isoformat() if a.timestamp else None,
+            })
+    except Exception:
+        db.rollback()
+        crawl_activity_stream = []
+
+    # 8. Failure / Rejection Stream (errors and filtered entries)
+    failure_stream = []
+    try:
+        filtered_events = (
+            db.query(CrawlActivityLog)
+            .filter(CrawlActivityLog.status.in_(["FILTERED", "DUPLICATE", "ERROR", "EMPTY"]))
+            .order_by(CrawlActivityLog.timestamp.desc())
+            .limit(30)
+            .all()
+        )
+        for ev in filtered_events:
+            failure_stream.append({
+                "id": ev.id,
+                "url": ev.url,
+                "stage": ev.stage,
+                "status": ev.status,
+                "message": ev.message or "",
+                "timestamp": ev.timestamp.isoformat() if ev.timestamp else None,
+            })
+    except Exception:
+        db.rollback()
+        failure_stream = []
 
     # 8. Distinct Filter Options from DB
     distinct_domains = [d[0] for d in db.query(UniversalRecord.entity_type).distinct().all() if d[0]]
@@ -162,7 +206,7 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         "stat_cards": {
             "verified_leads": verified_leads_count,
             "active_crawl_queue": queue_depth,
-            "decision_makers_identified": max(people_facts, len(recent_records) * 2),
+            "decision_makers_identified": people_facts,
             "storage_usage": {
                 "postgres": pg_size_str,
                 "minio_objects": minio_obj_count,
@@ -170,6 +214,7 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
             }
         },
         "ingestion_stream": ingestion_stream,
+        "crawl_activity_stream": crawl_activity_stream,
         "search_stream": search_stream,
         "failure_stream": failure_stream,
         "filter_options": {
@@ -210,6 +255,34 @@ def determine_company_tier(record: UniversalRecord, domain_data: dict = None) ->
         "Enterprise Leaders (1,000+)"
     ]
     return tiers[hash_val]
+
+
+def _build_tier_taxonomy(tier_data: dict) -> list:
+    """Build the company tier taxonomy from REAL DB-computed data.
+
+    tier_data maps tier-name -> {"count": int, "conf_sum": float}.
+    Returns a list of tier dicts with count and real avg_confidence.
+    Tiers with zero records are still shown (count=0, avg_confidence="N/A").
+    """
+    tier_meta = {
+        "Early-Stage Startups (1-20)": ("🌱", "Seed, Series-A & stealth stage ventures with agile software engineering focus."),
+        "Growth SMBs (20-100)": ("🚀", "Fast-scaling tech & product companies expanding active headcount & leadership."),
+        "Mid-Market Challengers (100-1,000)": ("🏢", "Established corporate market leaders with dedicated procurement & vendor operations."),
+        "Enterprise Leaders (1,000+)": ("🏛️", "Fortune 2000 multinational leaders & public sector enterprise organizations."),
+    }
+    result = []
+    for tier_name, (icon, description) in tier_meta.items():
+        info = tier_data.get(tier_name, {"count": 0, "conf_sum": 0.0})
+        count = info["count"]
+        avg_conf = f"{(info['conf_sum'] / count) * 100:.0f}%" if count > 0 else "N/A"
+        result.append({
+            "tier": tier_name,
+            "icon": icon,
+            "count": count,
+            "avg_confidence": avg_conf,
+            "description": description,
+        })
+    return result
 
 
 @router.get("/entities")
@@ -260,6 +333,23 @@ def get_entities_list(
             "company_tier": tier,
             "status": r.status or "Verified",
             "confidence": float(r.confidence or 0.85),
+            "description": r.description or "",
+            "tech_stack": (
+                dom_data.get("technologies") or
+                dom_data.get("tech_stack") or []
+            ) if isinstance(dom_data, dict) else [],
+            "decision_makers_count": len(
+                dom_data.get("key_people") or
+                dom_data.get("leadership") or []
+            ) if isinstance(dom_data, dict) else 0,
+            "funding_stage": (
+                dom_data.get("funding_stage") or
+                dom_data.get("revenue") or ""
+            ) if isinstance(dom_data, dict) else "",
+            "company_size": (
+                dom_data.get("company_size") or
+                dom_data.get("employee_count") or ""
+            ) if isinstance(dom_data, dict) else "",
             "created_at": r.created_at.isoformat() if r.created_at else None
         })
 
@@ -269,6 +359,11 @@ def get_entities_list(
 @router.get("/entities/{entity_id}")
 def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
     """Drill-in Entity Detail View Modal Data."""
+    # Redis read-through cache — 120s TTL (entity detail changes infrequently)
+    cached_detail = cache_get("entity", entity_id)
+    if cached_detail:
+        return cached_detail
+
     record = db.query(UniversalRecord).filter(UniversalRecord.id == entity_id).first()
     if not record:
         raise HTTPException(status_code=404, detail="Entity not found.")
@@ -306,16 +401,8 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 "linkedin_search_url": f"https://www.linkedin.com/search/results/all/?keywords={search_query}"
             })
 
-    if not decision_makers:
-        # Fallback decision maker from canonical name
-        c_name = record.canonical_name or "Company"
-        decision_makers = [
-            {
-                "name": f"Founder / CEO ({c_name})",
-                "title": "Chief Executive Officer",
-                "linkedin_search_url": f"https://www.linkedin.com/search/results/all/?keywords={quote(c_name + ' CEO')}"
-            }
-        ]
+    # No fabrication fallback — if no people were extracted, return empty list.
+    # The UI should render "No decision makers identified yet" rather than a fake CEO.
 
     # Extract Emails
     emails = domain_data.get("contact_emails") or domain_data.get("emails") or []
@@ -344,23 +431,48 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             "minio_raw_path": doc.raw_path or f"s3://opendb/raw/pages/{doc.content_hash}.html"
         })
 
-    # Provenance
+    # Provenance — built from real ExtractedFact rows and Evidence snippets.
+    # Each extracted field carries the value, confidence, extractor name, and
+    # (where available) the supporting evidence snippet. No fabricated entries.
+    provenance_facts = []
+    for f in facts[:12]:
+        entry = {
+            "field": f.field_name,
+            "value": f.field_value,
+            "value_type": f.value_type or "string",
+            "confidence": float(f.confidence or 0),
+            "extractor": f.extractor or "rule",
+            "source_url": doc.url if doc else record.url,
+            "extracted_at": (f.created_at.isoformat() if f.created_at else None) or (record.created_at.isoformat() if record.created_at else None),
+        }
+        # Attach supporting evidence snippet if the fact references one
+        ev = db.query(Evidence).filter(Evidence.extracted_fact_id == f.id).first()
+        if ev and ev.text_snippet:
+            entry["evidence_snippet"] = ev.text_snippet[:300]
+        provenance_facts.append(entry)
+
+    # Standalone evidence items not linked to a specific fact
+    standalone_evidence = [
+        {
+            "snippet": e.text_snippet[:300] if e.text_snippet else "",
+            "confidence": float(e.confidence or 0),
+            "source_url": doc.url if doc else record.url,
+        }
+        for e in evidence_items[:8]
+    ]
+
     provenance = {
         "source_url": record.url,
         "source_type": "official_website",
-        "extracted_at": record.created_at,
+        "extracted_at": record.created_at.isoformat() if record.created_at else None,
         "confidence": conf,
-        "evidence_snippets": [
-            {
-                "field": e.text_snippet[:30] if e.text_snippet else "Fact",
-                "snippet": e.text_snippet,
-                "confidence": float(e.confidence or 0.9)
-            }
-            for e in evidence_items[:5]
-        ]
+        "extracted_fields": provenance_facts,
+        "evidence_snippets": standalone_evidence,
+        "fact_count": len(facts),
+        "evidence_count": len(evidence_items),
     }
 
-    return {
+    entity_payload = {
         "id": record.id,
         "canonical_name": record.canonical_name or "Organization Lead",
         "domain": record.domain.name if (record.domain and hasattr(record.domain, "name")) else "Technology",
@@ -385,6 +497,11 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         "provenance": provenance
     }
 
+    # Cache the full payload for 120 s so repeated drill-ins are cheap.
+    cache_set("entity", entity_id, entity_payload, ttl=120)
+
+    return entity_payload
+
 
 @router.get("/feedback")
 def get_agent_feedback(db: Session = Depends(get_db)):
@@ -392,20 +509,18 @@ def get_agent_feedback(db: Session = Depends(get_db)):
     batches = db.query(BatchResult).order_by(BatchResult.started_at.desc()).limit(10).all()
     keywords = db.query(KeywordPerformance).order_by(KeywordPerformance.usage_count.desc()).limit(20).all()
     
-    # Calculate Company Tier breakdown metrics
+    # Calculate Company Tier breakdown metrics from REAL DB data.
+    # Group records by tier, compute avg confidence and count per tier.
     records = db.query(UniversalRecord).all()
-    tier_counts = {
-        "Early-Stage Startups (1-20)": 0,
-        "Growth SMBs (20-100)": 0,
-        "Mid-Market Challengers (100-1,000)": 0,
-        "Enterprise Leaders (1,000+)": 0
-    }
+    tier_data: dict[str, dict] = {}
     for r in records:
         dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == r.id).first()
         dom_data = dom_rec.data if dom_rec else {}
         tier = determine_company_tier(r, dom_data)
-        if tier in tier_counts:
-            tier_counts[tier] += 1
+        if tier not in tier_data:
+            tier_data[tier] = {"count": 0, "conf_sum": 0.0}
+        tier_data[tier]["count"] += 1
+        tier_data[tier]["conf_sum"] += float(r.confidence or 0)
 
     return {
         "batches": [
@@ -432,34 +547,47 @@ def get_agent_feedback(db: Session = Depends(get_db)):
             }
             for k in keywords
         ],
-        "company_tier_taxonomy": [
+        "company_tier_taxonomy": _build_tier_taxonomy(tier_data)
+    }
+
+
+@router.get("/search")
+def agent_semantic_search(
+    q: str = Query(..., min_length=2, max_length=500, description="Search query"),
+    top_k: int = Query(10, ge=1, le=50, description="Number of results to return"),
+):
+    """
+    Semantic search over crawled documents using Haystack + pgvector.
+
+    Embeds the query with sentence-transformers and retrieves the top-k
+    most similar document chunks from the pgvector store.
+
+    Returns 503 if the retrieval pipeline is not available (deps missing
+    or LLM provider not configured).
+    """
+    retrieval = get_retrieval_pipeline()
+    if retrieval is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Semantic search pipeline unavailable. Ensure haystack-ai, "
+                   "haystack-pgvector, and sentence-transformers are installed.",
+        )
+
+    results = search_documents(retrieval, q, top_k=top_k)
+
+    return {
+        "query": q,
+        "count": len(results),
+        "results": [
             {
-                "tier": "Early-Stage Startups (1-20)",
-                "icon": "🌱",
-                "count": max(tier_counts["Early-Stage Startups (1-20)"], 4),
-                "avg_confidence": "94%",
-                "description": "Seed, Series-A & stealth stage ventures with agile software engineering focus."
-            },
-            {
-                "tier": "Growth SMBs (20-100)",
-                "icon": "🚀",
-                "count": max(tier_counts["Growth SMBs (20-100)"], 6),
-                "avg_confidence": "91%",
-                "description": "Fast-scaling tech & product companies expanding active headcount & leadership."
-            },
-            {
-                "tier": "Mid-Market Challengers (100-1,000)",
-                "icon": "🏢",
-                "count": max(tier_counts["Mid-Market Challengers (100-1,000)"], 5),
-                "avg_confidence": "89%",
-                "description": "Established corporate market leaders with dedicated procurement & vendor operations."
-            },
-            {
-                "tier": "Enterprise Leaders (1,000+)",
-                "icon": "🏛️",
-                "count": max(tier_counts["Enterprise Leaders (1,000+)"], 3),
-                "avg_confidence": "96%",
-                "description": "Fortune 2000 multinational leaders & public sector enterprise organizations."
+                "content": r["content"][:2000],
+                "score": r["score"],
+                "document_id": r["document_id"],
+                "canonical_name": (r["metadata"] or {}).get("canonical_name"),
+                "url": (r["metadata"] or {}).get("url"),
+                "country": (r["metadata"] or {}).get("country"),
+                "record_id": (r["metadata"] or {}).get("record_id"),
             }
-        ]
+            for r in results
+        ],
     }

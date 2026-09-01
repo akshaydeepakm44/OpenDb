@@ -1,0 +1,75 @@
+# OpenDB SearXNG Settings — Multi-engine for maximum coverage
+# https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  secret_key: "46i4zmw5RXBftHrqsw4Y8OqmYDiHK104"
+  image_proxy: false
+  limiter: false
+  public_instance: false
+
+search:
+  formats:
+    - html
+    - json
+  default_lang: "en"
+  safe_search: 0
+  autocomplete: ""
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
+  suspended_times:
+    SearxEngineCaptchaException: 0
+    SearxEngineAccessDeniedException: 0
+    cf_SearxEngineCaptchaException: 0
+
+# Override engine defaults — keep reliable ones, disable CAPTCHA-prone ones
+engines:
+  - name: bing
+    engine: bing
+    categories: general
+    shortcut: b
+    weight: 2
+    enabled: true
+
+  - name: brave
+    engine: brave
+    categories: general
+    shortcut: br
+    weight: 2
+    enabled: true
+
+  - name: mojeek
+    engine: mojeek
+    categories: general
+    shortcut: mj
+    weight: 1
+    enabled: true
+
+  - name: duckduckgo
+    engine: duckduckgo
+    categories: general
+    shortcut: ddg
+    weight: 1
+    enabled: false
+
+  - name: google
+    engine: google
+    categories: general
+    shortcut: g
+    weight: 2
+    enabled: true
+
+  - name: startpage
+    engine: startpage
+    categories: general
+    shortcut: sp
+    weight: 1
+    enabled: true
+
+  - name: yahoo
+    engine: yahoo
+    categories: general
+    shortcut: yh
+    weight: 1
+    enabled: true
