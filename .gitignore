@@ -53,6 +53,8 @@ backend/data/
 # Logs & Temp
 # =========================
 *.log
+backend/proof_output.txt
+backend/trace_result.txt
 logs/
 tmp/
 temp/

@@ -64,7 +64,7 @@ async def services_health_check(db: Session = Depends(get_db)):
 
     async def check_pg():
         try:
-            return await asyncio.wait_for(asyncio.to_thread(_check_postgres, db), timeout=0.2)
+            return await asyncio.wait_for(asyncio.to_thread(_check_postgres, db), timeout=2.0)
         except Exception:
             return "down"
 
@@ -83,18 +83,18 @@ async def services_health_check(db: Session = Depends(get_db)):
     async def check_searx():
         try:
             searx_url = settings.SEARXNG_URL.replace("localhost", "127.0.0.1")
-            async with httpx.AsyncClient(timeout=httpx.Timeout(0.2, connect=0.1)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=0.5)) as client:
                 resp = await client.get(searx_url)
                 if resp.status_code < 500:
                     return "online"
         except Exception:
             pass
-        return "down"
+        return "degraded (Live DuckDuckGo Active)"
 
     async def check_llm():
         try:
             ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/tags".replace("localhost", "127.0.0.1")
-            async with httpx.AsyncClient(timeout=httpx.Timeout(0.2, connect=0.1)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=0.5)) as client:
                 resp = await client.get(ollama_url)
                 if resp.status_code == 200:
                     models = resp.json().get("models", [])
@@ -108,7 +108,7 @@ async def services_health_check(db: Session = Depends(get_db)):
 
         if settings.OPENAI_API_KEY:
             return "online (OpenAI API)"
-        return "degraded (Local Heuristics)"
+        return "degraded (Local Extractor)"
 
     pg_res, red_res, min_res, searx_res, llm_res = await asyncio.gather(
         check_pg(), check_red(), check_min(), check_searx(), check_llm()

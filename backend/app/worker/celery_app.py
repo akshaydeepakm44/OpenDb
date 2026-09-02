@@ -7,15 +7,32 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+import redis
+
 redis_url = settings.REDIS_URL
+broker_url = settings.CELERY_BROKER_URL
+backend_url = settings.CELERY_RESULT_BACKEND
+
+try:
+    r = redis.Redis.from_url(redis_url, socket_connect_timeout=1.0, socket_timeout=1.0)
+    if r.ping():
+        broker_url = redis_url
+        backend_url = redis_url
+        logger.info(f"Celery Redis broker connected successfully ({redis_url})")
+except Exception as e:
+    if settings.OPENDB_ENV.lower() == "production":
+        logger.error(f"Redis connection failed in PRODUCTION mode for Celery: {e}")
+        raise RuntimeError(f"Redis connection failed in PRODUCTION mode for Celery: {e}")
+    logger.warning(f"Redis ping failed, using SQLite fallback for Celery Broker (OPENDB_ENV={settings.OPENDB_ENV}): {e}")
+    broker_url = "sqla+sqlite:///./opendb_celery.db"
+    backend_url = "db+sqlite:///./opendb_celery.db"
 
 celery_app = Celery(
     "opendb_worker",
-    broker=redis_url,
-    backend=redis_url,
+    broker=broker_url,
+    backend=backend_url,
     include=["app.worker.tasks"]
 )
-
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],

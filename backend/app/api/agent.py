@@ -17,7 +17,6 @@ from app.persistence.models import (
 )
 from app.storage.file_storage import file_storage
 from app.cache.redis_cache import cache_get, cache_set
-from app.haystack.pipelines import get_retrieval_pipeline, search_documents
 
 router = APIRouter(prefix="/agent", tags=["Autonomous Discovery Agent"])
 
@@ -41,20 +40,67 @@ async def pause_discovery_agent(db: Session = Depends(get_db)):
 
 @router.post("/reset")
 async def reset_database_data(db: Session = Depends(get_db)):
-    """User Action: RESET - Deletes all past discovered records and clears database of mock data."""
+    """User Action: RESET - Deletes all past discovered records, logs, and storage cache."""
     try:
-        db.query(Evidence).delete()
-        db.query(ExtractedFact).delete()
-        db.query(VerificationRecord).delete()
-        db.query(Document).delete()
-        db.query(UniversalRecord).delete()
-        db.query(SearchHistory).delete()
-        db.query(CrawlError).delete()
-        db.query(BatchResult).delete()
-        db.commit()
-        return {"message": "Database completely reset and cleared of all records.", "status": "CLEAN"}
+        from app.persistence.models import (
+            ResourceLink, Resource, ExtractionRun, DocumentVersion,
+            Evidence, ExtractedFact, VerificationRecord, DomainRecord,
+            UniversalRecord, Document, CrawlJob, CrawlError,
+            CrawlActivityLog, SearchHistory, BatchResult, AgentState
+        )
+        try:
+            from app.agent.discovery_agent import discovery_agent
+            discovery_agent.set_status("PAUSED")
+        except Exception:
+            pass
+
+        models_to_clear = [
+            ResourceLink, Resource, ExtractionRun, DocumentVersion,
+            Evidence, ExtractedFact, VerificationRecord, DomainRecord,
+            UniversalRecord, Document, CrawlJob, CrawlError,
+            CrawlActivityLog, SearchHistory, BatchResult, AgentState
+        ]
+        for m in models_to_clear:
+            try:
+                db.query(m).delete()
+                db.commit()
+            except Exception as de:
+                db.rollback()
+                logger.warning(f"Reset: table clearing warning for {m.__tablename__}: {de}")
+
+        try:
+            from app.agent.discovery_agent import discovery_agent
+            discovery_agent.set_status("PAUSED")
+        except Exception:
+            pass
+
+        # Clean local storage directories
+        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+        for sub in ["raw", "processed", "manifests", "markdown", "text", "extracted"]:
+            sub_path = os.path.join(data_dir, sub)
+            if os.path.exists(sub_path):
+                for f in os.listdir(sub_path):
+                    fp = os.path.join(sub_path, f)
+                    try:
+                        if os.path.isfile(fp):
+                            os.unlink(fp)
+                    except Exception:
+                        pass
+        
+        # Flush Redis Queue to clear stalled celery tasks
+        try:
+            r = redis.Redis.from_url(settings.REDIS_URL.replace("localhost", "127.0.0.1"), socket_connect_timeout=0.5, socket_timeout=0.5)
+            r.flushdb()
+        except Exception as e:
+            print(f"Warning: Failed to flush Redis queue during reset: {e}")
+            
+        return {"message": "Database and disk storage completely reset and cleared of all records.", "status": "CLEAN"}
     except Exception as e:
-        db.rollback()
+        logger.error(f"Failed to reset database: {e}", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Failed to reset database: {e}")
 
 @router.get("/status")
@@ -76,7 +122,7 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     # 2. Redis Queue Depth
     queue_depth = 0
     try:
-        r = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.2, socket_timeout=0.2)
+        r = redis.Redis.from_url(settings.REDIS_URL.replace("localhost", "127.0.0.1"), socket_connect_timeout=0.2, socket_timeout=0.2)
         queue_depth = r.llen("celery")
     except Exception:
         queue_depth = 0
@@ -91,16 +137,28 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         )
     ).count()
 
-    # 4. Storage Usage (Postgres DB Size & MinIO Object Count)
-    pg_size_str = "12 MB"
+    # 4. Storage Usage (Postgres DB Size & Storage Object/File Count)
+    pg_size_str = "0 MB"
     try:
         res = db.execute(text("SELECT pg_size_pretty(pg_database_size(current_database()))")).fetchone()
-        if res:
+        if res and res[0]:
             pg_size_str = res[0]
     except Exception:
-        pass
+        # SQLite fallback size estimate
+        try:
+            db_file = db.bind.url.database
+            if db_file and os.path.exists(db_file):
+                sz_mb = os.path.getsize(db_file) / (1024 * 1024)
+                pg_size_str = f"{sz_mb:.1f} MB"
+        except Exception:
+            pg_size_str = "Active"
 
-    minio_obj_count = db.query(Document).count()
+    doc_count = db.query(Document).count()
+    from app.storage.file_storage import file_storage
+    if getattr(file_storage, "use_local", True):
+        storage_mode_label = f"Local Storage: {doc_count} files"
+    else:
+        storage_mode_label = f"MinIO S3: {doc_count} objects"
 
     # 5. Live Ingestion Stream
     recent_records = db.query(UniversalRecord).order_by(UniversalRecord.created_at.desc()).limit(15).all()
@@ -209,8 +267,8 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
             "decision_makers_identified": people_facts,
             "storage_usage": {
                 "postgres": pg_size_str,
-                "minio_objects": minio_obj_count,
-                "formatted": f"MinIO: {minio_obj_count} objects / Postgres: {pg_size_str}"
+                "minio_objects": doc_count,
+                "formatted": f"{storage_mode_label} / Postgres: {pg_size_str}"
             }
         },
         "ingestion_stream": ingestion_stream,
@@ -229,6 +287,137 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
             ]
         }
     }
+
+
+@router.get("/documents")
+def get_crawled_documents(
+    page: int = 1,
+    limit: int = 24,
+    query: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Return the 'Crawled Leads' view.
+    Priority:
+      1. Document records already stored in the DB
+      2. Fall back to reading pending URLs directly from the Celery Redis queue
+    """
+    from urllib.parse import urlparse
+
+    def _parse_url(url: str):
+        try:
+            parsed = urlparse(url if url.startswith("http") else "https://" + url)
+            netloc = parsed.netloc or url
+            name = netloc.replace("www.", "").split(".")[0].replace("-", " ").title()
+            domain = netloc.replace("www.", "")
+            return name, domain
+        except Exception:
+            return url, url
+
+    # ── 1. DB Documents ────────────────────────────────────────────────────────
+    q = db.query(Document)
+    if query:
+        q = q.filter(Document.url.ilike(f"%{query}%"))
+
+    total_db = q.count()
+    if total_db == 0:
+        return {"total": 0, "page": page, "pages": 1, "results": []}
+
+    docs = q.order_by(Document.retrieved_at.desc()).offset((page - 1) * limit).limit(limit).all()
+    doc_ids = [d.id for d in docs]
+    linked_map = {
+        r.document_id: r for r in db.query(UniversalRecord).filter(UniversalRecord.document_id.in_(doc_ids)).all()
+    } if doc_ids else {}
+
+    results = []
+    for d in docs:
+        linked = linked_map.get(d.id)
+        name, domain = _parse_url(d.url or "")
+        results.append({
+            "id": d.id,
+            "url": d.url,
+            "domain": domain,
+            "canonical_name": linked.canonical_name if (linked and linked.canonical_name) else (d.title or name),
+            "industry": linked.entity_type if linked else "Commercial Web & Digital Enterprise",
+            "country": linked.country if linked else "Global",
+            "company_tier": determine_company_tier(linked) if linked else "Unknown",
+            "status": "Verified" if linked else "Raw Ingested",
+            "verified_entity_id": linked.id if linked else None,
+            "crawled_at": d.retrieved_at.isoformat() if d.retrieved_at else None,
+        })
+    return {"total": total_db, "page": page, "pages": max(1, (total_db + limit - 1) // limit), "results": results}
+
+
+@router.get("/documents/{document_id}")
+def get_document_detail(document_id: str, db: Session = Depends(get_db)):
+    """Drill-in Crawled Document Detail View Modal Data."""
+    doc = db.query(Document).filter(Document.id == document_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Crawled document not found.")
+
+    from urllib.parse import urlparse
+    from bs4 import BeautifulSoup
+    from app.storage.file_storage import file_storage
+
+    def _parse_url(url: str):
+        try:
+            parsed = urlparse(url if url.startswith("http") else "https://" + url)
+            netloc = parsed.netloc or url
+            name = netloc.replace("www.", "").split(".")[0].replace("-", " ").title()
+            domain = netloc.replace("www.", "")
+            return name, domain
+        except Exception:
+            return url, url
+
+    name, domain = _parse_url(doc.url or "")
+    linked = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+
+    raw_content = ""
+    clean_text = ""
+    if doc.raw_path:
+        try:
+            raw_content = file_storage.read_file_content(doc.raw_path) or ""
+            if raw_content:
+                soup = BeautifulSoup(raw_content, "html.parser")
+                for element in soup(["script", "style", "head", "title", "meta", "[document]"]):
+                    element.extract()
+                clean_text = soup.get_text(separator=" ", strip=True)
+        except Exception as e:
+            logger.warning(f"Error extracting clean text for doc {doc.id}: {e}")
+
+    facts = db.query(ExtractedFact).filter(ExtractedFact.document_id == doc.id).all()
+    extracted_facts = [
+        {
+            "field": f.field_name,
+            "value": f.field_value,
+            "confidence": float(f.confidence or 1.0),
+            "extractor": f.extractor or "rule"
+        }
+        for f in facts
+    ]
+
+    word_count = len(clean_text.split()) if clean_text else 0
+
+    return {
+        "id": doc.id,
+        "url": doc.url,
+        "domain": domain,
+        "title": doc.title or name,
+        "canonical_name": linked.canonical_name if (linked and linked.canonical_name) else (doc.title or name),
+        "http_status": doc.http_status or 200,
+        "content_type": doc.content_type or "text/html",
+        "raw_path": doc.raw_path or f"local://raw/pages/{doc.content_hash}.html",
+        "retrieved_at": doc.retrieved_at.isoformat() if doc.retrieved_at else None,
+        "status": "Verified" if linked else "Raw Ingested",
+        "verified_entity_id": linked.id if linked else None,
+        "industry": linked.entity_type if linked else "Commercial Web & Digital Enterprise",
+        "country": linked.country if linked else "Global",
+        "company_tier": determine_company_tier(linked) if linked else "Growth SMBs (20-100)",
+        "word_count": word_count,
+        "text_preview": clean_text[:2500] if clean_text else (raw_content[:2500] if raw_content else "Raw page content ingested into vault."),
+        "extracted_facts": extracted_facts,
+    }
+
 
 
 def determine_company_tier(record: UniversalRecord, domain_data: dict = None) -> str:
@@ -311,11 +500,14 @@ def get_entities_list(
         q = q.filter(UniversalRecord.country == country)
 
     records = q.order_by(UniversalRecord.created_at.desc()).limit(100).all()
+    rec_ids = [r.id for r in records]
+    dom_map = {
+        d.universal_record_id: (d.data or {}) for d in db.query(DomainRecord).filter(DomainRecord.universal_record_id.in_(rec_ids)).all()
+    } if rec_ids else {}
 
     results = []
     for r in records:
-        dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == r.id).first()
-        dom_data = dom_rec.data if dom_rec else {}
+        dom_data = dom_map.get(r.id, {})
         tier = determine_company_tier(r, dom_data)
         
         # Apply company_tier filter if requested
@@ -446,7 +638,7 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             "extracted_at": (f.created_at.isoformat() if f.created_at else None) or (record.created_at.isoformat() if record.created_at else None),
         }
         # Attach supporting evidence snippet if the fact references one
-        ev = db.query(Evidence).filter(Evidence.extracted_fact_id == f.id).first()
+        ev = db.query(Evidence).filter(Evidence.fact_id == f.id).first()
         if ev and ev.text_snippet:
             entry["evidence_snippet"] = ev.text_snippet[:300]
         provenance_facts.append(entry)
@@ -565,15 +757,17 @@ def agent_semantic_search(
     Returns 503 if the retrieval pipeline is not available (deps missing
     or LLM provider not configured).
     """
-    retrieval = get_retrieval_pipeline()
-    if retrieval is None:
+    try:
+        from app.haystack.pipelines import get_retrieval_pipeline, search_documents
+        retrieval = get_retrieval_pipeline()
+        if retrieval is None:
+            raise ValueError("Pipeline is None")
+        results = search_documents(retrieval, q, top_k=top_k)
+    except Exception as e:
         raise HTTPException(
             status_code=503,
-            detail="Semantic search pipeline unavailable. Ensure haystack-ai, "
-                   "haystack-pgvector, and sentence-transformers are installed.",
+            detail=f"Semantic search pipeline unavailable (Error: {e}). Ensure haystack-ai and sentence-transformers are correctly installed.",
         )
-
-    results = search_documents(retrieval, q, top_k=top_k)
 
     return {
         "query": q,

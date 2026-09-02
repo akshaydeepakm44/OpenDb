@@ -31,7 +31,7 @@ class LLMExtractor:
         
         # 1. Try Qwen via Ollama Local Endpoint (http://localhost:11434)
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=1.5) as client:
                 res = await client.post(
                     f"{self.ollama_url.rstrip('/')}/api/chat",
                     json={

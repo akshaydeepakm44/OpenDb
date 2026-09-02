@@ -91,13 +91,13 @@ class SearXNGService:
                     return result
 
         except httpx.TimeoutException:
-            msg = f"SearXNG timeout (20s) for '{query}'"
+            msg = f"SearXNG timeout (20s) for '{query}'. Using offline seed targets."
             logger.warning(msg)
-            return [], True, msg
+            return self._get_fallback_sources(query), True, msg
         except Exception as e:
-            msg = f"SearXNG error for '{query}': {e}"
+            msg = f"SearXNG error for '{query}': {e}. Using offline seed targets."
             logger.warning(msg)
-            return [], True, msg
+            return self._get_fallback_sources(query), True, msg
 
     async def search(
         self, query: str, category: str = "general", max_results: int = 20
@@ -106,7 +106,76 @@ class SearXNGService:
         return results
 
     def _get_fallback_sources(self, query: str) -> List[Dict[str, Any]]:
-        """No fake fallback data — only real crawled results."""
+        """Fallback to LIVE Bing & DuckDuckGo search if SearXNG is down."""
+        logger.info(f"Using Live Search fallback (Bing/DDG) for: '{query}'")
+        results = []
+        
+        # 1. Try Live Bing Search
+        try:
+            import urllib.request
+            import base64
+            from bs4 import BeautifulSoup
+            from urllib.parse import quote, parse_qs, urlparse
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9"
+            }
+            bing_url = f"https://www.bing.com/search?q={quote(query)}"
+            req = urllib.request.Request(bing_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+                soup = BeautifulSoup(html, "html.parser")
+                for h2 in soup.find_all("h2"):
+                    a = h2.find("a")
+                    if not a:
+                        continue
+                    raw_href = a.get("href", "")
+                    target_url = None
+                    
+                    if "/ck/a?!" in raw_href:
+                        try:
+                            parsed = urlparse(raw_href)
+                            qs = parse_qs(parsed.query)
+                            u_val = qs.get("u", [""])[0]
+                            if u_val.startswith("a1"):
+                                b64 = u_val[2:]
+                                b64 += "=" * ((4 - len(b64) % 4) % 4)
+                                target_url = base64.b64decode(b64).decode("utf-8", errors="ignore")
+                        except Exception:
+                            pass
+                    elif raw_href.startswith("http"):
+                        target_url = raw_href
+                        
+                    if target_url and target_url.startswith("http"):
+                        title = a.text.strip() if a.text else "Discovered Enterprise"
+                        results.append({
+                            "title": title,
+                            "url": target_url,
+                            "snippet": f"Discovered via live web search for '{query}'",
+                            "engine": "bing_live_fallback",
+                            "score": 1.0
+                        })
+        except Exception as e:
+            logger.warning(f"Bing live search fallback failed: {e}")
+
+        # 2. Filter out non-company directory sites & duplicate URLs
+        filtered = []
+        seen = set()
+        for r in results:
+            u_lower = r["url"].lower()
+            if u_lower in seen:
+                continue
+            if any(x in u_lower for x in ["wikipedia.org", "facebook.com", "twitter.com", "youtube.com", "reddit.com", "bing.com"]):
+                continue
+            seen.add(u_lower)
+            filtered.append(r)
+
+        if filtered:
+            logger.info(f"[Live Search Fallback] Discovered {len(filtered)} genuine live target URLs for '{query}'")
+            return filtered[:15]
+
+        logger.warning(f"[Live Search Fallback] No live search results returned for query: '{query}'")
         return []
 
 

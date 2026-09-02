@@ -16,6 +16,7 @@ Worker C — enrich_and_verify_task:
 import sys
 import asyncio
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
@@ -57,6 +58,26 @@ def run_async(coro):
             pass
         loop.close()
 
+
+def _safe_dispatch(task_func, **kwargs):
+    """
+    Safely dispatch Celery task.
+    Attempts Celery enqueueing, and ALSO executes the task immediately in an async background daemon thread
+    to guarantee high-throughput discovery and crawling regardless of external Celery worker status.
+    """
+    try:
+        task_func.delay(**kwargs)
+    except Exception as e:
+        logger.warning(f"[Safe Dispatch] Celery queue dispatch skipped ({e})")
+
+    # Always trigger non-blocking background thread execution for real-time streaming
+    def _run_bg():
+        try:
+            task_func(**kwargs)
+        except Exception as err:
+            logger.error(f"[Safe Dispatch] Background task execution failed: {err}")
+
+    threading.Thread(target=_run_bg, daemon=True).start()
 
 
 def _log_crawl_error(db, url: str, stage: str, error: Exception):
@@ -185,13 +206,13 @@ def search_and_discover_task(
                 _log_activity(db, url=target_url, stage="CRAWL", domain=domain,
                               status="QUEUED", message="Classified as LISTING page — queuing source extraction",
                               batch_id=batch_id)
-                crawl_source_task.delay(source_url=target_url, domain=domain, batch_id=batch_id)
+                _safe_dispatch(crawl_source_task, source_url=target_url, domain=domain, batch_id=batch_id)
                 enqueued += 1
             else:
                 _log_activity(db, url=target_url, stage="CRAWL", domain=domain,
                               status="QUEUED", message="Classified as ENTITY page — queuing entity crawl",
                               batch_id=batch_id)
-                crawl_entity_task.delay(url=target_url, domain=domain, batch_id=batch_id)
+                _safe_dispatch(crawl_entity_task, url=target_url, domain=domain, batch_id=batch_id)
                 enqueued += 1
 
         return {
@@ -263,7 +284,8 @@ def crawl_source_task(
                 keep, reason = quality_filter.filter_url(entity_url)
                 if not keep:
                     continue
-                crawl_entity_task.delay(
+                _safe_dispatch(
+                    crawl_entity_task,
                     url=entity_url,
                     domain=domain,
                     batch_id=batch_id,
@@ -278,7 +300,8 @@ def crawl_source_task(
             }
         else:
             # Treat as entity after all
-            crawl_entity_task.delay(
+            _safe_dispatch(
+                crawl_entity_task,
                 url=source_url,
                 domain=domain,
                 batch_id=batch_id,
@@ -334,12 +357,39 @@ def crawl_entity_task(
             return {"status": "failed", "reason": "No content retrieved", "url": url}
 
         item = crawled_items[0]
-
-        # ── Stage 2: Content quality filter ──────────────────────────────────
         word_count = item.metadata.get("word_count", 0) if item.metadata else 0
+
+        # ── Stage 2: Create Document Record immediately in PostgreSQL ────────
+        html_hash, raw_rel = file_storage.save_raw_page(item.html_content or "")
+        md_rel = file_storage.save_processed_markdown(item.markdown or "", html_hash)
+        txt_rel = file_storage.save_processed_text(item.text or "", html_hash)
+
+        base_host = urlparse(url).netloc
+        source = repo.get_or_create_source(db, name=base_host, base_url=url)
+
+        doc = repo.create_document(
+            db=db,
+            crawl_job_id=None,
+            source_id=source.id,
+            url=item.url,
+            canonical_url=item.metadata.get("canonical_url", item.url) if item.metadata else item.url,
+            title=item.title,
+            content_type=item.content_type,
+            http_status=item.http_status,
+            content_hash=html_hash,
+            raw_path=raw_rel,
+            markdown_path=md_rel,
+            text_path=txt_rel,
+            word_count=word_count,
+            links_count=item.metadata.get("links_count", 0) if item.metadata else 0,
+            images_count=item.metadata.get("images_count", 0) if item.metadata else 0,
+        )
+
         _log_activity(db, url=url, stage="CRAWL", domain=domain,
-                      status="OK", message=f"Crawled OK — {word_count} words, title='{item.title or '?'[:60]}'",
+                      status="OK", message=f"Crawled OK — Persisted Document ID={doc.id[:8]} ({word_count} words)",
                       batch_id=batch_id)
+
+        # ── Stage 3: Content quality filter ──────────────────────────────────
         keep, reason = quality_filter.filter_content(
             url=url,
             html_content=item.html_content or "",
@@ -350,10 +400,10 @@ def crawl_entity_task(
         if not keep:
             logger.info(f"[Worker B] Content filtered ({reason}): {url}")
             _log_activity(db, url=url, stage="FILTER", domain=domain,
-                          status="FILTERED", message=f"Content rejected: {reason}", batch_id=batch_id)
+                          status="FILTERED", message=f"Content rejected for verification: {reason}", batch_id=batch_id)
             return {"status": "filtered", "reason": reason, "url": url}
 
-        # ── Stage 3: Also crawl subpages for more data ────────────────────────
+        # ── Stage 4: Also crawl subpages for more data ────────────────────────
         base = urlparse(url)
         base_url = f"{base.scheme}://{base.netloc}"
         additional_html = []
@@ -376,35 +426,7 @@ def crawl_entity_task(
             enriched_text += "\n\n" + "\n\n".join(additional_html)
             enriched_text = enriched_text[:50000]  # cap at 50k chars
 
-        # ── Stage 4: Save raw content to MinIO ───────────────────────────────
-        html_hash, raw_rel = file_storage.save_raw_page(item.html_content or "")
-        md_rel = file_storage.save_processed_markdown(item.markdown or "", html_hash)
-        txt_rel = file_storage.save_processed_text(enriched_text, html_hash)
-
-        # Get or create Source
-        base_host = urlparse(url).netloc
-        source = repo.get_or_create_source(db, name=base_host, base_url=url)
-
-        # ── Stage 5: Create Document Record ──────────────────────────────────
-        doc = repo.create_document(
-            db=db,
-            crawl_job_id=None,
-            source_id=source.id,
-            url=item.url,
-            canonical_url=item.metadata.get("canonical_url", item.url) if item.metadata else item.url,
-            title=item.title,
-            content_type=item.content_type,
-            http_status=item.http_status,
-            content_hash=html_hash,
-            raw_path=raw_rel,
-            markdown_path=md_rel,
-            text_path=txt_rel,
-            word_count=word_count,
-            links_count=item.metadata.get("links_count", 0) if item.metadata else 0,
-            images_count=item.metadata.get("images_count", 0) if item.metadata else 0,
-        )
-
-        # ── Stage 6: Extract Information via LLM/heuristic pipeline ──────────
+        # ── Stage 5: Extract Information via LLM/heuristic pipeline ──────────
         payload = run_async(
             extraction_pipeline.process_document_extraction(
                 document_id=doc.id,
@@ -417,6 +439,9 @@ def crawl_entity_task(
 
         # Save JSON extraction payload to MinIO
         file_storage.save_extracted_json(doc.id, payload)
+        _log_activity(db, url=url, stage="EXTRACT", domain=domain,
+                      status="OK", message=f"Extracted JSON payload generated for document ID={doc.id[:8]}",
+                      entity_name=(payload.get("universal") or {}).get("canonical_name"), batch_id=batch_id)
 
         # ── Stage 7: Entity quality filter before DB write ────────────────────
         entity_name = (
@@ -463,12 +488,12 @@ def crawl_entity_task(
         ).first()
 
         if univ_rec:
-            _log_activity(db, url=url, stage="EXTRACT", domain=domain,
+            _log_activity(db, url=url, stage="POSTGRES", domain=domain,
                           status="OK",
-                          message=f"Entity saved — name='{entity_name}' confidence={entity_confidence:.0%} pages={len(additional_html)+1}",
+                          message=f"UniversalRecord persisted — name='{entity_name}' ID={univ_rec.id[:8]} confidence={entity_confidence:.0%}",
                           entity_name=entity_name, batch_id=batch_id)
             # Trigger Worker C: Enrichment & Verification
-            enrich_and_verify_task.delay(univ_rec.id)
+            _safe_dispatch(enrich_and_verify_task, universal_record_id=univ_rec.id)
 
         return {
             "status": "success",
@@ -610,6 +635,11 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
         )
         db.add(v_record)
         db.commit()
+
+        _log_activity(db, url=record.url or "", stage="VERIFIED", domain=record.entity_type or "Technology",
+                      status="OK" if is_verified else "UNVERIFIED",
+                      message=f"Verification {'PASSED' if is_verified else 'PENDING'} — name='{record.canonical_name}' confidence={confidence:.0%}",
+                      entity_name=record.canonical_name)
 
         return {
             "status": "success",

@@ -65,10 +65,9 @@ class CrawlerService:
         base_host = url_discovery.get_domain_host(norm_start_url)
         visited_urls: Set[str] = set()
         queue: List[Dict[str, Any]] = [{"url": norm_start_url, "depth": 0}]
-
         results: List[CrawlResultItem] = []
 
-        # Try using Crawl4AI or fallback to httpx AsyncClient
+        # Try using Crawl4AI / Playwright or fallback to httpx AsyncClient
         try:
             from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
             config = CrawlerRunConfig(
@@ -97,15 +96,32 @@ class CrawlerService:
                         )
 
                     try:
-                        crawl_res = await crawler.arun(url=curr_url, config=config)
-                        if not crawl_res or not crawl_res.success:
-                            logger.warning(f"Failed to crawl page: {curr_url}")
-                            continue
+                        html_raw = ""
+                        markdown_raw = ""
+                        status_code = 200
+                        canonical_url = curr_url
 
-                        html_raw = crawl_res.html or ""
-                        markdown_raw = crawl_res.markdown or ""
-                        
-                        soup = BeautifulSoup(html_raw, "lxml")
+                        try:
+                            crawl_res = await asyncio.wait_for(crawler.arun(url=curr_url, config=config), timeout=7.0)
+                            if crawl_res and crawl_res.success:
+                                html_raw = crawl_res.html or ""
+                                markdown_raw = crawl_res.markdown or ""
+                                status_code = crawl_res.status_code or 200
+                                canonical_url = crawl_res.url or curr_url
+                            else:
+                                raise ValueError(f"Crawl4AI returned success=False for {curr_url}")
+                        except Exception as c_err:
+                            logger.warning(f"Crawl4AI/Playwright failed or timed out for {curr_url} ({c_err}). Falling back to httpx AsyncClient.")
+                            import httpx
+                            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+                            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=headers) as h_client:
+                                resp = await h_client.get(curr_url)
+                                html_raw = resp.text
+                                markdown_raw = ""
+                                status_code = resp.status_code
+                                canonical_url = str(resp.url)
+
+                        soup = BeautifulSoup(html_raw, "html.parser")
                         title = normalizer.normalize_string(soup.title.string) if soup.title else ""
                         if not title:
                             h1 = soup.find("h1")
@@ -133,12 +149,12 @@ class CrawlerService:
                             html_content=html_raw,
                             markdown=markdown_raw,
                             text=text_clean,
-                            http_status=crawl_res.status_code or 200,
+                            http_status=status_code,
                             content_type="text/html",
                             links=raw_links,
                             media=raw_media,
                             metadata={
-                                "canonical_url": crawl_res.url,
+                                "canonical_url": canonical_url,
                                 "word_count": len(text_clean.split()),
                                 "links_count": len(raw_links),
                                 "images_count": len(raw_media)

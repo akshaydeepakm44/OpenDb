@@ -14,22 +14,22 @@ logger = logging.getLogger(__name__)
 BLACKLISTED_DOMAINS = {
     # Link aggregators / social media (not companies)
     "reddit.com", "twitter.com", "x.com", "facebook.com", "instagram.com",
-    "tiktok.com", "youtube.com", "pinterest.com", "tumblr.com",
-    # News/media (not companies)
+    "tiktok.com", "youtube.com", "pinterest.com", "tumblr.com", "linkedin.com",
+    # News/media aggregators (not entity targets)
     "medium.com", "substack.com", "blogger.com", "wordpress.com",
+    "dailythanthi.com", "oneindia.com", "indianexpress.com", "timesofindia.com",
+    "businesstoday.in", "business-standard.com", "geeksforgeeks.org", "tutorialspoint.com",
+    "merriam-webster.com", "britannica.com", "wikipedia.org", "wikidata.org",
     # Generic SaaS/infra that aren't leads
     "notion.so", "airtable.com", "typeform.com", "surveymonkey.com",
     "mailchimp.com", "hubspot.com", "salesforce.com",
     # Ad networks / parked domains
     "parking.godaddy.com", "sedo.com", "afternic.com",
-    # Wikipedia, reference, docs
-    "wikipedia.org", "wikidata.org", "docs.google.com",
-    # Major cloud/infra (not leads)
-    "amazonaws.com", "azure.com", "cloudflare.com", "fastly.com",
+    "docs.google.com", "amazonaws.com", "cloudflare.com", "fastly.com",
     # Job sites (not company homepages)
     "indeed.com", "glassdoor.com", "monster.com", "ziprecruiter.com",
-    # Shopping
-    "amazon.com", "ebay.com", "aliexpress.com", "etsy.com", "shopify.com",
+    # Generic Shopping portals
+    "amazon.com", "ebay.com", "aliexpress.com", "etsy.com",
 }
 
 # ─── Blacklisted URL path patterns ────────────────────────────────────────────
@@ -63,7 +63,7 @@ SPAM_CONTENT_PATTERNS = [
 ]
 
 # ─── Minimum content quality thresholds ────────────────────────────────────────
-MIN_WORD_COUNT = 50           # Very thin pages unlikely to be real companies
+MIN_WORD_COUNT = 10           # Very thin pages unlikely to be real companies
 MIN_TITLE_LENGTH = 3          # Pages without real titles
 MIN_CANONICAL_NAME_LENGTH = 2 # Entity names must be meaningful
 MAX_URL_LENGTH = 500          # Extremely long URLs are usually junk

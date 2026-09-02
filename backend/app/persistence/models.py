@@ -8,6 +8,8 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.persistence.database import Base
 
+JSONB_TYPE = JSON().with_variant(JSONB, "postgresql")
+
 # pgvector: graceful fallback if not installed in environment
 try:
     from pgvector.sqlalchemy import Vector
@@ -28,6 +30,7 @@ class Metadata(Base):
     is_present:  True = active/exists, False = deprecated/removed
     """
     __tablename__ = "metadata"
+    __table_args__ = {'extend_existing': True}
 
     id           = Column(Integer, primary_key=True, index=True)
     entity_type  = Column(String(100), nullable=False)
@@ -37,7 +40,7 @@ class Metadata(Base):
     is_present   = Column(Boolean, default=True)
     source_table = Column(String(100), nullable=True)
     source_id    = Column(Text, nullable=True)
-    extra        = Column(JSONB, default=dict)
+    extra        = Column(JSONB_TYPE, default=dict)
     created_at   = Column(DateTime(timezone=True), default=utc_now)
     updated_at   = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -190,7 +193,7 @@ class UniversalRecord(Base):
     location = Column(Text, nullable=True)
     status = Column(String(50), nullable=True)
     confidence    = Column(Numeric(5, 4), nullable=True)
-    metadata_json = Column(JSONB, default=dict)                                              # matches DB column metadata_json
+    metadata_json = Column(JSONB_TYPE, default=dict)                                              # matches DB column metadata_json
     entity_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True) # pgvector 384-dim
     created_at    = Column(DateTime(timezone=True), default=utc_now)
     updated_at    = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

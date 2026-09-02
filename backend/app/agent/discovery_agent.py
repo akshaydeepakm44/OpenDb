@@ -1,18 +1,13 @@
 """
-Autonomous Discovery Agent — §1–10, §26–29 of Master Prompt
+Haystack-inspired Autonomous Agent Orchestrator
+§1–10, §26–29 of Master Prompt
 
-The AGENT is the brain of the OpenDB system. It:
-  - THINKS:   selects next domain/subdomain/keyword (8-domain global taxonomy)
-  - SEARCHES: dispatches SearXNG search tasks via Celery
-  - LEARNS:   evaluates batch feedback, learns keyword performance
-  - ADAPTS:   replaces deprecated keywords, expands from discovered entities
-  - LOOPS:    24/7 continuous discovery until paused
-
-User-facing actions:
-  - RUN   → start_loop()
-  - PAUSE → set_status("PAUSED")
+This is a continuous 24/7 autonomous discovery agent.
+It uses an LLM (via litellm) to evaluate the current state of the global discovery taxonomy,
+select appropriate tools, and adapt its search strategy.
 """
 import asyncio
+import json
 import logging
 import threading
 import uuid
@@ -27,12 +22,69 @@ from app.persistence.models import (
     UniversalRecord, VerificationRecord
 )
 from app.agent.keyword_expander import keyword_expander
+from app.config import settings
+
+try:
+    import litellm
+except ImportError:
+    litellm = None
 
 logger = logging.getLogger(__name__)
 
-# Agent loop pacing — seconds between dispatched search tasks
-LOOP_PACE_SECONDS = 8
-BATCH_SIZE = 100
+LOOP_PACE_SECONDS = 5
+BATCH_SIZE = 1000
+
+# ─── Agent Tools ─────────────────────────────────────────────────────────────
+
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": "Dispatch a search strategy to SearXNG to find company URLs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The exact search query."},
+                    "domain": {"type": "string", "description": "The high-level domain (e.g. Information Technology)."},
+                    "subdomain": {"type": "string", "description": "The subdomain (e.g. SaaS)."},
+                    "keyword": {"type": "string", "description": "The base keyword used."}
+                },
+                "required": ["query", "domain", "subdomain", "keyword"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "discover_new_subdomain",
+            "description": "Dynamically add a new subdomain to the global taxonomy based on observed trends.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {"type": "string", "description": "The parent domain."},
+                    "new_subdomain": {"type": "string", "description": "The new subdomain discovered."},
+                    "reason": {"type": "string", "description": "Why this subdomain is being added."}
+                },
+                "required": ["domain", "new_subdomain", "reason"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "evaluate_batch",
+            "description": "Evaluate the current batch results to update strategy and keyword performance.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "batch_id": {"type": "string"}
+                },
+                "required": ["batch_id"]
+            }
+        }
+    }
+]
 
 
 class AutonomousDiscoveryAgent:
@@ -45,6 +97,7 @@ class AutonomousDiscoveryAgent:
         self.is_running_loop: bool = False
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self.llm_model = settings.LLM_MODEL or "gpt-4o-mini"
 
     # ─── Public Control Interface ──────────────────────────────────────────────
 
@@ -87,10 +140,6 @@ class AutonomousDiscoveryAgent:
     # ─── Background Thread (wraps async event loop) ───────────────────────────
 
     def _start_background_thread(self):
-        """
-        Run the async discovery loop in a dedicated OS thread with its own event loop.
-        This avoids any conflict with FastAPI's event loop.
-        """
         self.is_running_loop = True
         self._thread = threading.Thread(
             target=self._thread_entry,
@@ -101,13 +150,12 @@ class AutonomousDiscoveryAgent:
         logger.info("[Agent] Background discovery thread started.")
 
     def _thread_entry(self):
-        """Entry point for the background thread — creates its own event loop."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
             self._loop.run_until_complete(self._discovery_loop())
         except Exception as e:
-            logger.error(f"[Agent] Discovery loop crashed: {e}")
+            logger.error(f"[Agent] Discovery loop crashed: {e}", exc_info=True)
         finally:
             try:
                 self._loop.run_until_complete(self._loop.shutdown_asyncgens())
@@ -121,94 +169,128 @@ class AutonomousDiscoveryAgent:
     # ─── Core Discovery Loop ───────────────────────────────────────────────────
 
     async def _discovery_loop(self):
-        """24/7 continuous agent loop — §1, §26."""
+        """24/7 continuous agent loop using LLM for decision making."""
         logger.info("[Agent] Discovery loop starting...")
-
-        all_domains = keyword_expander.all_domains()
-        domain_idx = 0
 
         while self.is_running_loop:
             db = SessionLocal()
             try:
                 state = self._get_or_create_state(db)
 
-                # Check PAUSE signal
                 if state.status != "RUNNING":
                     logger.info("[Agent] PAUSED. Sleeping...")
                     await asyncio.sleep(3)
                     continue
 
-                # ── 1. THINK: select next domain/keyword ──────────────────────
-                current_domain = all_domains[domain_idx % len(all_domains)]
-                domain_idx += 1
-
-                # Use keyword expander to get a diverse global query
-                query_info = keyword_expander.get_next_query(
-                    domain=current_domain,
-                    skip_geos=self._get_recently_used_geos(db),
-                )
-                query = query_info["query"]
-                keyword = query_info["keyword"]
-                subdomain = query_info["subdomain"]
-
-                # Check if keyword is deprecated in performance table
-                if self._is_keyword_deprecated(db, keyword):
-                    # Try next query from same domain
-                    query_info = keyword_expander.get_next_query(domain=current_domain)
-                    query = query_info["query"]
-                    keyword = query_info["keyword"]
-                    subdomain = query_info["subdomain"]
-
-                # ── 2. BATCH MANAGEMENT ───────────────────────────────────────
                 batch = self._get_or_create_batch(db, state)
-
-                # ── 3. UPDATE AGENT STATE ─────────────────────────────────────
-                state.current_domain = current_domain
-                state.current_subdomain = subdomain
-                state.current_keyword = keyword
                 state_data = state.state_data or {}
-                state_data["batch_id"] = str(batch.id)
-                state_data["search_count"] = state_data.get("search_count", 0) + 1
-                state_data["last_query"] = query
-                state.state_data = state_data
-                db.commit()
-
                 batch_id_str = str(batch.id)
-                logger.info(
-                    f"[Agent] Batch={batch_id_str[:8]} #{batch.searches_executed+1}/{BATCH_SIZE} "
-                    f"→ Domain='{current_domain}' Sub='{subdomain}' Query='{query}'"
-                )
 
-                # ── 4. DISPATCH SEARCH TASK ───────────────────────────────────
-                await asyncio.to_thread(
-                    self._dispatch_search_task,
-                    query=query,
-                    keyword=keyword,
-                    domain=current_domain,
-                    subdomain=subdomain,
-                    batch_id=batch_id_str,
-                )
+                # ── 1. GATHER STATE FOR LLM ──────────────────────────────────
+                metrics = self.get_metrics(db)
+                prompt = self._build_agent_prompt(metrics, batch)
 
-                # ── 5. UPDATE BATCH PROGRESS ──────────────────────────────────
-                batch.searches_executed = (batch.searches_executed or 0) + 1
-                db.commit()
+                logger.info(f"[Agent] Thinking... Batch={batch_id_str[:8]} #{batch.searches_executed}/{BATCH_SIZE}")
 
-                # ── 6. BATCH FEEDBACK (every 100 searches) ───────────────────
-                if batch.searches_executed >= BATCH_SIZE:
-                    self._generate_batch_feedback(db, batch)
-                    # Start new batch
-                    new_batch_id = str(uuid.uuid4())
-                    new_batch = BatchResult(
-                        id=new_batch_id,
-                        status="RUNNING",
-                        searches_planned=BATCH_SIZE,
-                        searches_executed=0,
-                    )
-                    db.add(new_batch)
-                    state_data["batch_id"] = new_batch_id
-                    state_data["search_count"] = 0
-                    state.state_data = state_data
-                    db.commit()
+                # ── 2. INVOKE AGENT LLM ──────────────────────────────────────
+                tool_calls = await self._invoke_llm_agent(prompt)
+
+                if not tool_calls:
+                    # Fallback to deterministic expansion if LLM fails or doesn't use tools
+                    query_info = keyword_expander.get_next_query(domain=state.current_domain)
+                    tool_calls = [{
+                        "function": {
+                            "name": "search_web",
+                            "arguments": json.dumps(query_info)
+                        }
+                    }]
+
+                # ── 3. EXECUTE TOOLS ─────────────────────────────────────────
+                for tool_call in tool_calls:
+                    func_name = tool_call["function"]["name"]
+                    try:
+                        args = json.loads(tool_call["function"]["arguments"])
+                    except Exception:
+                        args = {}
+
+                    logger.info(f"[Agent] Decision -> {func_name}({args})")
+
+                    if func_name == "search_web":
+                        query = args.get("query")
+                        domain = args.get("domain", state.current_domain)
+                        subdomain = args.get("subdomain", state.current_subdomain)
+                        keyword = args.get("keyword", state.current_keyword)
+
+                        # Update State
+                        state.current_domain = domain
+                        state.current_subdomain = subdomain
+                        state.current_keyword = keyword
+                        state_data["search_count"] = state_data.get("search_count", 0) + 1
+                        state_data["last_query"] = query
+                        state.state_data = state_data
+                        
+                        batch.searches_executed = (batch.searches_executed or 0) + 1
+                        db.commit()
+
+                        # Dispatch
+                        await asyncio.to_thread(
+                            self._dispatch_search_task,
+                            query=query,
+                            keyword=keyword,
+                            domain=domain,
+                            subdomain=subdomain,
+                            batch_id=batch_id_str,
+                        )
+
+                    elif func_name == "discover_new_subdomain":
+                        logger.info(f"[Agent] Discovered new subdomain: {args.get('new_subdomain')} in {args.get('domain')} because: {args.get('reason')}")
+                        # Could persist this to a DynamicTaxonomy table.
+                        db.commit()
+
+                    elif func_name == "evaluate_batch":
+                        self._generate_batch_feedback(db, batch)
+                        # Start new batch
+                        new_batch_id = str(uuid.uuid4())
+                        new_batch = BatchResult(
+                            id=new_batch_id,
+                            status="RUNNING",
+                            searches_planned=BATCH_SIZE,
+                            searches_executed=0,
+                        )
+                        db.add(new_batch)
+                        state_data["batch_id"] = new_batch_id
+                        state_data["search_count"] = 0
+                        state.state_data = state_data
+                        db.commit()
+
+                # Force batch evaluation if reached size
+                if batch.searches_executed >= BATCH_SIZE and batch.status != "COMPLETED":
+                     self._generate_batch_feedback(db, batch)
+                     new_batch_id = str(uuid.uuid4())
+                     new_batch = BatchResult(
+                         id=new_batch_id,
+                         status="RUNNING",
+                         searches_planned=BATCH_SIZE,
+                         searches_executed=0,
+                     )
+                     db.add(new_batch)
+                     state_data["batch_id"] = new_batch_id
+                     state_data["search_count"] = 0
+                     state.state_data = state_data
+                     db.commit()
+
+                # Continuous Haystack verification agent: analyze unverified crawled records one after another
+                try:
+                    from sqlalchemy import or_
+                    unverified_recs = db.query(UniversalRecord).filter(
+                        or_(UniversalRecord.status == "Discovered", UniversalRecord.status == "Raw Ingested", UniversalRecord.status == None)
+                    ).limit(10).all()
+                    if unverified_recs:
+                        from app.worker.tasks import _safe_dispatch, enrich_and_verify_task
+                        for u_rec in unverified_recs:
+                            _safe_dispatch(enrich_and_verify_task, universal_record_id=u_rec.id)
+                except Exception as sweep_err:
+                    logger.warning(f"[Agent] Continuous verification sweep notice: {sweep_err}")
 
             except Exception as e:
                 logger.error(f"[Agent] Loop iteration error: {e}", exc_info=True)
@@ -219,32 +301,72 @@ class AutonomousDiscoveryAgent:
 
         logger.info("[Agent] Discovery loop exited cleanly.")
 
+    # ─── LLM Orchestration ─────────────────────────────────────────────────────
+
+    def _build_agent_prompt(self, metrics: Dict[str, Any], batch: BatchResult) -> str:
+        searches_exec = batch.searches_executed or 0
+        prompt = f"""
+        You are the OpenDB 24x7 Autonomous Discovery Agent.
+        Your goal is to continuously discover companies, identify new subdomains, and orchestrate search strategies.
+        
+        Current State:
+        - Total Companies Discovered: {metrics.get('entities_discovered', 0)}
+        - Verified Companies: {metrics.get('entities_verified', 0)}
+        - Current Batch Progress: {searches_exec}/{BATCH_SIZE} searches.
+        - Active Domain: {metrics.get('current_domain')}
+        - Active Subdomain: {metrics.get('current_subdomain')}
+        - Last Query Used: {metrics.get('current_keyword')}
+        
+        INSTRUCTIONS:
+        1. If the batch progress is >= {BATCH_SIZE}, you MUST call 'evaluate_batch'.
+        2. Otherwise, call 'search_web' with a new query variation to discover more companies. Use dynamic geographic or intent modifiers (e.g., 'SaaS companies Germany', 'top fintech startups Brazil').
+        3. If you notice a gap in the taxonomy based on your knowledge, call 'discover_new_subdomain'.
+        
+        Decide your next action by calling a tool.
+        """
+        return prompt
+
+    async def _invoke_llm_agent(self, prompt: str) -> List[Dict[str, Any]]:
+        """Call the LLM and return tool calls. If litellm is not available or errors, return None."""
+        if not litellm:
+            return None
+            
+        try:
+            # We use litellm in an async context or thread
+            response = await asyncio.to_thread(
+                litellm.completion,
+                model=self.llm_model,
+                messages=[{"role": "system", "content": prompt}],
+                tools=AGENT_TOOLS,
+                tool_choice="auto",
+                temperature=0.2,
+                max_tokens=500
+            )
+            
+            message = response.choices[0].message
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                # Convert to dict format
+                return [{"function": {"name": t.function.name, "arguments": t.function.arguments}} for t in message.tool_calls]
+                
+        except Exception as e:
+            logger.warning(f"[Agent] LLM tool call failed: {e}. Falling back to deterministic strategy.")
+            
+        return None
+
     # ─── Task Dispatch ─────────────────────────────────────────────────────────
 
     def _dispatch_search_task(self, query: str, keyword: str, domain: str,
                                subdomain: str, batch_id: str):
-        """Dispatch Celery search task. Falls back to direct execution if Celery unavailable."""
-        from app.worker.tasks import search_and_discover_task
-        try:
-            search_and_discover_task.delay(
-                query=query,
-                keyword=keyword,
-                domain=domain,
-                subdomain=subdomain,
-                batch_id=batch_id,
-            )
-        except Exception as celery_err:
-            logger.warning(f"[Agent] Celery unavailable ({celery_err}), running inline...")
-            try:
-                search_and_discover_task(
-                    query=query,
-                    keyword=keyword,
-                    domain=domain,
-                    subdomain=subdomain,
-                    batch_id=batch_id,
-                )
-            except Exception as inline_err:
-                logger.error(f"[Agent] Inline task also failed: {inline_err}")
+        """Dispatch search task via safe background dispatch."""
+        from app.worker.tasks import search_and_discover_task, _safe_dispatch
+        _safe_dispatch(
+            search_and_discover_task,
+            query=query,
+            keyword=keyword,
+            domain=domain,
+            subdomain=subdomain,
+            batch_id=batch_id,
+        )
 
     # ─── State Helpers ─────────────────────────────────────────────────────────
 
@@ -281,24 +403,6 @@ class AutonomousDiscoveryAgent:
             db.commit()
         return batch
 
-    def _is_keyword_deprecated(self, db: Session, keyword: str) -> bool:
-        perf = db.query(KeywordPerformance).filter(
-            KeywordPerformance.keyword == keyword,
-            KeywordPerformance.is_deprecated == True,
-        ).first()
-        return perf is not None
-
-    def _get_recently_used_geos(self, db: Session) -> List[str]:
-        """Return recently used geo modifiers to avoid repetition."""
-        recent = (
-            db.query(SearchHistory)
-            .order_by(SearchHistory.executed_at.desc())
-            .limit(20)
-            .all()
-        )
-        # Extract geo from search history domain/keyword metadata if stored
-        return []  # Simple implementation — could be extended
-
     # ─── Batch Feedback & Learning ─────────────────────────────────────────────
 
     def _generate_batch_feedback(self, db: Session, batch: BatchResult):
@@ -318,7 +422,6 @@ class AutonomousDiscoveryAgent:
         batch.completed_at = datetime.now(timezone.utc)
         batch.feedback_generated = True
 
-        # Update keyword performance with EMA-style success rate
         for s in searches:
             if not s.keyword:
                 continue
@@ -337,7 +440,6 @@ class AutonomousDiscoveryAgent:
 
             perf.usage_count = (perf.usage_count or 0) + 1
             sources = s.sources_found or 0
-            # EMA: new_rate = 0.7 * old_rate + 0.3 * current_yield
             current_yield = min(1.0, sources / 15.0)
             old_rate = float(perf.success_rate or 0.5)
             perf.success_rate = round(0.7 * old_rate + 0.3 * current_yield, 4)
