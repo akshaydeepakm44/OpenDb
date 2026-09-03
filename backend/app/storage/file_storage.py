@@ -82,7 +82,7 @@ class StorageManager:
             if settings.OPENDB_ENV.lower() == "production":
                 logger.error(f"MinIO bucket check failed in PRODUCTION mode: {e}")
                 raise RuntimeError(f"MinIO bucket check failed in PRODUCTION mode: {e}")
-            logger.warning(f"MinIO bucket check skipped/failed, falling back to local storage (OPENDB_ENV={settings.OPENDB_ENV}): {e}")
+            logger.info(f"MinIO storage unready ({e.__class__.__name__}) — using local disk storage (OPENDB_ENV={settings.OPENDB_ENV})")
             self.use_local = True
 
     @staticmethod
@@ -153,31 +153,26 @@ class StorageManager:
         return self._put_object(object_name, content_bytes, "application/json")
 
     def read_file_content(self, relative_path: str) -> Optional[str]:
-        if relative_path.startswith("local://"):
-            local_path = self.local_dir / relative_path.replace("local://", "")
-            if local_path.exists():
-                return local_path.read_text(encoding="utf-8", errors="ignore")
+        if not relative_path:
             return None
 
-        object_name = relative_path
-        if object_name.startswith(f"s3://{self.bucket_name}/"):
-            object_name = object_name.replace(f"s3://{self.bucket_name}/", "")
-        
-        if self.use_local:
-            local_path = self.local_dir / object_name
-            if local_path.exists():
-                return local_path.read_text(encoding="utf-8", errors="ignore")
-            
-        try:
-            response = self.client.get_object(self.bucket_name, object_name)
-            return response.read().decode("utf-8", errors="ignore")
-        except S3Error as e:
-            if e.code == 'NoSuchKey':
-                return None
-            logger.error(f"MinIO get error for {object_name}: {e}")
+        clean_rel = relative_path
+        if clean_rel.startswith("local://"):
+            clean_rel = clean_rel.replace("local://", "")
+        elif clean_rel.startswith(f"s3://{self.bucket_name}/"):
+            clean_rel = clean_rel.replace(f"s3://{self.bucket_name}/", "")
+
+        local_path = self.local_dir / clean_rel
+        if local_path.exists():
+            return local_path.read_text(encoding="utf-8", errors="ignore")
+
+        if self.use_local or not self.client:
             return None
-        except Exception as e:
-            logger.error(f"Error reading from MinIO {object_name}: {e}")
+
+        try:
+            response = self.client.get_object(self.bucket_name, clean_rel)
+            return response.read().decode("utf-8", errors="ignore")
+        except Exception:
             return None
 
 file_storage = StorageManager()

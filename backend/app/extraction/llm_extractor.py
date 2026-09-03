@@ -30,27 +30,40 @@ class LLMExtractor:
         prompt = self._build_prompt(text_content, domain_name, properties)
         
         # 1. Try Qwen via Ollama Local Endpoint (http://localhost:11434)
+        ollama_available = False
         try:
-            async with httpx.AsyncClient(timeout=1.5) as client:
-                res = await client.post(
-                    f"{self.ollama_url.rstrip('/')}/api/chat",
-                    json={
-                        "model": self.model,
-                        "messages": [{"role": "user", "content": prompt}],
-                        "format": "json",
-                        "stream": False,
-                        "options": {"temperature": 0.0}
-                    }
-                )
-                if res.status_code == 200:
-                    content = res.json().get("message", {}).get("content", "")
-                    parsed = json.loads(content)
-                    domain_data = parsed.get("domain_data", {})
-                    evidence_list = parsed.get("evidence", [])
-                    logger.info(f"Qwen model ({self.model}) successfully extracted fields for {page_url}")
-                    return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
-        except Exception as qwen_err:
-            logger.debug(f"Ollama Qwen endpoint unready ({qwen_err}), trying OpenAI / LiteLLM API...")
+            import socket
+            from urllib.parse import urlparse
+            p = urlparse(self.ollama_url)
+            h = p.hostname or "127.0.0.1"
+            pt = p.port or 11434
+            with socket.create_connection((h, pt), timeout=0.05):
+                ollama_available = True
+        except Exception:
+            ollama_available = False
+
+        if ollama_available:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    res = await client.post(
+                        f"{self.ollama_url.rstrip('/')}/api/chat",
+                        json={
+                            "model": self.model,
+                            "messages": [{"role": "user", "content": prompt}],
+                            "format": "json",
+                            "stream": False,
+                            "options": {"temperature": 0.0}
+                        }
+                    )
+                    if res.status_code == 200:
+                        content = res.json().get("message", {}).get("content", "")
+                        parsed = json.loads(content)
+                        domain_data = parsed.get("domain_data", {})
+                        evidence_list = parsed.get("evidence", [])
+                        logger.info(f"Qwen model ({self.model}) successfully extracted fields for {page_url}")
+                        return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
+            except Exception as qwen_err:
+                logger.debug(f"Ollama Qwen extraction error ({qwen_err}), trying OpenAI / LiteLLM API...")
 
         # 2. Try LiteLLM / OpenAI API call if key is present
         if self.api_key and self.api_key.strip():

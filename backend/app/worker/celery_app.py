@@ -14,7 +14,7 @@ broker_url = settings.CELERY_BROKER_URL
 backend_url = settings.CELERY_RESULT_BACKEND
 
 try:
-    r = redis.Redis.from_url(redis_url, socket_connect_timeout=1.0, socket_timeout=1.0)
+    r = redis.Redis.from_url(redis_url, socket_connect_timeout=0.05, socket_timeout=0.05)
     if r.ping():
         broker_url = redis_url
         backend_url = redis_url

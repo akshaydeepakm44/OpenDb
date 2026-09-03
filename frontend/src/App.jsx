@@ -33,12 +33,37 @@ export default function App() {
   const CARDS_PER_PAGE = 24;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const logContainerRef = React.useRef(null);
 
   // Lead Repository Tab State
   const [leadView, setLeadView] = useState('crawled'); // 'crawled' | 'verified'
   const [crawledDocs, setCrawledDocs] = useState([]);
   const [crawledPage, setCrawledPage] = useState(1);
   const [crawledMeta, setCrawledMeta] = useState({ total: 0, pages: 1 });
+
+  // Auto-scroll terminal log window when new events arrive
+  useEffect(() => {
+    if (autoScroll && logContainerRef.current) {
+      logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  }, [operationsData?.crawl_activity_stream, autoScroll, activeStreamTab]);
+
+  const handleResetFilters = () => {
+    setSearchQuery('');
+    setSelectedDomain('All');
+    setSelectedCountry('All');
+    setSelectedCompanyTier('All');
+    setCurrentPage(1);
+    setCrawledPage(1);
+  };
+
+  const isFilterActive = Boolean(
+    searchQuery ||
+    (selectedDomain && selectedDomain !== 'All') ||
+    (selectedCountry && selectedCountry !== 'All') ||
+    (selectedCompanyTier && selectedCompanyTier !== 'All')
+  );
 
   // Poll Services Health and Operations Dashboard Data
   const fetchOperations = async () => {
@@ -123,9 +148,9 @@ export default function App() {
 
     const interval = setInterval(() => {
       fetchOperations();
-      if (leadView === 'verified') fetchFilteredEntities();
-      if (leadView === 'crawled') fetchCrawledDocuments();
-    }, 4000);
+      fetchFilteredEntities();
+      fetchCrawledDocuments();
+    }, 3000);
 
     return () => clearInterval(interval);
   }, [searchQuery, selectedDomain, selectedCountry, selectedCompanyTier, leadView, crawledPage]);
@@ -230,21 +255,32 @@ export default function App() {
       </div>
 
       {/* DOCKER CONNECTIVITY NOTICE BANNER */}
-      {servicesHealth && (servicesHealth.redis === 'down' || servicesHealth.minio === 'down' || servicesHealth.searxng === 'down') && (
-        <div style={{ background: 'rgba(245, 158, 11, 0.12)', border: '1px solid #f59e0b', borderRadius: '0.75rem', padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '1.2rem' }}>🐳</span>
-            <div>
-              <strong style={{ color: '#fbbf24', fontSize: '0.9rem' }}>Infrastructure Alert: Redis, MinIO or SearXNG is Offline</strong>
-              <div style={{ fontSize: '0.8rem', color: '#cbd5e1', marginTop: '0.15rem' }}>
-                System is running in safe fallback mode. Connect full infrastructure using Docker Compose.
+      {servicesHealth && (
+        (() => {
+          const labels = { postgres: 'PostgreSQL', redis: 'Redis', minio: 'MinIO', searxng: 'SearXNG', crawl4ai: 'Crawl4AI', llm: 'LLM' };
+          const offlineList = Object.entries(servicesHealth)
+            .filter(([_, status]) => status === 'down')
+            .map(([svc]) => labels[svc] || svc.toUpperCase());
+          if (offlineList.length === 0) return null;
+          const serviceText = offlineList.join(', ');
+          const verb = offlineList.length > 1 ? 'are' : 'is';
+          return (
+            <div style={{ background: 'rgba(245, 158, 11, 0.12)', border: '1px solid #f59e0b', borderRadius: '0.75rem', padding: '0.85rem 1.25rem', marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <span style={{ fontSize: '1.2rem' }}>🐳</span>
+                <div>
+                  <strong style={{ color: '#fbbf24', fontSize: '0.9rem' }}>Infrastructure Alert: {serviceText} {verb} Offline</strong>
+                  <div style={{ fontSize: '0.8rem', color: '#cbd5e1', marginTop: '0.15rem' }}>
+                    System is running in safe fallback mode. Connect full infrastructure using Docker Compose.
+                  </div>
+                </div>
               </div>
+              <code style={{ background: '#0f172a', color: '#34d399', padding: '0.4rem 0.8rem', borderRadius: '0.375rem', fontSize: '0.85rem', border: '1px solid #334155', height: 'fit-content', display: 'inline-flex', alignItems: 'center' }}>
+                docker-compose up -d
+              </code>
             </div>
-          </div>
-          <code style={{ background: '#0f172a', color: '#34d399', padding: '0.4rem 0.8rem', borderRadius: '0.375rem', fontSize: '0.85rem', border: '1px solid #334155' }}>
-            docker-compose up -d
-          </code>
-        </div>
+          );
+        })()
       )}
 
       {/* HEADER WITH RUN / PAUSE CONTROL */}
@@ -344,7 +380,7 @@ export default function App() {
 
         <div style={{ background: '#1e293b', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #334155', borderTop: '4px solid #f59e0b', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}>
           <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>STORAGE USAGE</span>
-          <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#fbbf24', marginBottom: '0.4rem', marginTop: '0.5rem', lineHeight: '1.2' }}>
+          <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#f59e0b', textShadow: '0 0 10px rgba(245, 158, 11, 0.25)', marginBottom: '0.4rem', marginTop: '0.5rem', lineHeight: '1.2' }}>
             {operationsData?.stat_cards?.storage_usage?.formatted || "MinIO: 0 objs / Postgres: 12 MB"}
           </div>
           <span style={{ fontSize: '0.72rem', color: '#64748b' }}>S3 Object Count & DB Size</span>
@@ -355,29 +391,49 @@ export default function App() {
       {/* 3. LIVE CRAWL ACTIVITY MONITOR */}
       <div className="card" style={{ marginBottom: '2rem' }}>
         {/* Tab Bar */}
-        <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid #334155', paddingBottom: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-          {[
-            { key: 'activity', label: `⚡ Live Crawl Activity (${operationsData?.crawl_activity_stream?.length || 0})`, color: '#a78bfa' },
-            { key: 'searxng', label: `🔍 Search Logs (${operationsData?.search_stream?.length || 0})`, color: '#38bdf8' },
-            { key: 'failures', label: `⛔ Failures & Rejections (${operationsData?.failure_stream?.length || 0})`, color: '#ef4444' },
-            { key: 'feedback', label: '🏢 Company Tier Intelligence', color: '#10b981' },
-          ].map(tab => (
-            <button key={tab.key}
-              onClick={() => { setActiveStreamTab(tab.key); if (tab.key === 'feedback') fetchFeedback(); }}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #334155', paddingBottom: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {[
+              { key: 'activity', label: `⚡ Live Crawl Activity (${operationsData?.crawl_activity_stream?.length || 0})`, color: '#a78bfa' },
+              { key: 'searxng', label: `🔍 Search Logs (${operationsData?.search_stream?.length || 0})`, color: '#38bdf8' },
+              { key: 'failures', label: `⛔ Failures & Rejections (${operationsData?.failure_stream?.length || 0})`, color: '#ef4444' },
+              { key: 'feedback', label: '🏢 Company Tier Intelligence', color: '#10b981' },
+            ].map(tab => (
+              <button key={tab.key}
+                onClick={() => { setActiveStreamTab(tab.key); if (tab.key === 'feedback') fetchFeedback(); }}
+                style={{
+                  padding: '0.45rem 1.1rem', borderRadius: '0.5rem', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem',
+                  background: activeStreamTab === tab.key ? tab.color : '#1e293b',
+                  color: activeStreamTab === tab.key ? '#fff' : '#64748b',
+                  boxShadow: activeStreamTab === tab.key ? `0 0 10px ${tab.color}55` : 'none',
+                  transition: 'all 0.2s',
+                }}
+              >{tab.label}</button>
+            ))}
+          </div>
+
+          {activeStreamTab === 'activity' && (
+            <button
+              onClick={() => setAutoScroll(!autoScroll)}
               style={{
-                padding: '0.45rem 1.1rem', borderRadius: '0.5rem', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem',
-                background: activeStreamTab === tab.key ? tab.color : '#1e293b',
-                color: activeStreamTab === tab.key ? '#fff' : '#64748b',
-                boxShadow: activeStreamTab === tab.key ? `0 0 10px ${tab.color}55` : 'none',
-                transition: 'all 0.2s',
+                padding: '0.3rem 0.75rem',
+                borderRadius: '0.375rem',
+                border: '1px solid #334155',
+                background: autoScroll ? 'rgba(16, 185, 129, 0.15)' : '#0f172a',
+                color: autoScroll ? '#34d399' : '#94a3b8',
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                cursor: 'pointer'
               }}
-            >{tab.label}</button>
-          ))}
+            >
+              {autoScroll ? '⬇ Auto-Scroll: ON' : '⏸ Auto-Scroll: PAUSED'}
+            </button>
+          )}
         </div>
 
         {/* LIVE CRAWL ACTIVITY STREAM */}
         {activeStreamTab === 'activity' && (
-          <div style={{ maxHeight: '300px', overflowY: 'auto', background: '#060e1e', padding: '0.75rem', borderRadius: '0.5rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
+          <div ref={logContainerRef} style={{ maxHeight: '300px', overflowY: 'auto', background: '#060e1e', padding: '0.75rem', borderRadius: '0.5rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
             {(!operationsData?.crawl_activity_stream || operationsData.crawl_activity_stream.length === 0) ? (
               <div style={{ color: '#475569', padding: '1rem 0' }}>
                 <span style={{ color: '#38bdf8' }}>$</span> agent --listen --mode=autonomous<br/>
@@ -530,33 +586,62 @@ export default function App() {
           </div>
 
           {/* Pagination */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <button
-              onClick={() => leadView === 'crawled' ? setCrawledPage(p => Math.max(1, p - 1)) : setCurrentPage(p => Math.max(1, p - 1))}
-              disabled={(leadView === 'crawled' ? crawledPage : currentPage) === 1}
-              style={{ padding: '0.4rem 1rem', background: '#1e293b', color: 'white', border: '1px solid #334155', borderRadius: '0.375rem', cursor: 'pointer', fontWeight: 700 }}
-            >◀ Prev</button>
-            <span style={{ color: '#94a3b8', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>
-              Page {leadView === 'crawled' ? crawledPage : currentPage} of {leadView === 'crawled' ? crawledMeta.pages || 1 : Math.max(1, Math.ceil(entitiesList.length / CARDS_PER_PAGE))}
-            </span>
-            <button
-              onClick={() => leadView === 'crawled' ? setCrawledPage(p => Math.min(crawledMeta.pages || 1, p + 1)) : setCurrentPage(p => Math.min(Math.ceil(entitiesList.length / CARDS_PER_PAGE), p + 1))}
-              style={{ padding: '0.4rem 1rem', background: '#3b82f6', color: 'white', border: '1px solid #334155', borderRadius: '0.375rem', cursor: 'pointer', fontWeight: 700 }}
-            >Next ▶</button>
-          </div>
+          {(() => {
+            const activePage = leadView === 'crawled' ? crawledPage : currentPage;
+            const maxPages = leadView === 'crawled' ? (crawledMeta.pages || 1) : Math.max(1, Math.ceil(entitiesList.length / CARDS_PER_PAGE));
+            const isPrevDisabled = activePage <= 1;
+            const isNextDisabled = activePage >= maxPages;
+            return (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <button
+                  onClick={() => leadView === 'crawled' ? setCrawledPage(p => Math.max(1, p - 1)) : setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={isPrevDisabled}
+                  style={{
+                    padding: '0.4rem 1rem',
+                    background: isPrevDisabled ? '#0f172a' : '#1e293b',
+                    color: isPrevDisabled ? '#475569' : 'white',
+                    border: '1px solid #334155',
+                    borderRadius: '0.375rem',
+                    cursor: isPrevDisabled ? 'not-allowed' : 'pointer',
+                    fontWeight: 700,
+                    opacity: isPrevDisabled ? 0.5 : 1
+                  }}
+                >◀ Prev</button>
+                <span style={{ color: '#94a3b8', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>
+                  Page {activePage} of {maxPages}
+                </span>
+                <button
+                  onClick={() => leadView === 'crawled' ? setCrawledPage(p => Math.min(maxPages, p + 1)) : setCurrentPage(p => Math.min(maxPages, p + 1))}
+                  disabled={isNextDisabled}
+                  style={{
+                    padding: '0.4rem 1rem',
+                    background: isNextDisabled ? '#0f172a' : '#3b82f6',
+                    color: isNextDisabled ? '#475569' : 'white',
+                    border: '1px solid #334155',
+                    borderRadius: '0.375rem',
+                    cursor: isNextDisabled ? 'not-allowed' : 'pointer',
+                    fontWeight: 700,
+                    opacity: isNextDisabled ? 0.5 : 1
+                  }}
+                >Next ▶</button>
+              </div>
+            );
+          })()}
         </div>
 
-        {/* Search bar (common for both views) */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.8fr 1fr 1fr 1.4fr', gap: '1rem', marginBottom: '1.5rem' }}>
+        {/* Search & Filter Bar (Harmonized controls) */}
+        <div style={{ display: 'grid', gridTemplateColumns: isFilterActive ? '1.8fr 1fr 1fr 1.4fr auto' : '1.8fr 1fr 1fr 1.4fr', gap: '1rem', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
           <div>
             <label className="data-label">Full-Text Search</label>
-            <input type="text" className="search-input" style={{ maxWidth: '100%', borderRadius: '0.5rem', padding: '0.6rem 1rem', fontSize: '0.95rem' }}
+            <input type="text" className="search-input"
+              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem' }}
               placeholder="Search by company name or URL..."
               value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); setCrawledPage(1); }} />
           </div>
           <div>
             <label className="data-label">Filter Industry / Domain</label>
-            <select className="search-input" style={{ maxWidth: '100%', borderRadius: '0.5rem', padding: '0.6rem 1rem', fontSize: '0.95rem' }}
+            <select className="search-input"
+              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem' }}
               value={selectedDomain} onChange={(e) => { setSelectedDomain(e.target.value); setCurrentPage(1); }}>
               <option value="All">All Domains</option>
               {Array.isArray(operationsData?.filter_options?.domains) && operationsData.filter_options.domains.map(d => <option key={d} value={d}>{d}</option>)}
@@ -564,7 +649,8 @@ export default function App() {
           </div>
           <div>
             <label className="data-label">Filter Country Region</label>
-            <select className="search-input" style={{ maxWidth: '100%', borderRadius: '0.5rem', padding: '0.6rem 1rem', fontSize: '0.95rem' }}
+            <select className="search-input"
+              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem' }}
               value={selectedCountry} onChange={(e) => { setSelectedCountry(e.target.value); setCurrentPage(1); }}>
               <option value="All">All Countries</option>
               {Array.isArray(operationsData?.filter_options?.countries) && operationsData.filter_options.countries.map(c => <option key={c} value={c}>{c}</option>)}
@@ -572,7 +658,8 @@ export default function App() {
           </div>
           <div>
             <label className="data-label" style={{ color: '#38bdf8' }}>Filter Company Tier & Level</label>
-            <select className="search-input" style={{ maxWidth: '100%', borderRadius: '0.5rem', padding: '0.6rem 1rem', fontSize: '0.95rem', background: '#0f172a', color: '#38bdf8', border: '1px solid #0284c7', fontWeight: 700 }}
+            <select className="search-input"
+              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem', background: '#0f172a', color: '#38bdf8', border: '1px solid #0284c7', fontWeight: 700 }}
               value={selectedCompanyTier} onChange={(e) => { setSelectedCompanyTier(e.target.value); setCurrentPage(1); }}>
               <option value="All">🏢 All Company Tiers & Ranges</option>
               <option value="Early-Stage Startups (1-20)">🌱 Early-Stage Startups (1-20)</option>
@@ -581,6 +668,28 @@ export default function App() {
               <option value="Enterprise Leaders (1,000+)">🏛️ Enterprise Leaders (1,000+)</option>
             </select>
           </div>
+          {isFilterActive && (
+            <div>
+              <button
+                onClick={handleResetFilters}
+                style={{
+                  height: '42px',
+                  padding: '0 1rem',
+                  borderRadius: '0.5rem',
+                  border: '1px solid #ef4444',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  color: '#f87171',
+                  fontWeight: 700,
+                  fontSize: '0.85rem',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  transition: 'all 0.2s'
+                }}
+              >
+                ✕ Clear Filters
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ── CRAWLED LEADS CARD GRID ── */}

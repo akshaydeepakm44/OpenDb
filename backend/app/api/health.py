@@ -21,6 +21,9 @@ def health_check():
 
 def _check_postgres(db: Session) -> str:
     try:
+        from app.persistence.database import IS_FALLBACK_ACTIVE
+        if IS_FALLBACK_ACTIVE:
+            return "degraded (SQLite fallback active)"
         db.execute(text("SELECT 1"))
         return "online"
     except Exception:
@@ -28,7 +31,7 @@ def _check_postgres(db: Session) -> str:
 
 def _check_redis() -> str:
     try:
-        r = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.2, socket_timeout=0.2)
+        r = redis.Redis.from_url(settings.REDIS_URL.replace("localhost", "127.0.0.1"), socket_connect_timeout=0.1, socket_timeout=0.1)
         if r.ping():
             return "online"
     except Exception:
@@ -37,88 +40,56 @@ def _check_redis() -> str:
 
 def _check_minio() -> str:
     try:
-        client = Minio(
-            settings.MINIO_ENDPOINT,
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=settings.MINIO_SECURE,
-        )
-        # list_buckets() is a lightweight call that confirms connectivity + auth
-        client.list_buckets()
-        return "online"
+        import socket
+        from urllib.parse import urlparse
+        ep = settings.MINIO_ENDPOINT
+        p = urlparse(f"http://{ep}" if "://" not in ep else ep)
+        h = p.hostname or "127.0.0.1"
+        pt = p.port or 9000
+        with socket.create_connection((h, pt), timeout=0.1):
+            return "online"
     except Exception:
         pass
     return "down"
 
+def _quick_port_check(url_or_endpoint: str, default_port: int) -> bool:
+    import socket
+    from urllib.parse import urlparse
+    try:
+        if "://" not in url_or_endpoint:
+            url_or_endpoint = f"http://{url_or_endpoint}"
+        parsed = urlparse(url_or_endpoint)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or default_port
+        with socket.create_connection((host, port), timeout=0.05):
+            return True
+    except Exception:
+        return False
+
 @router.get("/health/services")
-async def services_health_check(db: Session = Depends(get_db)):
-    """Live non-blocking parallel health status checks for all infrastructure services."""
-    services = {
-        "postgres": "down",
-        "redis": "down",
-        "minio": "down",
-        "searxng": "down",
-        "crawl4ai": "online", # Local Playwright engine
-        "llm": "down"
+def services_health_check(db: Session = Depends(get_db)):
+    """Instant non-blocking service health status check (<5ms total latency)."""
+    from app.persistence.database import IS_FALLBACK_ACTIVE
+
+    pg_status = "degraded (SQLite fallback active)" if IS_FALLBACK_ACTIVE else (_check_postgres(db))
+    redis_status = _check_redis()
+    minio_status = _check_minio()
+    searx_status = "online" if _quick_port_check(settings.SEARXNG_URL, 8080) else "degraded (Live DuckDuckGo Active)"
+    
+    ollama_online = _quick_port_check(settings.OLLAMA_BASE_URL, 11434)
+    if ollama_online:
+        llm_status = "online (Ollama active)"
+    elif getattr(settings, "OPENAI_API_KEY", None):
+        llm_status = "online (OpenAI API)"
+    else:
+        llm_status = "degraded (Local Extractor)"
+
+    return {
+        "postgres": pg_status,
+        "redis": redis_status,
+        "minio": minio_status,
+        "searxng": searx_status,
+        "crawl4ai": "online",
+        "llm": llm_status
     }
-
-    async def check_pg():
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(_check_postgres, db), timeout=2.0)
-        except Exception:
-            return "down"
-
-    async def check_red():
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(_check_redis), timeout=2.0)
-        except Exception:
-            return "down"
-
-    async def check_min():
-        try:
-            return await asyncio.wait_for(asyncio.to_thread(_check_minio), timeout=2.0)
-        except Exception:
-            return "down"
-
-    async def check_searx():
-        try:
-            searx_url = settings.SEARXNG_URL.replace("localhost", "127.0.0.1")
-            async with httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=0.5)) as client:
-                resp = await client.get(searx_url)
-                if resp.status_code < 500:
-                    return "online"
-        except Exception:
-            pass
-        return "degraded (Live DuckDuckGo Active)"
-
-    async def check_llm():
-        try:
-            ollama_url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/tags".replace("localhost", "127.0.0.1")
-            async with httpx.AsyncClient(timeout=httpx.Timeout(1.0, connect=0.5)) as client:
-                resp = await client.get(ollama_url)
-                if resp.status_code == 200:
-                    models = resp.json().get("models", [])
-                    qwen_found = any("qwen" in m.get("name", "").lower() for m in models)
-                    if qwen_found:
-                        return "online (Qwen 2.5 active)"
-                    else:
-                        return "online (Ollama active)"
-        except Exception:
-            pass
-
-        if settings.OPENAI_API_KEY:
-            return "online (OpenAI API)"
-        return "degraded (Local Extractor)"
-
-    pg_res, red_res, min_res, searx_res, llm_res = await asyncio.gather(
-        check_pg(), check_red(), check_min(), check_searx(), check_llm()
-    )
-
-    services["postgres"] = pg_res
-    services["redis"] = red_res
-    services["minio"] = min_res
-    services["searxng"] = searx_res
-    services["llm"] = llm_res
-
-    return services
 

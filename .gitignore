@@ -40,14 +40,15 @@ pnpm-debug.log*
 # Database & Runtime Data
 # =========================
 db/postgres_data/
-*.sqlite
-*.sqlite3
-*.db
+*.sqlite*
+*.db*
+opendb_fallback*
 
 # =========================
 # Crawl / Scraped / Output Data
 # =========================
 backend/data/
+data/
 
 # =========================
 # Logs & Temp

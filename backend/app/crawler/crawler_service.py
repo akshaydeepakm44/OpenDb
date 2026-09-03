@@ -114,7 +114,7 @@ class CrawlerService:
                             logger.warning(f"Crawl4AI/Playwright failed or timed out for {curr_url} ({c_err}). Falling back to httpx AsyncClient.")
                             import httpx
                             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-                            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, headers=headers) as h_client:
+                            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True, headers=headers) as h_client:
                                 resp = await h_client.get(curr_url)
                                 html_raw = resp.text
                                 markdown_raw = ""
@@ -179,7 +179,7 @@ class CrawlerService:
         except Exception as crawl_err:
             logger.warning(f"Crawl4AI unavailable ({crawl_err}), falling back to httpx fetcher...")
             import httpx
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
                 while queue and len(visited_urls) < max_pages:
                     current_item = queue.pop(0)
                     curr_url = current_item["url"]

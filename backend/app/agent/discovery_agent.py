@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.persistence.database import SessionLocal
 from app.persistence.models import (
     AgentState, BatchResult, SearchHistory, KeywordPerformance,
-    UniversalRecord, VerificationRecord
+    UniversalRecord, VerificationRecord, utc_now
 )
 from app.agent.keyword_expander import keyword_expander
 from app.config import settings
@@ -31,7 +31,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-LOOP_PACE_SECONDS = 5
+LOOP_PACE_SECONDS = 4
 BATCH_SIZE = 1000
 
 # ─── Agent Tools ─────────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ class AutonomousDiscoveryAgent:
         try:
             state = self._get_or_create_state(db)
             state.status = status.upper()
-            state.last_run_at = datetime.now(timezone.utc)
+            state.last_run_at = utc_now()
             db.commit()
             logger.info(f"[Agent] Status → {state.status}")
 
@@ -179,6 +179,7 @@ class AutonomousDiscoveryAgent:
 
                 if state.status != "RUNNING":
                     logger.info("[Agent] PAUSED. Sleeping...")
+                    db.close()
                     await asyncio.sleep(3)
                     continue
 
@@ -284,7 +285,7 @@ class AutonomousDiscoveryAgent:
                     from sqlalchemy import or_
                     unverified_recs = db.query(UniversalRecord).filter(
                         or_(UniversalRecord.status == "Discovered", UniversalRecord.status == "Raw Ingested", UniversalRecord.status == None)
-                    ).limit(10).all()
+                    ).limit(1).all()
                     if unverified_recs:
                         from app.worker.tasks import _safe_dispatch, enrich_and_verify_task
                         for u_rec in unverified_recs:
@@ -327,8 +328,8 @@ class AutonomousDiscoveryAgent:
         return prompt
 
     async def _invoke_llm_agent(self, prompt: str) -> List[Dict[str, Any]]:
-        """Call the LLM and return tool calls. If litellm is not available or errors, return None."""
-        if not litellm:
+        """Call the LLM and return tool calls. If litellm is not available or key missing, return None instantly."""
+        if not litellm or not getattr(settings, "OPENAI_API_KEY", "").strip():
             return None
             
         try:
@@ -419,7 +420,7 @@ class AutonomousDiscoveryAgent:
             db.query(VerificationRecord).filter(VerificationRecord.is_verified == True).count()
         )
         batch.status = "COMPLETED"
-        batch.completed_at = datetime.now(timezone.utc)
+        batch.completed_at = utc_now()
         batch.feedback_generated = True
 
         for s in searches:

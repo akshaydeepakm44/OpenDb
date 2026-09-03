@@ -1,0 +1,18 @@
+# Ignore Database & SQLite files
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+opendb_fallback*
+db/
+
+# Ignore Storage & Log Data
+data/
+*.log
+logs/
+
+# Python cache
+__pycache__/
+*.pyc

@@ -20,6 +20,20 @@ from app.cache.redis_cache import cache_get, cache_set
 
 router = APIRouter(prefix="/agent", tags=["Autonomous Discovery Agent"])
 
+def determine_company_tier(linked=None) -> str:
+    """Helper to derive company tier string based on record completeness or confidence."""
+    if not linked:
+        return "Growth SMBs (20-100)"
+    conf = float(getattr(linked, "confidence", 0.5) or 0.5)
+    if conf >= 0.85:
+        return "Global Enterprise (10,000+)"
+    elif conf >= 0.70:
+        return "Mid-Market (500-10,000)"
+    elif conf >= 0.50:
+        return "Growth SMBs (20-100)"
+    return "Early Stage (1-20)"
+
+
 @router.post("/run")
 async def start_discovery_agent(db: Session = Depends(get_db)):
     """User Action: RUN - Starts/resumes the 24/7 global discovery agent."""
@@ -260,10 +274,14 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     distinct_domains = [d[0] for d in db.query(UniversalRecord.entity_type).distinct().all() if d[0]]
     distinct_countries = [c[0] for c in db.query(UniversalRecord.country).distinct().all() if c[0]]
 
+    persisted_companies_count = db.query(UniversalRecord).count()
+
     return {
         "stat_cards": {
+            "persisted_companies": persisted_companies_count,
             "verified_leads": verified_leads_count,
             "active_crawl_queue": queue_depth,
+            "crawled_documents": doc_count,
             "decision_makers_identified": people_facts,
             "storage_usage": {
                 "postgres": pg_size_str,
@@ -289,6 +307,22 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     }
 
 
+def _determine_company_tier(linked: Optional[UniversalRecord]) -> str:
+    if not linked:
+        return "Growth SMBs (20-100)"
+    tier = getattr(linked, "company_tier", None)
+    if tier and tier != "Unknown":
+        return tier
+    emp = getattr(linked, "employee_count", 0) or 0
+    if emp >= 1000:
+        return "Enterprise Leaders (1,000+)"
+    elif emp >= 100:
+        return "Mid-Market Challengers (100-1,000)"
+    elif emp >= 20:
+        return "Growth SMBs (20-100)"
+    return "Early-Stage Startups (1-20)"
+
+
 @router.get("/documents")
 def get_crawled_documents(
     page: int = 1,
@@ -298,9 +332,7 @@ def get_crawled_documents(
 ):
     """
     Return the 'Crawled Leads' view.
-    Priority:
-      1. Document records already stored in the DB
-      2. Fall back to reading pending URLs directly from the Celery Redis queue
+    Renders persisted Document cards with page pagination.
     """
     from urllib.parse import urlparse
 
@@ -314,7 +346,7 @@ def get_crawled_documents(
         except Exception:
             return url, url
 
-    # ── 1. DB Documents ────────────────────────────────────────────────────────
+    # ── DB Documents Query ──
     q = db.query(Document)
     if query:
         q = q.filter(Document.url.ilike(f"%{query}%"))
@@ -323,7 +355,7 @@ def get_crawled_documents(
     if total_db == 0:
         return {"total": 0, "page": page, "pages": 1, "results": []}
 
-    docs = q.order_by(Document.retrieved_at.desc()).offset((page - 1) * limit).limit(limit).all()
+    docs = q.order_by(Document.created_at.desc()).offset((page - 1) * limit).limit(limit).all()
     doc_ids = [d.id for d in docs]
     linked_map = {
         r.document_id: r for r in db.query(UniversalRecord).filter(UniversalRecord.document_id.in_(doc_ids)).all()
@@ -333,6 +365,7 @@ def get_crawled_documents(
     for d in docs:
         linked = linked_map.get(d.id)
         name, domain = _parse_url(d.url or "")
+        created_time = d.created_at or getattr(d, 'retrieved_at', None)
         results.append({
             "id": d.id,
             "url": d.url,
@@ -340,10 +373,10 @@ def get_crawled_documents(
             "canonical_name": linked.canonical_name if (linked and linked.canonical_name) else (d.title or name),
             "industry": linked.entity_type if linked else "Commercial Web & Digital Enterprise",
             "country": linked.country if linked else "Global",
-            "company_tier": determine_company_tier(linked) if linked else "Unknown",
+            "company_tier": _determine_company_tier(linked),
             "status": "Verified" if linked else "Raw Ingested",
             "verified_entity_id": linked.id if linked else None,
-            "crawled_at": d.retrieved_at.isoformat() if d.retrieved_at else None,
+            "crawled_at": created_time.isoformat() if created_time else None,
         })
     return {"total": total_db, "page": page, "pages": max(1, (total_db + limit - 1) // limit), "results": results}
 

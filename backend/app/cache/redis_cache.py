@@ -32,6 +32,8 @@ def cache_get(namespace: str, *parts: Any) -> Optional[Any]:
     """Return the cached value for (namespace, *parts), or None on miss/error."""
     try:
         client = get_redis()
+        if not client:
+            return None
         raw = client.get(_key(namespace, *parts))
         if raw is None:
             return None
@@ -45,6 +47,8 @@ def cache_set(namespace: str, *parts: Any, value: Any, ttl: int = DEFAULT_TTL_SE
     """Store a JSON-serializable value. Silently no-ops on error."""
     try:
         client = get_redis()
+        if not client:
+            return
         client.setex(_key(namespace, *parts), ttl, json.dumps(value, default=str))
     except Exception as exc:  # noqa: BLE001
         logger.warning("cache_set failed for %s: %s", namespace, exc)
@@ -54,6 +58,8 @@ def cache_delete_namespace(namespace: str, pattern_prefix: str = "*") -> None:
     """Best-effort bulk delete for a namespace (used for invalidation)."""
     try:
         client = get_redis()
+        if not client:
+            return
         keys = client.scan_iter(match=f"{CACHE_PREFIX}{namespace}:{pattern_prefix}")
         if keys:
             client.delete(*keys)

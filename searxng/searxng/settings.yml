@@ -4,5 +4,5 @@
 use_default_settings: true
 
 server:
-  secret_key: "wUuqgLUmMCxRxYg3kzbHweEEmnrVw4hS"
+  secret_key: "HXOUj69nkLk775Rjaj5CzhcLMWTYIIqi"
   image_proxy: true

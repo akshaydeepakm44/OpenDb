@@ -78,13 +78,19 @@ def create_db_engine():
             logger.error("PostgreSQL connection failed in PRODUCTION mode.")
             raise RuntimeError("PostgreSQL connection failed in PRODUCTION mode.")
 
-        from sqlalchemy.pool import StaticPool
         IS_FALLBACK_ACTIVE = True
-        return create_engine(
+        eng = create_engine(
             "sqlite:///./opendb_fallback.db",
-            connect_args={"check_same_thread": False, "timeout": 30},
-            poolclass=StaticPool
+            connect_args={"check_same_thread": False, "timeout": 30}
         )
+        try:
+            with eng.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL;"))
+                conn.execute(text("PRAGMA busy_timeout=30000;"))
+                conn.commit()
+        except Exception as pragma_err:
+            logger.warning(f"SQLite PRAGMA setup warning: {pragma_err}")
+        return eng
 
 engine = create_db_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -19,7 +19,7 @@ except ImportError:
     Vector = None
 
 def utc_now():
-    return datetime.now(timezone.utc)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Metadata(Base):

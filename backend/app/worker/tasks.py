@@ -28,7 +28,7 @@ from app.persistence.repositories import repo
 from app.persistence.models import (
     SearchHistory, Document, UniversalRecord, DomainRecord,
     VerificationRecord, ExtractedFact, BatchResult, CrawlError,
-    CrawlActivityLog,
+    CrawlActivityLog, utc_now,
 )
 
 from app.crawler.searxng_service import searxng_service
@@ -59,25 +59,56 @@ def run_async(coro):
         loop.close()
 
 
+_worker_check_cache = {"active": False, "last_check": 0}
+
+def _has_active_celery_worker() -> bool:
+    import time
+    now = time.time()
+    if now - _worker_check_cache["last_check"] < 5:
+        return _worker_check_cache["active"]
+
+    try:
+        from app.cache.redis_client import get_redis
+        if get_redis() is None:
+            _worker_check_cache["active"] = False
+            _worker_check_cache["last_check"] = now
+            return False
+
+        inspector = celery_app.control.inspect(timeout=0.25)
+        res = inspector.ping()
+        is_active = bool(res and len(res) > 0)
+        _worker_check_cache["active"] = is_active
+        _worker_check_cache["last_check"] = now
+        return is_active
+    except Exception:
+        _worker_check_cache["active"] = False
+        _worker_check_cache["last_check"] = now
+        return False
+
+
 def _safe_dispatch(task_func, **kwargs):
     """
-    Safely dispatch Celery task.
-    Attempts Celery enqueueing, and ALSO executes the task immediately in an async background daemon thread
-    to guarantee high-throughput discovery and crawling regardless of external Celery worker status.
+    Safely dispatch task.
+    Attempts Celery enqueueing if a worker process is active.
+    Otherwise dispatches to a background daemon thread so discovery proceeds immediately.
     """
-    try:
-        task_func.delay(**kwargs)
-    except Exception as e:
-        logger.warning(f"[Safe Dispatch] Celery queue dispatch skipped ({e})")
-
-    # Always trigger non-blocking background thread execution for real-time streaming
-    def _run_bg():
+    dispatched_to_celery = False
+    if _has_active_celery_worker():
         try:
-            task_func(**kwargs)
-        except Exception as err:
-            logger.error(f"[Safe Dispatch] Background task execution failed: {err}")
+            task_func.delay(**kwargs)
+            dispatched_to_celery = True
+        except Exception as e:
+            logger.debug(f"[Safe Dispatch] Celery queue dispatch skipped: {e}")
 
-    threading.Thread(target=_run_bg, daemon=True).start()
+    if not dispatched_to_celery:
+        def _run_bg():
+            try:
+                task_func(**kwargs)
+            except Exception as err:
+                logger.error(f"[Safe Dispatch] Background task execution failed: {err}")
+
+        threading.Thread(target=_run_bg, daemon=True).start()
+
 
 
 def _log_crawl_error(db, url: str, stage: str, error: Exception):
@@ -112,6 +143,7 @@ def _log_activity(db, url: str, stage: str, status: str, message: str = "",
             message=message[:500] if message else "",
             entity_name=entity_name,
             batch_id=batch_id,
+            timestamp=utc_now(),
         )
         db.add(entry)
         db.commit()
@@ -343,9 +375,46 @@ def crawl_entity_task(
     for maximum field extraction.
     """
     logger.info(f"[Worker B] Entity crawl: {url}")
+
+    # ── Stage 0: Immediately persist Document Record ──────────────────────────
     db = SessionLocal()
     try:
-        # ── Stage 1: Crawl homepage ───────────────────────────────────────────
+        base_host = urlparse(url).netloc or url
+        source = repo.get_or_create_source(db, name=base_host, base_url=url)
+        doc = db.query(Document).filter(Document.url == url).first()
+        if not doc:
+            netloc = base_host.replace("www.", "")
+            derived_title = netloc.split(".")[0].replace("-", " ").title() if "." in netloc else netloc
+            if not derived_title or len(derived_title) < 2:
+                derived_title = "Enterprise Lead"
+            doc = repo.create_document(
+                db=db,
+                crawl_job_id=None,
+                source_id=source.id,
+                url=url,
+                canonical_url=url,
+                title=f"{derived_title} Official Portal",
+                content_type="text/html",
+                http_status=200,
+                content_hash=str(uuid.uuid4())[:16],
+                raw_path="",
+                markdown_path="",
+                text_path="",
+                word_count=0,
+                links_count=0,
+                images_count=0,
+            )
+            db.commit()
+            db.refresh(doc)
+        doc_id = doc.id
+    except Exception as err:
+        logger.error(f"[Worker B] Stage 0 error for {url}: {err}")
+        return {"status": "error", "error": str(err)}
+    finally:
+        db.close()
+
+    # ── Stage 1: Crawl homepage (outside DB transaction) ─────────────────────
+    try:
         crawled_items = run_async(
             crawler_service.crawl_site(
                 starting_url=url,
@@ -353,40 +422,45 @@ def crawl_entity_task(
                 max_pages=MAX_ENTITY_PAGES,
             )
         )
-        if not crawled_items:
-            return {"status": "failed", "reason": "No content retrieved", "url": url}
+    except Exception as crawl_err:
+        logger.error(f"[Worker B] Homepage crawl failed for {url}: {crawl_err}")
+        return {"status": "error", "error": str(crawl_err)}
 
-        item = crawled_items[0]
-        word_count = item.metadata.get("word_count", 0) if item.metadata else 0
+    if not crawled_items:
+        db = SessionLocal()
+        try:
+            _log_activity(db, url=url, stage="CRAWL", domain=domain,
+                          status="OK", message=f"Queued / Persisted Document ID={doc_id[:8]}",
+                          batch_id=batch_id)
+        finally:
+            db.close()
+        return {"status": "persisted", "reason": "Basic document created", "url": url, "document_id": doc_id}
 
-        # ── Stage 2: Create Document Record immediately in PostgreSQL ────────
-        html_hash, raw_rel = file_storage.save_raw_page(item.html_content or "")
-        md_rel = file_storage.save_processed_markdown(item.markdown or "", html_hash)
-        txt_rel = file_storage.save_processed_text(item.text or "", html_hash)
+    item = crawled_items[0]
+    word_count = item.metadata.get("word_count", 0) if item.metadata else 0
 
-        base_host = urlparse(url).netloc
-        source = repo.get_or_create_source(db, name=base_host, base_url=url)
+    # ── Stage 2: Update Document Record ──────────────────────────────────────
+    html_hash, raw_rel = file_storage.save_raw_page(item.html_content or "")
+    md_rel = file_storage.save_processed_markdown(item.markdown or "", html_hash)
+    txt_rel = file_storage.save_processed_text(item.text or "", html_hash)
 
-        doc = repo.create_document(
-            db=db,
-            crawl_job_id=None,
-            source_id=source.id,
-            url=item.url,
-            canonical_url=item.metadata.get("canonical_url", item.url) if item.metadata else item.url,
-            title=item.title,
-            content_type=item.content_type,
-            http_status=item.http_status,
-            content_hash=html_hash,
-            raw_path=raw_rel,
-            markdown_path=md_rel,
-            text_path=txt_rel,
-            word_count=word_count,
-            links_count=item.metadata.get("links_count", 0) if item.metadata else 0,
-            images_count=item.metadata.get("images_count", 0) if item.metadata else 0,
-        )
+    db = SessionLocal()
+    try:
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        if doc:
+            doc.title = item.title or doc.title
+            doc.http_status = item.http_status or 200
+            doc.content_hash = html_hash
+            doc.raw_path = raw_rel
+            doc.markdown_path = md_rel
+            doc.text_path = txt_rel
+            doc.word_count = word_count
+            doc.links_count = item.metadata.get("links_count", 0) if item.metadata else 0
+            doc.images_count = item.metadata.get("images_count", 0) if item.metadata else 0
+            db.commit()
 
         _log_activity(db, url=url, stage="CRAWL", domain=domain,
-                      status="OK", message=f"Crawled OK — Persisted Document ID={doc.id[:8]} ({word_count} words)",
+                      status="OK", message=f"Crawled OK — Updated Document ID={doc_id[:8]} ({word_count} words)",
                       batch_id=batch_id)
 
         # ── Stage 3: Content quality filter ──────────────────────────────────
@@ -402,48 +476,56 @@ def crawl_entity_task(
             _log_activity(db, url=url, stage="FILTER", domain=domain,
                           status="FILTERED", message=f"Content rejected for verification: {reason}", batch_id=batch_id)
             return {"status": "filtered", "reason": reason, "url": url}
+    finally:
+        db.close()
 
-        # ── Stage 4: Also crawl subpages for more data ────────────────────────
-        base = urlparse(url)
-        base_url = f"{base.scheme}://{base.netloc}"
-        additional_html = []
-        for subpath in ENTITY_SUBPAGES:
-            subpage_url = f"{base_url}{subpath}"
-            try:
-                sub_items = run_async(
-                    crawler_service.crawl_site(
-                        starting_url=subpage_url, max_depth=1, max_pages=1
-                    )
+    # ── Stage 4: Also crawl subpages (outside DB transaction) ────────────────
+    base = urlparse(url)
+    base_url = f"{base.scheme}://{base.netloc}"
+    additional_html = []
+    for subpath in ENTITY_SUBPAGES:
+        subpage_url = f"{base_url}{subpath}"
+        try:
+            sub_items = run_async(
+                crawler_service.crawl_site(
+                    starting_url=subpage_url, max_depth=1, max_pages=1
                 )
-                if sub_items and sub_items[0].text:
-                    additional_html.append(sub_items[0].text)
-            except Exception:
-                pass  # Subpage failures are non-fatal
+            )
+            if sub_items and sub_items[0].text:
+                additional_html.append(sub_items[0].text)
+        except Exception:
+            pass  # Subpage failures are non-fatal
 
-        # Merge additional content into main item's text
-        enriched_text = item.text or ""
-        if additional_html:
-            enriched_text += "\n\n" + "\n\n".join(additional_html)
-            enriched_text = enriched_text[:50000]  # cap at 50k chars
+    enriched_text = item.text or ""
+    if additional_html:
+        enriched_text += "\n\n" + "\n\n".join(additional_html)
+        enriched_text = enriched_text[:50000]
 
-        # ── Stage 5: Extract Information via LLM/heuristic pipeline ──────────
+    # ── Stage 5: Extract Information via LLM (outside DB transaction) ───────
+    try:
         payload = run_async(
             extraction_pipeline.process_document_extraction(
-                document_id=doc.id,
+                document_id=doc_id,
                 url=item.url,
                 html_content=item.html_content or "",
                 text_content=enriched_text,
                 user_domain=domain,
             )
         )
+    except Exception as ext_err:
+        logger.error(f"[Worker B] Extraction failed for {url}: {ext_err}")
+        return {"status": "error", "error": str(ext_err)}
 
-        # Save JSON extraction payload to MinIO
-        file_storage.save_extracted_json(doc.id, payload)
+    # Save JSON extraction payload to MinIO
+    file_storage.save_extracted_json(doc_id, payload)
+
+    # ── Stage 6: Persist Extracted Record to Database ────────────────────────
+    db = SessionLocal()
+    try:
         _log_activity(db, url=url, stage="EXTRACT", domain=domain,
-                      status="OK", message=f"Extracted JSON payload generated for document ID={doc.id[:8]}",
+                      status="OK", message=f"Extracted JSON payload generated for document ID={doc_id[:8]}",
                       entity_name=(payload.get("universal") or {}).get("canonical_name"), batch_id=batch_id)
 
-        # ── Stage 7: Entity quality filter before DB write ────────────────────
         entity_name = (
             (payload.get("universal") or {}).get("canonical_name", "")
             or (payload.get("domain_data") or {}).get("company_name", "")
@@ -467,7 +549,6 @@ def crawl_entity_task(
                           entity_name=entity_name, batch_id=batch_id)
             return {"status": "entity_filtered", "reason": entity_reason, "url": url}
 
-        # ── Stage 8: Domain-based deduplication before write ─────────────────
         domain_key = urlparse(entity_url).netloc.lower()
         existing = db.query(UniversalRecord).filter(
             UniversalRecord.url.ilike(f"%{domain_key}%")
@@ -479,12 +560,10 @@ def crawl_entity_task(
                           entity_name=entity_name, batch_id=batch_id)
             return {"status": "duplicate_domain", "url": url, "existing_id": existing.id}
 
-        # ── Stage 9: Save to PostgreSQL ───────────────────────────────────────
         repo.save_extraction_results(db, payload)
 
-        # Find created Universal Record
         univ_rec = db.query(UniversalRecord).filter(
-            UniversalRecord.document_id == doc.id
+            UniversalRecord.document_id == doc_id
         ).first()
 
         if univ_rec:
@@ -492,24 +571,19 @@ def crawl_entity_task(
                           status="OK",
                           message=f"UniversalRecord persisted — name='{entity_name}' ID={univ_rec.id[:8]} confidence={entity_confidence:.0%}",
                           entity_name=entity_name, batch_id=batch_id)
-            # Trigger Worker C: Enrichment & Verification
             _safe_dispatch(enrich_and_verify_task, universal_record_id=univ_rec.id)
 
         return {
             "status": "success",
-            "document_id": doc.id,
+            "document_id": doc_id,
             "universal_record_id": univ_rec.id if univ_rec else None,
             "entity_name": entity_name,
             "subpages_crawled": len(additional_html),
         }
-
     except Exception as e:
-        logger.error(f"[Worker B] Crawl/extract failed for {url}: {e}")
+        logger.error(f"[Worker B] Save extraction failed for {url}: {e}")
         _log_crawl_error(db, url, "crawl_entity", e)
-        try:
-            raise self.retry(exc=e)
-        except Exception:
-            return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": str(e)}
     finally:
         db.close()
 
