@@ -1,34 +1,36 @@
-# OpenDB Architecture Specification
+# OpenDB System Architecture Specification
 
-## Overview
+OpenDB is an end-to-end autonomous discovery engine that converts unstructured web pages into structured, verified business entity records.
 
-OpenDB ingests unstructured web content into structured domain-aware records. It separates raw web crawling (handled by Crawl4AI) from data ingestion, normalization, schema mapping, and relational persistence in PostgreSQL.
+## Modular Component Layers
 
-## Modular Architecture Layers
+1. **Frontend Presentation Layer (`frontend/`)**:
+   - Built with React and Vite on port `5173`.
+   - Uses Vite HTTP proxying (`vite.config.js`) to delegate `/api/*` requests to the FastAPI backend on port `8000`.
+   - Visualizes live stat cards, search strategy controls, Crawled Leads grid, Verified Entities catalog, and real-time crawl activity logs.
 
-1. **Crawler Layer (`app/crawler/`)**:
-   - `crawler_service.py`: Orchestrates AsyncWebCrawler (Crawl4AI) with BFS link traversal, max depth/pages constraints, and Windows proactor loop support.
-   - `url_discovery.py`: Enforces same-domain filtering, link extraction, and URL normalization (removing tracking parameters and fragments).
-   - `resource_discovery.py`: Identifies downloadable documents (PDF, CSV, TXT) and media assets, downloading text/doc resources up to 10MB to raw storage.
+2. **Backend API Layer (`backend/app/api/`)**:
+   - FastAPI framework on port `8000`.
+   - Exposes REST endpoints (`/api/agent/status`, `/api/agent/operations`, `/api/agent/documents`, `/api/agent/entities`, `/api/health/services`).
+   - `health.py` uses ultra-fast micro socket probes (<5ms latency) to check infrastructure health.
 
-2. **Storage Layer (`app/storage/`)**:
-   - `file_storage.py`: Manages raw storage directories using SHA-256 content hashes (`data/raw/pages/{hash}.html`, `data/processed/markdown/{hash}.md`, `data/processed/extracted/{doc_id}.json`). Abstracted to allow drop-in replacement with MinIO / AWS S3.
+3. **Autonomous Agent Layer (`backend/app/agent/`)**:
+   - `discovery_agent.py`: Continuous 24/7 Haystack 2.x reasoning loop. Evaluates system metrics, invokes LiteLLM / keyword expanders, dispatches search strategies, and triggers continuous verification sweeps.
 
-3. **Classification & Normalization Layer (`app/classification/`, `app/normalization/`)**:
-   - `domain_classifier.py`: Keyword signal and metadata classifier categorizing pages into Technology, Healthcare, Education, or Business.
-   - `normalizer.py`: Sanitizes text, HTML entities, country names, language codes, emails, and phone numbers.
+4. **Task Dispatcher & Background Worker Layer (`backend/app/worker/`)**:
+   - `tasks.py`: Implements `_safe_dispatch()` to queue tasks to Celery/Redis if an active Celery worker process is present, automatically falling back to non-blocking background daemon threads if offline.
+   - **DB Lock Isolation**: Executes slow network operations (Playwright scraping, LLM calls) with closed database sessions to keep database transactions micro-short (<2ms).
 
-4. **Extraction Layer (`app/extraction/`)**:
-   - `css_extractor.py`: Mode 1 deterministic HTML metadata extraction (Title, Meta Description, OpenGraph, JSON-LD, H1).
-   - `llm_extractor.py`: Mode 2 domain semantic extraction using LiteLLM/OpenAI or deterministic rule heuristics when offline.
-   - `document_extractor.py`: Extracts column names, row counts, and text previews from CSV/PDF/TXT files.
-   - `extractor.py`: Unified pipeline orchestrator returning universal records, domain payloads, facts, and evidence snippets.
+5. **Crawler & Search Layer (`backend/app/crawler/`)**:
+   - `searxng_service.py`: Issues live web search queries to SearXNG or DuckDuckGo.
+   - `crawler_service.py`: AsyncWebCrawler (Crawl4AI) + Playwright engine rendering web pages, executing JavaScript, and fetching subpages (`/about`, `/contact`, `/team`, etc.).
 
-5. **Persistence Layer (`app/persistence/`)**:
-   - SQLAlchemy 2.x declarative models mapping 15 relational tables in PostgreSQL.
+6. **Extraction & Quality Filtering Layer (`backend/app/extraction/`, `backend/app/classification/`)**:
+   - `quality_filter.py`: Multi-stage filter rejecting junk URLs, thin content, adult/illegal domains, and duplicate entities.
+   - `css_extractor.py`: Structural HTML parsing (OpenGraph, Meta tags, JSON-LD).
+   - `llm_extractor.py`: Hybrid LiteLLM / Qwen 2.5 and heuristic rule engine mapping page content to JSON domain schemas.
 
-## Future Scaling Strategy
+7. **Persistence & Storage Layer (`backend/app/persistence/`, `backend/app/storage/`)**:
+   - `database.py`: PostgreSQL engine with automated SQLite WAL fallback (`opendb_fallback.db`).
+   - `file_storage.py`: Content-addressable storage storing SHA-256 raw HTML pages, Markdown text, and JSON extraction payloads.
 
-- **Task Queue**: Current FastAPI BackgroundTasks can be swapped with Celery / RQ / Redis Queue without altering crawler or extractor services.
-- **Object Storage**: `file_storage.py` can be upgraded to S3/MinIO by overriding standard file IO methods with Boto3 calls.
-- **Database Promotion**: Stable JSONB fields in `domain_records` can be promoted to dedicated typed PostgreSQL columns as field usage stabilizes.

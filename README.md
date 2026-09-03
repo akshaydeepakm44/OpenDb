@@ -1,57 +1,52 @@
-# OpenDB Web Crawling & Ingestion Prototype
+# OpenDB Autonomous Web Discovery & Ingestion Engine
 
-OpenDB is a prototype universal, domain-aware database engine designed to collect publicly available web information, extract structured records, normalize facts, track provenance/evidence, and store normalized records in PostgreSQL.
+OpenDB is an autonomous, 24/7 self-sustaining web discovery and lead intelligence pipeline. It continuously searches the web, crawls targeted business entities using Crawl4AI & Playwright, extracts structured schema payloads via LiteLLM/heuristics, and persists verified data into PostgreSQL or thread-safe SQLite WAL storage.
 
-## Architecture Pipeline
+## 🏗️ Architecture Overview
 
 ```
-USER INPUT ➔ CRAWL4AI ➔ PAGE DISCOVERY ➔ RAW RESOURCE COLLECTION ➔ CONTENT EXTRACTION ➔ DOMAIN DETECTION ➔ UNIVERSAL METADATA ➔ DOMAIN-SPECIFIC EXTRACTION ➔ VALIDATION ➔ POSTGRESQL ➔ WEB UI
+REACT DASHBOARD (5173) ➔ VITE PROXY ➔ FASTAPI BACKEND (8000) ➔ HAYSTACK 2.X AGENT
+      │                                                                  │
+      ▼                                                                  ▼
+PERSISTED UI METRICS ◄── SQLITE WAL / POSTGRES ◄── QUALITY FILTER ◄── CRAWL4AI + LLM
 ```
 
-## Quick Start
+## 🚀 Quick Start
 
-### Option 1: Docker Compose (Recommended)
-
+### 1. Backend Server (FastAPI on Port 8000)
 ```bash
-docker compose up -d
+cd backend
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
+- **Backend API**: `http://127.0.0.1:8000`
+- **Interactive Swagger Docs**: `http://127.0.0.1:8000/docs`
 
-- **Frontend Dashboard**: `http://localhost:3000` (or `http://localhost:5173`)
-- **Backend API**: `http://localhost:8000`
-- **Swagger Docs**: `http://localhost:8000/docs`
-- **PostgreSQL**: `localhost:5433` (`admin` / `password123`)
+### 2. Frontend Dashboard (Vite + React on Port 5173)
+```bash
+cd frontend
+npm install
+npm run dev
+```
+- **Dashboard UI**: `http://localhost:5173`
 
-### Option 2: Local Python & Vite Setup
+---
 
-1. **Start PostgreSQL**:
-   ```bash
-   docker compose -f db/docker-compose.yml up -d
-   ```
+## ⚡ Key Infrastructure & Capabilities
 
-2. **Start Backend**:
-   ```bash
-   cd backend
-   ..\venv\Scripts\uvicorn app.main:app --reload --port 8000
-   ```
+- **Autonomous Agent Loop**: 24/7 continuous discovery orchestrator powered by Haystack 2.x reasoning patterns and dynamic keyword expansion.
+- **Fault-Tolerant Task Queue**: `_safe_dispatch()` dynamically detects active Celery/Redis workers and seamlessly falls back to non-blocking background daemon threads.
+- **SQLite WAL Mode**: Thread-safe database engine (`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=30000;`) ensuring zero API request blocking during background web crawling.
+- **Instant Service Health Check**: Micro socket probes (<5ms latency) monitoring PostgreSQL/SQLite, Redis, MinIO, SearXNG, Crawl4AI, and LLM engines.
 
-3. **Start Frontend**:
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
+---
 
-4. **Run Unit & Integration Tests**:
-   ```bash
-   pytest backend/tests/test_pipeline.py
-   ```
+## 📖 Documentation Index
 
-## Documentation Files
+- [CODE_FLOW_EXPLANATION.md](CODE_FLOW_EXPLANATION.md) — Complete code walkthrough from input trigger to output UI rendering.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — High-level system design & modular component boundaries.
+- [DATABASE.md](DATABASE.md) — Schema design, relational models, and dual DB strategy.
+- [EXTRACTION.md](EXTRACTION.md) — Multi-stage extraction (CSS + LiteLLM + Heuristic Rule Engine).
+- [API.md](API.md) — Complete REST API endpoint specification.
+- [PIPELINE_WALKTHROUGH.md](PIPELINE_WALKTHROUGH.md) — Step-by-step pipeline execution breakdown.
+- [TESTING.md](TESTING.md) — Test suite execution and validation setup.
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) - High level system design & design decisions
-- [DATABASE.md](DATABASE.md) - PostgreSQL schema, tables, and replacement strategy
-- [EXTRACTION.md](EXTRACTION.md) - Dual extraction mode (Deterministic + LLM/Heuristic)
-- [SCHEMA_DESIGN.md](SCHEMA_DESIGN.md) - Universal and Domain JSON schemas
-- [API.md](API.md) - REST API specification
-- [TESTING.md](TESTING.md) - Test suite execution and coverage
-- [CHECKPOINTS.md](CHECKPOINTS.md) - Debug checklist and verification checkpoints
