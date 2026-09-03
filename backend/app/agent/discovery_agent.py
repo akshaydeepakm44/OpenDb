@@ -12,7 +12,7 @@ import logging
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -32,7 +32,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 LOOP_PACE_SECONDS = 4
-BATCH_SIZE = 1000
+BATCH_SIZE = 100
 
 # ─── Agent Tools ─────────────────────────────────────────────────────────────
 
@@ -186,27 +186,34 @@ class AutonomousDiscoveryAgent:
                 batch = self._get_or_create_batch(db, state)
                 state_data = state.state_data or {}
                 batch_id_str = str(batch.id)
+                current_domain = state.current_domain
 
                 # ── 1. GATHER STATE FOR LLM ──────────────────────────────────
                 metrics = self.get_metrics(db)
                 prompt = self._build_agent_prompt(metrics, batch)
-
                 logger.info(f"[Agent] Thinking... Batch={batch_id_str[:8]} #{batch.searches_executed}/{BATCH_SIZE}")
+            finally:
+                db.close()
 
-                # ── 2. INVOKE AGENT LLM ──────────────────────────────────────
-                tool_calls = await self._invoke_llm_agent(prompt)
+            # ── 2. INVOKE AGENT LLM (NETWORK CALL - NO DB LOCK HELD) ──
+            tool_calls = await self._invoke_llm_agent(prompt)
 
-                if not tool_calls:
-                    # Fallback to deterministic expansion if LLM fails or doesn't use tools
-                    query_info = keyword_expander.get_next_query(domain=state.current_domain)
-                    tool_calls = [{
-                        "function": {
-                            "name": "search_web",
-                            "arguments": json.dumps(query_info)
-                        }
-                    }]
+            if not tool_calls:
+                # Fallback to deterministic expansion if LLM fails or doesn't use tools
+                query_info = keyword_expander.get_next_query(domain=current_domain)
+                tool_calls = [{
+                    "function": {
+                        "name": "search_web",
+                        "arguments": json.dumps(query_info)
+                    }
+                }]
 
-                # ── 3. EXECUTE TOOLS ─────────────────────────────────────────
+            # ── 3. EXECUTE TOOLS & UPDATE DB ─────────────────────────
+            db = SessionLocal()
+            try:
+                state = self._get_or_create_state(db)
+                batch = self._get_or_create_batch(db, state)
+                state_data = state.state_data or {}
                 for tool_call in tool_calls:
                     func_name = tool_call["function"]["name"]
                     try:
@@ -222,6 +229,12 @@ class AutonomousDiscoveryAgent:
                         subdomain = args.get("subdomain", state.current_subdomain)
                         keyword = args.get("keyword", state.current_keyword)
 
+                        # Code-Level Safety Guardrail Hard Constraint Pre-Check
+                        allowed, block_reason = self._pre_check_agent_instruction(db, query, domain)
+                        if not allowed:
+                            logger.warning(f"🛡️ [AGENT GUARDRAIL] Aborting search_web for '{query}' due to safety block: {block_reason}")
+                            continue
+
                         # Update State
                         state.current_domain = domain
                         state.current_subdomain = subdomain
@@ -232,6 +245,17 @@ class AutonomousDiscoveryAgent:
                         
                         batch.searches_executed = (batch.searches_executed or 0) + 1
                         db.commit()
+
+                        # Guardrail Step 6: Batch Block Threshold Monitoring
+                        from app.persistence.models import BlockedDomain
+                        blocked_in_batch = db.query(BlockedDomain).filter(BlockedDomain.created_at >= batch.started_at).count()
+                        searches_done = max(1, batch.searches_executed or 1)
+                        block_rate = blocked_in_batch / searches_done
+                        if block_rate > 0.10 and searches_done >= 5:
+                            logger.critical(f"🚨 [SAFETY ALERT] Batch block rate ({block_rate:.1%}) exceeded safety threshold (10%). Pausing batch.")
+                            batch.status = "PAUSED_SAFETY_THRESHOLD"
+                            db.commit()
+                            break
 
                         # Dispatch
                         await asyncio.to_thread(
@@ -302,6 +326,20 @@ class AutonomousDiscoveryAgent:
 
         logger.info("[Agent] Discovery loop exited cleanly.")
 
+    def _pre_check_agent_instruction(self, db: Session, query: str, domain: str = "") -> Tuple[bool, Optional[str]]:
+        """
+        Code-level hard constraint pre-check function running before agent issues
+        a crawl/search instruction. Does NOT rely on LLM self-censorship.
+        """
+        from app.safety.guardrails import is_domain_blocked, check_content_heuristics, add_to_blocklist
+        if query and is_domain_blocked(db, query):
+            return False, "database_blocklist"
+        is_disallowed, category = check_content_heuristics(f"{query} {domain}")
+        if is_disallowed:
+            add_to_blocklist(db, query, reason_category=category, source="content_moderation")
+            return False, f"heuristic_{category}"
+        return True, None
+
     # ─── LLM Orchestration ─────────────────────────────────────────────────────
 
     def _build_agent_prompt(self, metrics: Dict[str, Any], batch: BatchResult) -> str:
@@ -310,6 +348,19 @@ class AutonomousDiscoveryAgent:
         You are the OpenDB 24x7 Autonomous Discovery Agent.
         Your goal is to continuously discover companies, identify new subdomains, and orchestrate search strategies.
         
+        CRITICAL MANDATORY SAFETY CONSTRAINTS:
+        1. OBJECTIVE: Your objective is strictly identifying legitimate, registered commercial B2B companies, businesses, and organizations with a public web presence.
+        2. DISALLOWED CATEGORIES: You must NEVER search for, pursue, evaluate, or reason about content in any of these categories:
+           - Adult / sexual content / escort services / NSFW
+           - Unlicensed gambling / casinos / betting / lotteries
+           - Weapons / firearms / ammunition / darknet / illicit drugs / narcotics
+           - Counterfeit goods / pirated media / torrents / warez / cracks
+           - Phishing / malware / ransomware / keyloggers / botnets
+           - Human trafficking / exploitation content
+           - Extremist content / hate speech / terrorism
+           - Sites requiring circumvention of access controls / darknet onion sites / bypass paywalls
+        3. BLOCKLIST ROUTING: If any candidate query, domain, or website appears to fall into any of these disallowed categories, you must IMMEDIATELY reject it and route it to the blocklist mechanism. Do NOT analyze or evaluate it further.
+
         Current State:
         - Total Companies Discovered: {metrics.get('entities_discovered', 0)}
         - Verified Companies: {metrics.get('entities_verified', 0)}
@@ -328,30 +379,53 @@ class AutonomousDiscoveryAgent:
         return prompt
 
     async def _invoke_llm_agent(self, prompt: str) -> List[Dict[str, Any]]:
-        """Call the LLM and return tool calls. If litellm is not available or key missing, return None instantly."""
-        if not litellm or not getattr(settings, "OPENAI_API_KEY", "").strip():
+        """Call the GPU Qwen LLM endpoint or LiteLLM and return tool calls."""
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or getattr(settings, "QWEN_API_KEY", "")
+        base_url = getattr(settings, "OPENAI_BASE_URL", "http://115.244.46.68:8000/v1")
+        model = getattr(settings, "LLM_MODEL", "current-model")
+
+        if not api_key:
             return None
-            
+
+        # 1. Try OpenAI AsyncOpenAI client directly with configured base_url
         try:
-            # We use litellm in an async context or thread
-            response = await asyncio.to_thread(
-                litellm.completion,
-                model=self.llm_model,
+            import openai
+            client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
+            response = await client.chat.completions.create(
+                model=model,
                 messages=[{"role": "system", "content": prompt}],
                 tools=AGENT_TOOLS,
                 tool_choice="auto",
                 temperature=0.2,
-                max_tokens=500
+                max_tokens=500,
+                timeout=12.0
             )
-            
             message = response.choices[0].message
             if hasattr(message, "tool_calls") and message.tool_calls:
-                # Convert to dict format
                 return [{"function": {"name": t.function.name, "arguments": t.function.arguments}} for t in message.tool_calls]
-                
-        except Exception as e:
-            logger.warning(f"[Agent] LLM tool call failed: {e}. Falling back to deterministic strategy.")
-            
+        except Exception as err:
+            logger.debug(f"[Agent] Direct AsyncOpenAI GPU call error ({err}), trying LiteLLM fallback...")
+
+        # 2. Try LiteLLM completion fallback
+        if litellm:
+            try:
+                response = await asyncio.to_thread(
+                    litellm.completion,
+                    model=model,
+                    api_key=api_key,
+                    api_base=base_url,
+                    messages=[{"role": "system", "content": prompt}],
+                    tools=AGENT_TOOLS,
+                    tool_choice="auto",
+                    temperature=0.2,
+                    max_tokens=500
+                )
+                message = response.choices[0].message
+                if hasattr(message, "tool_calls") and message.tool_calls:
+                    return [{"function": {"name": t.function.name, "arguments": t.function.arguments}} for t in message.tool_calls]
+            except Exception as e:
+                logger.warning(f"[Agent] LLM tool call failed: {e}. Falling back to deterministic strategy.")
+
         return None
 
     # ─── Task Dispatch ─────────────────────────────────────────────────────────
@@ -466,10 +540,12 @@ class AutonomousDiscoveryAgent:
         sources_rows = db.query(SearchHistory.sources_found).all()
         total_sources = sum((r[0] or 0) for r in sources_rows)
 
-        total_entities = db.query(UniversalRecord).count()
-        verified_entities = (
-            db.query(VerificationRecord).filter(VerificationRecord.is_verified == True).count()
-        )
+        from sqlalchemy import or_
+        from app.persistence.models import GlobalLead
+        total_entities = db.query(GlobalLead).count() or db.query(UniversalRecord).count()
+        verified_entities = db.query(GlobalLead).count() or db.query(UniversalRecord).filter(
+            or_(UniversalRecord.status == "Verified", UniversalRecord.status == "Active")
+        ).count()
         duplicates_removed = (
             db.query(UniversalRecord).filter(UniversalRecord.status == "Duplicate").count()
         )

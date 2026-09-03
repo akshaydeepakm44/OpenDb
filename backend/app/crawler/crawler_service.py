@@ -87,6 +87,30 @@ class CrawlerService:
 
                     visited_urls.add(curr_url)
 
+                    # ─── Safety Guardrail Pre-Crawl Checks ───
+                    from app.persistence.database import SessionLocal
+                    from app.safety.guardrails import is_domain_blocked, add_to_blocklist
+                    from app.safety.reputation import reputation_checker
+
+                    with SessionLocal() as db:
+                        # 1. Database Blocklist Check
+                        if is_domain_blocked(db, curr_url):
+                            logger.warning(f"🚫 [SAFETY PRE-CRAWL] Skipping blocked URL: {curr_url}")
+                            continue
+
+                        # 2. Pre-crawl Robots.txt Compliance Check
+                        allowed, robots_reason = reputation_checker.is_robots_allowed(curr_url)
+                        if not allowed:
+                            logger.info(f"🤖 [SAFETY PRE-CRAWL] Skipping disallowed by robots.txt: {curr_url}")
+                            continue
+
+                        # 3. Pre-crawl Threat Intel / Reputation API Check (Fail-Closed)
+                        rep_safe, threat_type = await reputation_checker.check_url_reputation(curr_url)
+                        if not rep_safe:
+                            logger.warning(f"⚠️ [SAFETY PRE-CRAWL] Reputation check failed/flagged for '{curr_url}': {threat_type}")
+                            add_to_blocklist(db, curr_url, reason_category="malware_phishing", source="reputation_api")
+                            continue
+
                     if progress_callback:
                         await progress_callback(
                             stage="CRAWLING",
@@ -143,6 +167,42 @@ class CrawlerService:
                                 "alt": normalizer.normalize_string(img.get("alt", "")) or ""
                             })
 
+                        # Extract Logo / Favicon URL & store in MinIO vault
+                        logo_url = None
+                        logo_rel_path = None
+                        try:
+                            icon_link = soup.find("link", rel=lambda r: r and any(x in str(r).lower() for x in ["icon", "shortcut icon", "apple-touch-icon"]))
+                            og_image = soup.find("meta", property="og:image")
+                            logo_img = soup.find("img", alt=lambda a: a and "logo" in str(a).lower()) or soup.find("img", class_=lambda c: c and "logo" in str(c).lower()) or soup.find("img", id=lambda i: i and "logo" in str(i).lower())
+
+                            candidate_img_src = None
+                            if icon_link and icon_link.get("href"):
+                                candidate_img_src = icon_link["href"]
+                            elif og_image and og_image.get("content"):
+                                candidate_img_src = og_image["content"]
+                            elif logo_img and logo_img.get("src"):
+                                candidate_img_src = logo_img["src"]
+
+                            if candidate_img_src:
+                                from urllib.parse import urljoin
+                                logo_url = urljoin(curr_url, candidate_img_src)
+                                import httpx
+                                async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as img_client:
+                                    img_resp = await img_client.get(logo_url)
+                                    if img_resp.status_code == 200 and len(img_resp.content) > 100:
+                                        # Mandatory Safety Guardrail: Content moderation for logo/favicon path
+                                        from app.safety.moderation import content_moderator
+                                        img_mod = await content_moderator.moderate_image_asset(logo_url, curr_url)
+                                        if img_mod["is_safe"]:
+                                            ext = logo_url.split(".")[-1].split("?")[0].lower()
+                                            if ext not in ["png", "jpg", "jpeg", "gif", "svg", "ico", "webp"]:
+                                                ext = "png"
+                                            _, logo_rel_path = file_storage.save_logo(img_resp.content, ext=ext)
+                                        else:
+                                            logger.warning(f"🛡️ [SAFETY LOGO REJECTED] {logo_url} failed moderation: {img_mod['reason']}")
+                        except Exception as logo_err:
+                            logger.debug(f"Logo extraction notice for {curr_url}: {logo_err}")
+
                         page_result = CrawlResultItem(
                             url=curr_url,
                             title=title,
@@ -157,7 +217,9 @@ class CrawlerService:
                                 "canonical_url": canonical_url,
                                 "word_count": len(text_clean.split()),
                                 "links_count": len(raw_links),
-                                "images_count": len(raw_media)
+                                "images_count": len(raw_media),
+                                "logo_url": logo_url,
+                                "logo_rel_path": logo_rel_path,
                             }
                         )
                         results.append(page_result)

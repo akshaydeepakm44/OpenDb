@@ -5,15 +5,22 @@ import logging
 import io
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
-from minio import Minio
-from minio.error import S3Error
+try:
+    from minio import Minio
+    from minio.error import S3Error
+    HAS_MINIO = True
+except ImportError:
+    Minio = None
+    S3Error = Exception
+    HAS_MINIO = False
+
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 class StorageManager:
     def __init__(self):
-        self.use_local = settings.STORAGE_BACKEND == "local"
+        self.use_local = settings.STORAGE_BACKEND == "local" or not HAS_MINIO
         self.local_dir = Path(settings.RAW_STORAGE_DIR)
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self.bucket_name = "opendb"
@@ -137,6 +144,16 @@ class StorageManager:
         rel_path = self._put_object(object_name, content_bytes, content_type)
         return content_hash, rel_path
 
+    def save_logo(self, logo_bytes: bytes, ext: str = "png") -> Tuple[str, str]:
+        """Save logo or favicon image returning (sha256_hash, relative_path)"""
+        clean_ext = ext.lstrip(".").lower() or "png"
+        content_hash = self.calculate_hash(logo_bytes)
+        object_name = f"raw/logos/{content_hash}.{clean_ext}"
+        
+        content_type = f"image/{clean_ext}" if clean_ext in ["png", "jpg", "jpeg", "gif", "svg", "webp"] else "image/x-icon"
+        rel_path = self._put_object(object_name, logo_bytes, content_type)
+        return content_hash, rel_path
+
     def save_processed_markdown(self, markdown_text: str, content_hash: str) -> str:
         object_name = f"processed/markdown/{content_hash}.md"
         content_bytes = (markdown_text or "").encode("utf-8")
@@ -174,5 +191,59 @@ class StorageManager:
             return response.read().decode("utf-8", errors="ignore")
         except Exception:
             return None
+
+    def read_file_bytes(self, relative_path: str) -> Tuple[Optional[bytes], str]:
+        if not relative_path:
+            return None, "application/octet-stream"
+
+        clean_rel = relative_path
+        if clean_rel.startswith("local://"):
+            clean_rel = clean_rel.replace("local://", "")
+        elif clean_rel.startswith(f"s3://{self.bucket_name}/"):
+            clean_rel = clean_rel.replace(f"s3://{self.bucket_name}/", "")
+
+        ext = clean_rel.split(".")[-1].lower() if "." in clean_rel else "bin"
+        mime_types = {
+            "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "svg": "image/svg+xml", "ico": "image/x-icon", "webp": "image/webp",
+            "html": "text/html", "md": "text/markdown", "json": "application/json"
+        }
+        content_type = mime_types.get(ext, "application/octet-stream")
+
+        local_path = self.local_dir / clean_rel
+        if local_path.exists():
+            return local_path.read_bytes(), content_type
+
+        if self.use_local or not self.client:
+            return None, content_type
+
+        try:
+            response = self.client.get_object(self.bucket_name, clean_rel)
+            return response.read(), content_type
+        except Exception:
+            return None, content_type
+
+    def save_brand_kit(self, domain: str, brand_kit_data: dict) -> str:
+        """Store Brand Kit JSON: companies/{domain}/brand_kit.json in MinIO L3."""
+        clean_domain = domain.lower().strip().replace("www.", "")
+        path = f"companies/{clean_domain}/brand_kit.json"
+        content = json.dumps(brand_kit_data, indent=2, default=str)
+        return self._put_object(path, content.encode("utf-8"), content_type="application/json")
+
+    def save_logo_asset(self, domain: str, logo_bytes: bytes, ext: str = "png") -> str:
+        """Store Brand Logo: companies/{domain}/logo.{ext} in MinIO L3."""
+        clean_domain = domain.lower().strip().replace("www.", "")
+        path = f"companies/{clean_domain}/logo.{ext}"
+        mime = "image/png" if ext == "png" else f"image/{ext}"
+        return self._put_object(path, logo_bytes, content_type=mime)
+
+    def save_markdown_dom(self, domain: str, url: str, markdown_content: str) -> str:
+        """Store Crawled Subpage Markdown DOM: pages/{slug}.md in MinIO L3."""
+        import re
+        clean_domain = domain.lower().strip().replace("www.", "")
+        slug = re.sub(r'[^a-z0-9_-]', '_', url.lower().replace("https://", "").replace("http://", "").strip("/"))[:80]
+        path = f"pages/{clean_domain}_{slug}.md"
+        return self._put_object(path, markdown_content.encode("utf-8"), content_type="text/markdown")
+
 
 file_storage = StorageManager()

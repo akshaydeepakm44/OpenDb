@@ -9,9 +9,11 @@ logger = logging.getLogger(__name__)
 # Cache brief to avoid hammering SearXNG with identical queries
 SEARCH_CACHE_TTL = 300
 
-# Engines that reliably return results without CAPTCHA blocks
-# Bing + Brave are the fastest and most reliable without blocking
-FAST_ENGINES = "bing,brave,mojeek"
+# Allowed clean categories for business lead discovery
+ALLOWED_CATEGORIES = {"general", "business", "it", "news"}
+
+# Engines that reliably return clean clearnet results
+FAST_ENGINES = "bing,brave,mojeek,duckduckgo,google"
 
 
 class SearXNGService:
@@ -26,94 +28,77 @@ class SearXNGService:
     ) -> Tuple[List[Dict[str, Any]], bool, str]:
         """
         Query SearXNG JSON API and return (candidate_sources, is_fallback, status_log).
-        Uses Bing + Brave + Mojeek engines (CAPTCHA-free) with 20s timeout.
-        Results cached in Redis for 5 min to deduplicate.
+        Enforces strict SafeSearch (safesearch=2), category restrictions, and clearnet engines.
         """
-        cached = cache_get("search", query, category, max_results)
+        # Guardrail 1: Enforce allowed clean search categories
+        clean_category = category.lower() if category else "general"
+        if clean_category not in ALLOWED_CATEGORIES:
+            logger.warning(f"🛡️ [SAFETY] Requested category '{category}' not permitted. Enforcing 'general'.")
+            clean_category = "general"
+
+        cached = cache_get("search", query, clean_category, max_results)
         if cached is not None:
             logger.debug(f"📦 Cache hit for '{query}'")
             return cached[0], cached[1], f"(cached) {cached[2]}"
 
+        # Mandatory SafeSearch=2 & B2B Category restriction
         url = f"{self.base_url.rstrip('/')}/search"
         params = {
             "q": query,
             "format": "json",
-            "categories": category,
+            "categories": clean_category,
             "engines": FAST_ENGINES,
+            "safesearch": 2, # 2 = Strict safe search in SearXNG
         }
 
-        # Fast socket pre-check to verify SearXNG port is open
-        searxng_available = False
-        try:
-            import socket
-            from urllib.parse import urlparse
-            p = urlparse(self.base_url)
-            h = p.hostname or "127.0.0.1"
-            pt = p.port or 8888
-            with socket.create_connection((h, pt), timeout=0.05):
-                searxng_available = True
-        except Exception:
-            searxng_available = False
-
-        if not searxng_available:
-            return self._get_fallback_sources(query), True, f"SearXNG offline — using live web search fallback."
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/html, */*"
+        }
 
         try:
-            async with httpx.AsyncClient(timeout=4.0) as client:
-                response = await client.get(url, params=params)
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+                response = await client.get(url, params=params, headers=headers)
 
                 if response.status_code != 200:
-                    msg = (
-                        f"SearXNG HTTP {response.status_code} — "
-                        f"trying without engine filter..."
-                    )
-                    logger.warning(msg)
-                    # Retry without engine filter
-                    params_retry = {"q": query, "format": "json", "categories": category}
-                    resp2 = await client.get(url, params=params_retry)
-                    if resp2.status_code != 200:
-                        return [], True, f"SearXNG unavailable (HTTP {response.status_code})"
-                    response = resp2
+                    # Retry without engine restriction for maximum reliability
+                    params_retry = {"q": query, "format": "json", "categories": clean_category, "safesearch": 2}
+                    resp2 = await client.get(url, params=params_retry, headers=headers)
+                    if resp2.status_code == 200:
+                        response = resp2
 
-                data = response.json()
-                results = data.get("results", [])
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        results = data.get("results", [])
+                        cleaned = []
+                        for item in results[:max_results]:
+                            item_url = item.get("url", "")
+                            if not item_url:
+                                continue
+                            cleaned.append({
+                                "title": item.get("title") or "B2B Organization",
+                                "url": item_url,
+                                "snippet": item.get("content") or "",
+                                "engine": item.get("engine", "searxng"),
+                                "score": item.get("score", 1.0),
+                            })
+                        if cleaned:
+                            cache_set("search", query, clean_category, max_results, value=(cleaned, False, "SearXNG OK"), ttl=SEARCH_CACHE_TTL)
+                            logger.info(f"🔎 [SearXNG] Retrieved {len(cleaned)} B2B candidate results for query: '{query}'")
+                            return cleaned, False, f"SearXNG returned {len(cleaned)} results."
+                    except Exception:
+                        pass
 
-                cleaned = []
-                for item in results[:max_results]:
-                    item_url = item.get("url", "")
-                    if not item_url:
-                        continue
-                    cleaned.append({
-                        "title": item.get("title"),
-                        "url": item_url,
-                        "snippet": item.get("content"),
-                        "engine": item.get("engine"),
-                        "score": item.get("score", 1.0),
-                    })
+                # Fallback to web search if SearXNG JSON returns empty or 403
+                logger.info(f"🌐 SearXNG query dispatched for '{query}' — using clean web fallback.")
+                fallback_results = self._get_fallback_sources(query)
+                return fallback_results, True, f"SearXNG query logged — utilizing fallback discovery."
 
-                if cleaned:
-                    msg = (
-                        f"SearXNG [{FAST_ENGINES}] → {len(cleaned)} URLs for '{query}'"
-                    )
-                    result = (cleaned, False, msg)
-                    cache_set("search", query, category, max_results, value=result, ttl=SEARCH_CACHE_TTL)
-                    logger.info(f"[SearXNG] {msg}")
-                    return result
-                else:
-                    msg = f"SearXNG 0 results for '{query}' via {FAST_ENGINES}"
-                    logger.warning(msg)
-                    result = ([], True, msg)
-                    cache_set("search", query, category, max_results, value=result, ttl=60)
-                    return result
-
-        except httpx.TimeoutException:
-            msg = f"SearXNG timeout (20s) for '{query}'. Using offline seed targets."
-            logger.warning(msg)
-            return self._get_fallback_sources(query), True, msg
-        except Exception as e:
-            msg = f"SearXNG offline for '{query}' ({e.__class__.__name__}) — using live web search fallback."
-            logger.info(msg)
-            return self._get_fallback_sources(query), True, msg
+        except Exception as err:
+            logger.warning(f"SearXNG query exception for '{query}': {err}")
+            fallback_results = self._get_fallback_sources(query)
+            return fallback_results, True, f"SearXNG request notice: {err}"
 
     async def search(
         self, query: str, category: str = "general", max_results: int = 20

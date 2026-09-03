@@ -11,8 +11,9 @@ import httpx
 
 class LLMExtractor:
     def __init__(self):
-        self.api_key = settings.OPENAI_API_KEY
-        self.model = settings.QWEN_MODEL_NAME or settings.LLM_MODEL
+        self.api_key = settings.OPENAI_API_KEY or getattr(settings, "QWEN_API_KEY", "sk-datai2i-a100-qwen35-27b-8x3f9z")
+        self.base_url = getattr(settings, "OPENAI_BASE_URL", "http://115.244.46.68:8000/v1")
+        self.model = settings.QWEN_MODEL_NAME or settings.LLM_MODEL or "current-model"
         self.ollama_url = settings.OLLAMA_BASE_URL
 
     async def extract_domain_data(
@@ -23,13 +24,34 @@ class LLMExtractor:
         page_url: str
     ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """
-        Extract domain data using schema instructions via Qwen / LLM or Heuristics.
+        Extract domain data using schema instructions via Qwen GPU API / Ollama / Heuristics.
         Returns: (domain_data_dict, evidence_list)
         """
         properties = schema_def.get("properties", {})
         prompt = self._build_prompt(text_content, domain_name, properties)
-        
-        # 1. Try Qwen via Ollama Local Endpoint (http://localhost:11434)
+
+        # 1. Primary: Try GPU Qwen OpenAI API Endpoint (http://115.244.46.68:8000/v1)
+        if self.api_key and self.base_url:
+            try:
+                import openai
+                client = openai.AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
+                response = await client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    response_format={"type": "json_object"},
+                    timeout=12.0
+                )
+                content = response.choices[0].message.content
+                parsed = json.loads(content)
+                domain_data = parsed.get("domain_data", {})
+                evidence_list = parsed.get("evidence", [])
+                logger.info(f"Qwen GPU model ({self.model}) successfully extracted fields for {page_url}")
+                return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
+            except Exception as gpu_err:
+                logger.debug(f"Qwen GPU extraction error ({gpu_err}), trying Ollama / LiteLLM fallbacks...")
+
+        # 2. Try Qwen via Ollama Local Endpoint (http://localhost:11434)
         ollama_available = False
         try:
             import socket
@@ -60,18 +82,19 @@ class LLMExtractor:
                         parsed = json.loads(content)
                         domain_data = parsed.get("domain_data", {})
                         evidence_list = parsed.get("evidence", [])
-                        logger.info(f"Qwen model ({self.model}) successfully extracted fields for {page_url}")
+                        logger.info(f"Ollama model ({self.model}) successfully extracted fields for {page_url}")
                         return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
             except Exception as qwen_err:
-                logger.debug(f"Ollama Qwen extraction error ({qwen_err}), trying OpenAI / LiteLLM API...")
+                logger.debug(f"Ollama extraction error ({qwen_err}), trying LiteLLM...")
 
-        # 2. Try LiteLLM / OpenAI API call if key is present
+        # 3. Try LiteLLM API call if key is present
         if self.api_key and self.api_key.strip():
             try:
                 import litellm
                 response = await litellm.acompletion(
                     model=self.model,
                     api_key=self.api_key,
+                    api_base=self.base_url,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.0,
                     response_format={"type": "json_object"}
@@ -84,7 +107,7 @@ class LLMExtractor:
             except Exception as e:
                 logger.warning(f"LLM extraction failed or unconfigured, falling back to rule extraction: {e}")
 
-        # 3. Heuristic / Deterministic Semantic Extractor Fallback
+        # 4. Heuristic / Deterministic Semantic Extractor Fallback
         return self._heuristic_semantic_extraction(text_content, domain_name, properties, page_url)
 
     def _format_evidence(self, evidence_list: List[Dict[str, Any]], page_url: str) -> List[Dict[str, Any]]:
@@ -219,6 +242,15 @@ TEXT TO EXTRACT FROM:
                 else:
                     val = f"contact@{parsed_url}"
                     evidence_snippet = f"Derived contact endpoint for {parsed_url}"
+
+            # 7. Key People / Leadership / Executives
+            elif prop_name in ["key_people", "leadership", "decision_makers", "executives"]:
+                from app.extraction.key_people_extractor import key_people_extractor
+                c_name = domain_data.get("company_name") or parsed_url.capitalize()
+                extracted_ppl = key_people_extractor.extract_from_text_and_html(text, "", c_name, parsed_url)
+                if extracted_ppl:
+                    val = extracted_ppl
+                    evidence_snippet = f"Extracted {len(extracted_ppl)} key decision makers/executives"
 
             # If no rule match, strictly enforce null / []
             if val is None:

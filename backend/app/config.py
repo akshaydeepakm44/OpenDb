@@ -37,11 +37,13 @@ class Settings(BaseSettings):
     CRAWL_CONCURRENCY: int = 5
     RESOURCE_MAX_FILE_SIZE_MB: int = 10
     
-    OPENAI_API_KEY: Optional[str] = None
-    LLM_MODEL: str = "gpt-4o-mini"
-    LLM_PROVIDER: str = "ollama"  # 'ollama', 'openai', 'qwen_local', 'heuristics'
+    OPENAI_API_KEY: Optional[str] = "sk-datai2i-a100-qwen35-27b-8x3f9z"
+    QWEN_API_KEY: Optional[str] = "sk-datai2i-a100-qwen35-27b-8x3f9z"
+    OPENAI_BASE_URL: str = "http://115.244.46.68:8000/v1"
+    LLM_MODEL: str = "current-model"
+    LLM_PROVIDER: str = "openai"  # 'ollama', 'openai', 'qwen_local', 'heuristics'
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    QWEN_MODEL_NAME: str = "qwen2.5:7b"
+    QWEN_MODEL_NAME: str = "current-model"
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

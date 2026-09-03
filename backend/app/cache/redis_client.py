@@ -18,26 +18,34 @@ _redis_available = None
 _last_check = 0
 
 def get_redis() -> Optional[redis.Redis]:
-    """Return a process-wide Redis client, or None instantly if Redis is offline."""
+    """Return a process-wide Redis client instantly if online, reusing active connection."""
     global _client, _redis_available, _last_check
     import time, socket
-    now = time.time()
     
+    if _client is not None and _redis_available is True:
+        return _client
+
+    now = time.time()
     if _redis_available is False and (now - _last_check) < 10:
         return None
         
     with _lock:
+        if _client is not None and _redis_available is True:
+            return _client
         try:
-            # Fast 0.02s socket test
+            # Fast 0.02s socket test on initial connect
             with socket.create_connection(("127.0.0.1", 6379), timeout=0.02):
                 pass
-            if _client is None:
-                _client = redis.Redis.from_url(
-                    settings.REDIS_URL,
-                    socket_connect_timeout=0.05,
-                    socket_timeout=0.05,
-                    decode_responses=True,
-                )
+            from urllib.parse import urlparse
+            p = urlparse(settings.REDIS_URL.replace("localhost", "127.0.0.1"))
+            _client = redis.Redis(
+                host=p.hostname or "127.0.0.1",
+                port=p.port or 6379,
+                password=p.password,
+                socket_connect_timeout=1.0,
+                socket_timeout=1.0,
+                decode_responses=True,
+            )
             _redis_available = True
             return _client
         except Exception:

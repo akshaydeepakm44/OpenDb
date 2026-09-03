@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, BigInteger, Numeric,
-    DateTime, ForeignKey, JSON
+    Column, Integer, String, Text, Boolean, BigInteger, Numeric, Float,
+    DateTime, ForeignKey, JSON, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -370,3 +370,120 @@ class VerificationRecord(Base):
     verified_at = Column(DateTime(timezone=True), default=utc_now)
     
     universal_record = relationship("UniversalRecord")
+
+
+class BlockedDomain(Base):
+    __tablename__ = "blocked_domains"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    domain = Column(String(255), nullable=False, unique=True, index=True)
+    reason_category = Column(String(100), nullable=False)
+    source = Column(String(50), nullable=False) # searxng_block, reputation_api, content_moderation, manual_review, manual_admin
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class QuarantinedContent(Base):
+    __tablename__ = "quarantined_content"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    document_id = Column(String(36), nullable=True)
+    url = Column(Text, nullable=False)
+    domain = Column(String(255), nullable=False)
+    content_type = Column(String(50), nullable=False) # text, logo, image
+    flagged_categories = Column(JSONB_TYPE, default=list)
+    confidence_score = Column(Numeric(5, 4), default=0)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class ManualReviewQueue(Base):
+    __tablename__ = "manual_review_queue"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    url = Column(Text, nullable=False)
+    domain = Column(String(255), nullable=False)
+    item_type = Column(String(50), nullable=False) # text_ambiguous, logo_ambiguous, entity_uncertain
+    content_snippet = Column(Text, nullable=True)
+    score = Column(Numeric(5, 4), default=0)
+    status = Column(String(30), default="pending") # pending, approved, rejected
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTERPRISE ARCHITECTURE MODELS (PostgreSQL Open Lake & SQLite WAL Vault)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class OpenLakeRecord(Base):
+    """PostgreSQL Open Lake dispatch candidates repository."""
+    __tablename__ = "open_lake_records"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    domain = Column(String(255), nullable=False, unique=True, index=True)
+    enrichment_status = Column(String(50), default="pending") # pending, in_progress, enriched, failed
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class GlobalLead(Base):
+    """SQLite WAL Master Vault - Primary lead repository."""
+    __tablename__ = "global_leads"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True) # md5 hash of domain
+    domain = Column(String(255), nullable=False, unique=True, index=True)
+    company_name = Column(String(255), nullable=False)
+    minio_asset_path = Column(Text, nullable=True) # companies/{domain}/brand_kit.json
+    logo_url = Column(Text, nullable=True)
+    technology_stack = Column(JSONB_TYPE, default=list) # JSON array of tech stack
+    quality_score = Column(Float, default=0.0)
+    headquarters = Column(Text, nullable=True)
+    industry = Column(Text, nullable=True)
+    company_size = Column(Text, nullable=True)
+    revenue_funding = Column(Text, nullable=True)
+    verified_emails = Column(JSONB_TYPE, default=list)
+    summary = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    people = relationship("GlobalLeadPerson", back_populates="lead", cascade="all, delete-orphan")
+    subpages = relationship("GlobalLeadSubpage", back_populates="lead", cascade="all, delete-orphan")
+
+
+class GlobalLeadPerson(Base):
+    """Key decision makers & leadership associated with a global lead."""
+    __tablename__ = "global_lead_people"
+    __table_args__ = (
+        UniqueConstraint('domain', 'full_name', name='uix_domain_full_name'),
+        {'extend_existing': True}
+    )
+
+    id = Column(String(36), primary_key=True) # md5 hash of domain + full_name
+    global_lead_id = Column(String(36), ForeignKey("global_leads.id", ondelete="CASCADE"), nullable=False)
+    domain = Column(String(255), nullable=False)
+    full_name = Column(String(255), nullable=False)
+    title = Column(String(255), nullable=True)
+    linkedin_search_url = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    lead = relationship("GlobalLead", back_populates="people")
+
+
+class GlobalLeadSubpage(Base):
+    """Crawled Markdown DOM subpages stored in MinIO L3 object storage."""
+    __tablename__ = "global_lead_subpages"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    global_lead_id = Column(String(36), ForeignKey("global_leads.id", ondelete="CASCADE"), nullable=False)
+    domain = Column(String(255), nullable=False)
+    page_url = Column(Text, nullable=False, unique=True)
+    minio_object_path = Column(Text, nullable=False) # pages/{slug}.md
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    lead = relationship("GlobalLead", back_populates="subpages")
+
+

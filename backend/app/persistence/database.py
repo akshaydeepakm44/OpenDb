@@ -79,8 +79,10 @@ def create_db_engine():
             raise RuntimeError("PostgreSQL connection failed in PRODUCTION mode.")
 
         IS_FALLBACK_ACTIVE = True
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        fallback_db_path = os.path.join(base_dir, "opendb_fallback.db").replace("\\", "/")
         eng = create_engine(
-            "sqlite:///./opendb_fallback.db",
+            f"sqlite:///{fallback_db_path}",
             connect_args={"check_same_thread": False, "timeout": 30}
         )
         try:
@@ -123,6 +125,18 @@ def init_db():
                 conn.commit()
             except Exception:
                 pass
+
+            # Setup FTS5 Virtual Table for SQLite Master Vault as per architecture diagram
+            if "sqlite" in str(engine.url):
+                try:
+                    conn.execute(text("""
+                        CREATE VIRTUAL TABLE IF NOT EXISTS global_leads_fts USING fts5(
+                            domain, company_name, industry, technology_stack, summary
+                        );
+                    """))
+                    conn.commit()
+                except Exception as fts_err:
+                    logger.debug(f"FTS5 setup note: {fts_err}")
 
         logger.info("Database tables verified/created successfully.")
     except Exception as e:

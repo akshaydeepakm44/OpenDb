@@ -43,20 +43,25 @@ logger = logging.getLogger(__name__)
 
 
 def run_async(coro):
-    """Run async coroutine in a fresh event loop (Celery workers are synchronous)."""
-    if sys.platform == "win32":
-        loop = asyncio.WindowsProactorEventLoopPolicy().new_event_loop()
-    else:
-        loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    """Run async coroutine safely across platforms without 'Event loop is closed' errors."""
     try:
-        return loop.run_until_complete(coro)
-    finally:
+        return asyncio.run(coro)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(loop.shutdown_asyncgens())
-        except Exception:
-            pass
-        loop.close()
+            return loop.run_until_complete(coro)
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            loop.close()
 
 
 _worker_check_cache = {"active": False, "last_check": 0}
@@ -90,15 +95,16 @@ def _safe_dispatch(task_func, **kwargs):
     """
     Safely dispatch task.
     Attempts Celery enqueueing if a worker process is active.
-    Otherwise dispatches to a background daemon thread so discovery proceeds immediately.
+    Otherwise dispatches to background daemon thread so discovery proceeds immediately without Redis delay.
     """
     dispatched_to_celery = False
     if _has_active_celery_worker():
         try:
-            task_func.delay(**kwargs)
+            task_func.apply_async(kwargs=kwargs, queue="celery")
             dispatched_to_celery = True
+            logger.info(f"[Safe Dispatch] Enqueued task '{task_func.name}' to Redis Celery queue.")
         except Exception as e:
-            logger.debug(f"[Safe Dispatch] Celery queue dispatch skipped: {e}")
+            logger.debug(f"[Safe Dispatch] Celery queue push skipped: {e}")
 
     if not dispatched_to_celery:
         def _run_bg():
@@ -562,6 +568,39 @@ def crawl_entity_task(
 
         repo.save_extraction_results(db, payload)
 
+        # Enterprise Master Vault Integration (Redis L1, SQLite WAL Vault, MinIO L3, Postgres Open Lake)
+        try:
+            from app.persistence.vault_service import MasterVaultService
+            from app.extraction.key_people_extractor import key_people_extractor
+            dom_data = payload.get("domain_data") or {}
+            univ_data = payload.get("universal") or {}
+            subpages_list = [
+                {"url": url, "markdown": item.markdown or item.text or ""}
+            ]
+            d_makers = dom_data.get("key_people") or dom_data.get("leadership")
+            if not d_makers:
+                d_makers = key_people_extractor.extract_from_text_and_html(
+                    enriched_text, item.html_content or "", entity_name, domain_key
+                )
+            MasterVaultService.persist_master_lead(
+                db=db,
+                domain=domain_key,
+                company_name=entity_name,
+                logo_url=dom_data.get("logo_url"),
+                technology_stack=dom_data.get("technologies") or dom_data.get("tech_stack"),
+                quality_score=entity_confidence * 10.0,
+                headquarters=dom_data.get("headquarters") or dom_data.get("location"),
+                industry=dom_data.get("industry"),
+                company_size=dom_data.get("company_size"),
+                revenue_funding=dom_data.get("funding_stage") or dom_data.get("revenue"),
+                verified_emails=dom_data.get("contact_emails") or dom_data.get("emails"),
+                summary=univ_data.get("description") or dom_data.get("business_overview"),
+                decision_makers=d_makers,
+                crawled_subpages=subpages_list
+            )
+        except Exception as vault_err:
+            logger.warning(f"[Worker B] MasterVault persistence notice for {domain_key}: {vault_err}")
+
         univ_rec = db.query(UniversalRecord).filter(
             UniversalRecord.document_id == doc_id
         ).first()
@@ -627,6 +666,20 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
         record.country = normalized_country or record.country
         if normalized_url:
             record.url = normalized_url
+
+        # ── 1b. Entity Quality Filter Check ────────────────────────────────────
+        keep_ent, ent_reason = quality_filter.filter_entity(
+            canonical_name=record.canonical_name,
+            url=record.url or "",
+            confidence=float(record.confidence or 0.5)
+        )
+        if not keep_ent:
+            record.status = "Filtered"
+            db.commit()
+            _log_activity(db, url=record.url or "", stage="FILTER", domain="Technology",
+                          status="FILTERED", message=f"Entity verification rejected: {ent_reason}",
+                          entity_name=record.canonical_name)
+            return {"status": "filtered", "reason": ent_reason, "record_id": record.id}
 
         # ── 2. Deduplication — multi-signal ──────────────────────────────────
         # Signal 1: Exact name match
@@ -698,6 +751,26 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
         record.confidence = confidence
         record.status = "Verified" if is_verified else "Discovered"
         db.commit()
+
+        # Sync to Master Vault if verified
+        if is_verified and record.url:
+            try:
+                from app.persistence.vault_service import MasterVaultService
+                domain_key = urlparse(record.url).netloc.lower().lstrip("www.")
+                dom_data = dom_rec.data if dom_rec and isinstance(dom_rec.data, dict) else {}
+                MasterVaultService.persist_master_lead(
+                    db=db,
+                    domain=domain_key,
+                    company_name=record.canonical_name,
+                    technology_stack=dom_data.get("technologies") or [],
+                    quality_score=confidence * 10.0,
+                    headquarters=dom_data.get("headquarters") or record.location,
+                    industry=record.domain.name if (record.domain and hasattr(record.domain, "name")) else "Technology",
+                    summary=record.description or f"{record.canonical_name} corporate profile.",
+                    decision_makers=dom_data.get("key_people") or dom_data.get("leadership")
+                )
+            except Exception as vault_err:
+                logger.warning(f"[Worker C] Vault sync warning: {vault_err}")
 
         # ── 4. Save Verification Record ────────────────────────────────────────
         v_record = VerificationRecord(

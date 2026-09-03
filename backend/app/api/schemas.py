@@ -11,6 +11,11 @@ router = APIRouter(prefix="/schemas", tags=["Schemas"])
 def list_schemas():
     return schema_registry.list_schemas()
 
+@router.get("/active")
+def get_active_schemas():
+    """Return all active domain extraction schemas registered in OpenDB."""
+    return schema_registry.list_schemas()
+
 @router.get("/{domain}")
 def get_domain_schema(domain: str):
     schema = schema_registry.get_domain_schema(domain)

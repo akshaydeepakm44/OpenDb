@@ -2,7 +2,6 @@ import os
 import asyncio
 import httpx
 import redis
-from minio import Minio
 from sqlalchemy import text
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
@@ -31,7 +30,15 @@ def _check_postgres(db: Session) -> str:
 
 def _check_redis() -> str:
     try:
-        r = redis.Redis.from_url(settings.REDIS_URL.replace("localhost", "127.0.0.1"), socket_connect_timeout=0.1, socket_timeout=0.1)
+        from urllib.parse import urlparse
+        p = urlparse(settings.REDIS_URL.replace("localhost", "127.0.0.1"))
+        r = redis.Redis(
+            host=p.hostname or "127.0.0.1",
+            port=p.port or 6379,
+            password=p.password,
+            socket_connect_timeout=1.0,
+            socket_timeout=1.0
+        )
         if r.ping():
             return "online"
     except Exception:

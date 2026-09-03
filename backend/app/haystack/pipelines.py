@@ -105,12 +105,14 @@ def build_extraction_pipeline() -> Optional["Pipeline"]:
             )
         elif provider == "openai":
             api_key = settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY")
+            base_url = getattr(settings, "OPENAI_BASE_URL", "http://115.244.46.68:8000/v1")
             if not api_key:
                 logger.warning("⚠️  OPENAI_API_KEY not set — extraction pipeline disabled")
                 return None
             generator = ChatGenerator(
                 model=model,
                 api_key=api_key,
+                api_base_url=base_url,
                 generation_kwargs={"temperature": 0.1, "max_tokens": 2048},
             )
         else:
