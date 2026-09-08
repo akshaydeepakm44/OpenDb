@@ -18,14 +18,16 @@ BLACKLISTED_DOMAINS = {
     "tiktok.com", "youtube.com", "pinterest.com", "tumblr.com", "linkedin.com",
     "quora.com", "stackoverflow.com", "stackexchange.com", "lowyat.net",
 
-    # News & Media portals (Not corporate B2B lead targets)
+    # News, Media & Blog portals (Not corporate B2B company lead homepages)
     "cnn.com", "businessinsider.com", "bloomberg.com", "reuters.com", "nytimes.com",
     "wsj.com", "forbes.com", "fortune.com", "techcrunch.com", "wired.com", "theverge.com",
     "cnet.com", "engadget.com", "news.ycombinator.com", "yahoo.com", "msn.com",
     "foxnews.com", "cnbc.com", "bbc.com", "indianexpress.com", "timesofindia.com",
     "businesstoday.in", "business-standard.com", "builtin.com", "medium.com", "substack.com",
+    "dev.to", "hashnode.com", "freecodecamp.org", "towardsdatascience.com", "hackernoon.com",
+    "dzone.com", "infoq.com", "venturebeat.com", "techradar.com", "zdnet.com", "mashable.com",
 
-    # Educational / Academic / Knowledge Repositories
+    # Educational / Academic / Knowledge Repositories / Tutorial Sites
     "coursera.org", "udemy.com", "edx.org", "khanacademy.org", "wikipedia.org",
     "wikidata.org", "wikimedia.org", "w3schools.com", "geeksforgeeks.org",
     "tutorialspoint.com", "merriam-webster.com", "britannica.com", "techopedia.com",
@@ -35,7 +37,7 @@ BLACKLISTED_DOMAINS = {
     # Developer Documentation & Tech Reference portals (Not company leads)
     "developer.apple.com", "developer.android.com", "developer.mozilla.org",
     "developer.microsoft.com", "developer.google.com", "developers.google.com",
-    "developer.chrome.com", "visualstudio.microsoft.com",
+    "developer.chrome.com", "visualstudio.microsoft.com", "gitbook.io", "readme.io",
     "docs.github.com", "docs.google.com", "support.google.com", "support.microsoft.com",
 
     # Accelerators, Directories & Research Aggregators
@@ -67,6 +69,9 @@ BLACKLISTED_PATH_PATTERNS = [
     r"/page/\d+", r"/search\?", r"\?q=", r"/feed/", r"/rss",
     r"/author/", r"/user/", r"#comment", r"/wp-content/",
     r"/articles/", r"/article/", r"/topic/", r"/topics/", r"/definition/",
+    r"/blog/", r"/blogs/", r"/news/", r"/press-release/", r"/press-releases/",
+    r"/tutorial/", r"/tutorials/", r"/guides/", r"/guide/", r"/docs/",
+    r"/documentation/", r"/wiki/", r"/post/", r"/posts/",
     r"\.pdf$", r"\.xml$", r"\.json$", r"\.csv$",
 ]
 

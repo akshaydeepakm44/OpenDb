@@ -1,0 +1,51 @@
+{
+  "health": {
+    "status_code": 200,
+    "data": {
+      "status": "healthy",
+      "app": "OpenDB Crawler Lab",
+      "environment": "development"
+    }
+  },
+  "agent_status": {
+    "status_code": 200,
+    "active_queue": null
+  },
+  "trigger_cycle": {
+    "status_code": 404,
+    "data": {
+      "detail": "Not Found"
+    }
+  },
+  "crawled_leads": {
+    "status_code": 404,
+    "count": 0
+  },
+  "entities": {
+    "status_code": 200,
+    "count": 5
+  },
+  "dossier": {
+    "status_code": 200,
+    "latency_sec": 7.9,
+    "canonical_name": "Zero",
+    "domain": "mathsisfun.com",
+    "headquarters": "Not Specified",
+    "verified_emails": [
+      "funmath@gmail.com"
+    ],
+    "decision_makers_count": 0
+  },
+  "export": {
+    "status_code": 200,
+    "total_exported": 25
+  },
+  "feedback": {
+    "status_code": 200,
+    "batches_count": 10
+  },
+  "safety": {
+    "status_code": 404,
+    "audit_logs": 0
+  }
+}

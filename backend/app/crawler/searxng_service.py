@@ -106,6 +106,97 @@ class SearXNGService:
         results, _, _ = await self.search_with_meta(query, category, max_results)
         return results
 
+    async def search_initial_with_metadata_targets(
+        self, query: str, max_results: int = 25
+    ) -> Tuple[List[Dict[str, Any]], bool, str]:
+        """
+        SearXNG Search Boundaries: Prioritizes actual commercial AI & IT companies,
+        official websites, LinkedIn company/people profiles, contact info, HQ, and employee size,
+        while filtering out blogs, tutorials, news, and generic articles.
+        """
+        q_lower = query.lower()
+        targets = []
+        
+        # Enforce search boundaries for company targets
+        if "linkedin" not in q_lower:
+            targets.append("(site:linkedin.com/company OR site:linkedin.com/in OR \"official website\")")
+        if "email" not in q_lower and "contact" not in q_lower:
+            targets.append("contact email")
+        if "headquarters" not in q_lower and "location" not in q_lower:
+            targets.append("headquarters location")
+
+        # Exclude non-company pages (blogs, news, tutorials, forums)
+        exclusions = "-blog -tutorial -news -article -forum -medium -substack -dev.to -hashnode"
+
+        expanded_query = query
+        if targets:
+            expanded_query = f"{query} {' '.join(targets)} {exclusions}"
+        else:
+            expanded_query = f"{query} {exclusions}"
+
+        logger.info(f"🔎 [SearXNG Boundary Search] Executing targeted query: '{expanded_query}'")
+        return await self.search_with_meta(expanded_query, max_results=max_results)
+
+    async def verify_and_enrich_with_searxng(
+        self, company_name: str, domain: str
+    ) -> Dict[str, Any]:
+        """
+        Requirement 2: Dedicated Verification and Enrichment Pipeline using SearXNG.
+        Executes secondary targeted verification queries against SearXNG to independently
+        cross-check raw crawled data (emails, location/HQ, key people, LinkedIn profile links).
+        """
+        clean_cname = company_name.split("|")[0].split("-")[0].strip() if company_name else domain.split(".")[0].capitalize()
+        logger.info(f"🛡️ [SearXNG Verification Pipeline] Executing secondary verification search for: '{clean_cname}' ({domain})")
+
+        # Secondary Verification Queries via SearXNG
+        hq_query = f"{clean_cname} {domain} official headquarters address location contact email"
+        people_query = f"{clean_cname} {domain} CEO founder executive site:linkedin.com/in OR site:linkedin.com/company"
+
+        results_hq, _, _ = await self.search_with_meta(hq_query, max_results=10)
+        results_people, _, _ = await self.search_with_meta(people_query, max_results=10)
+
+        all_snippets = []
+        linkedin_urls = []
+        snippets_text = []
+
+        for r in results_hq + results_people:
+            snip = r.get("snippet", "")
+            title = r.get("title", "")
+            url = r.get("url", "")
+            if url:
+                all_snippets.append(r)
+                snippets_text.append(f"{title} {snip}")
+                if "linkedin.com/" in url.lower():
+                    linkedin_urls.append(url)
+
+        combined_verification_text = "\n\n".join(snippets_text)
+
+        # Cross-verify emails from SearXNG verification search snippets
+        import re
+        from app.crawler.realtime_enricher import realtime_enricher
+        verified_emails = realtime_enricher.extract_real_emails(combined_verification_text, domain)
+        verified_hq = realtime_enricher.extract_real_headquarters(combined_verification_text)
+
+        # Extract leadership personnel from SearXNG verification search results
+        from app.extraction.key_people_extractor import key_people_extractor
+        verified_people = key_people_extractor.extract_from_linkedin_search_snippets(all_snippets, clean_cname)
+
+        logger.info(
+            f"✅ [SearXNG Verification Pipeline] Results for '{clean_cname}': "
+            f"HQ Verified: '{verified_hq or 'Pending'}', "
+            f"Emails Verified: {len(verified_emails)}, "
+            f"LinkedIn/People Verified: {len(verified_people)}"
+        )
+
+        return {
+            "is_verified": bool(verified_hq or verified_emails or verified_people or linkedin_urls),
+            "verified_hq": verified_hq,
+            "verified_emails": verified_emails,
+            "verified_people": verified_people,
+            "linkedin_urls": list(set(linkedin_urls)),
+            "verification_snippets": all_snippets,
+        }
+
     def _get_fallback_sources(self, query: str) -> List[Dict[str, Any]]:
         """Fallback to LIVE Bing & DuckDuckGo search if SearXNG is down."""
         logger.info(f"Using Live Search fallback (Bing/DDG) for: '{query}'")
@@ -173,33 +264,11 @@ class SearXNGService:
             filtered.append(r)
 
         if filtered:
-            logger.info(f"[Live Search Fallback] Discovered {len(filtered)} genuine live target URLs for '{query}'")
+            logger.info(f"[Live Search] Discovered {len(filtered)} genuine live target URLs for '{query}'")
             return filtered[:15]
 
-        logger.info(f"[Live Search Fallback] Supplementing with seed enterprise targets for query: '{query}'")
-        preset_seeds = [
-            {"title": "Stripe — Financial Infrastructure", "url": "https://stripe.com", "snippet": "Financial infrastructure for the internet.", "engine": "preset_seed"},
-            {"title": "Vercel — Frontend Cloud", "url": "https://vercel.com", "snippet": "Build & deploy modern web apps.", "engine": "preset_seed"},
-            {"title": "Datadog — Cloud Monitoring", "url": "https://datadoghq.com", "snippet": "Cloud monitoring and observability platform.", "engine": "preset_seed"},
-            {"title": "Snowflake — Data Cloud", "url": "https://snowflake.com", "snippet": "Data cloud and analytics platform.", "engine": "preset_seed"},
-            {"title": "Figma — Design Platform", "url": "https://figma.com", "snippet": "Collaborative design platform.", "engine": "preset_seed"},
-            {"title": "Notion — Connected Workspace", "url": "https://notion.so", "snippet": "Docs, wikis, and project management.", "engine": "preset_seed"},
-            {"title": "Retool — Internal App Development", "url": "https://retool.com", "snippet": "Build internal tools fast.", "engine": "preset_seed"},
-            {"title": "Supabase — Open Source Firebase", "url": "https://supabase.com", "snippet": "Open source Postgres database & backend.", "engine": "preset_seed"},
-            {"title": "Linear — Issue Tracking", "url": "https://linear.app", "snippet": "Product planning and issue tracker.", "engine": "preset_seed"},
-            {"title": "Postman — API Platform", "url": "https://postman.com", "snippet": "Build and test APIs.", "engine": "preset_seed"},
-            {"title": "MongoDB — Developer Data Platform", "url": "https://mongodb.com", "snippet": "Multi-cloud developer data platform.", "engine": "preset_seed"},
-            {"title": "Elastic — Search & Observability", "url": "https://elastic.co", "snippet": "Search AI and log analysis.", "engine": "preset_seed"},
-            {"title": "HashiCorp — Cloud Automation", "url": "https://hashicorp.com", "snippet": "Cloud infrastructure automation.", "engine": "preset_seed"},
-            {"title": "GitLab — DevSecOps Platform", "url": "https://gitlab.com", "snippet": "AI-powered DevSecOps platform.", "engine": "preset_seed"},
-            {"title": "Docker — App Containerization", "url": "https://docker.com", "snippet": "Application containerization platform.", "engine": "preset_seed"},
-            {"title": "Sentry — Application Monitoring", "url": "https://sentry.io", "snippet": "Code-level application monitoring.", "engine": "preset_seed"},
-            {"title": "Pinecone — Vector Database", "url": "https://pinecone.io", "snippet": "Vector database for AI apps.", "engine": "preset_seed"},
-            {"title": "Anthropic — AI Research", "url": "https://anthropic.com", "snippet": "AI research and safety company.", "engine": "preset_seed"},
-        ]
-        import random
-        selected = random.sample(preset_seeds, k=min(8, len(preset_seeds)))
-        return selected
+        logger.info(f"[Live Search] No live targets found matching query: '{query}'")
+        return []
 
 
 searxng_service = SearXNGService()

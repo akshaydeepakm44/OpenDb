@@ -156,8 +156,7 @@ class MasterVaultService:
                         global_lead_id=lead_id,
                         domain=clean_domain,
                         full_name=name,
-                        title=role,
-                        linkedin_search_url=f"https://www.linkedin.com/search/results/all/?keywords={name}%20{company_name}"
+                        title=role
                     )
                     db.add(p_rec)
                 else:
@@ -194,7 +193,7 @@ class MasterVaultService:
             "verified_emails": lead.verified_emails,
             "summary": lead.summary,
             "people": [
-                {"name": p.full_name, "title": p.title, "linkedin_search_url": p.linkedin_search_url}
+                {"name": p.full_name, "title": p.title}
                 for p in db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id == lead_id).all()
             ],
             "subpages": [
@@ -256,7 +255,7 @@ class MasterVaultService:
             "verified_emails": lead.verified_emails,
             "summary": lead.summary,
             "people": [
-                {"name": p.full_name, "title": p.title, "linkedin_search_url": p.linkedin_search_url}
+                {"name": p.full_name, "title": p.title}
                 for p in people
             ],
             "subpages": [

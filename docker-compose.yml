@@ -88,6 +88,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    image: opendb_backend:latest
     container_name: opendb_backend
     restart: unless-stopped
     ports:
@@ -118,9 +119,7 @@ services:
 
   # ─── Celery Worker (async task executor) ─────────────────────────────────
   celery_worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: opendb_backend:latest
     container_name: opendb_celery
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,default
@@ -141,6 +140,8 @@ services:
       - ./schemas:/app/schemas:ro
       - ./data:/app/data
     depends_on:
+      backend:
+        condition: service_started
       postgres:
         condition: service_healthy
       redis:

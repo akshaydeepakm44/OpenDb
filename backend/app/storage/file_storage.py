@@ -18,9 +18,12 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+_minio_offline = False
+
 class StorageManager:
     def __init__(self):
-        self.use_local = settings.STORAGE_BACKEND == "local" or not HAS_MINIO
+        global _minio_offline
+        self.use_local = settings.STORAGE_BACKEND == "local" or not HAS_MINIO or _minio_offline
         self.local_dir = Path(settings.RAW_STORAGE_DIR)
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self.bucket_name = "opendb"
@@ -38,9 +41,10 @@ class StorageManager:
                 p = urlparse(f"http://{endpoint}" if "://" not in endpoint else endpoint)
                 h = p.hostname or "127.0.0.1"
                 pt = p.port or 9000
-                with socket.create_connection((h, pt), timeout=0.3):
+                with socket.create_connection((h, pt), timeout=0.03):
                     pass
             except Exception as sock_err:
+                _minio_offline = True
                 if settings.OPENDB_ENV.lower() == "production":
                     logger.error(f"MinIO endpoint unreachable in PRODUCTION mode: {sock_err}")
                     raise RuntimeError(f"MinIO endpoint unreachable in PRODUCTION mode: {sock_err}")
@@ -131,6 +135,24 @@ class StorageManager:
         object_name = f"raw/pages/{content_hash}.{ext}"
         
         content_type = "text/html" if ext == "html" else "application/octet-stream"
+        rel_path = self._put_object(object_name, content_bytes, content_type)
+        return content_hash, rel_path
+
+    def save_company_page(self, domain: str, content_str_or_bytes: str | bytes, page_name: str = "homepage.md") -> Tuple[str, str]:
+        """Save crawled page specifically organized under companies/{domain}/pages/{page_name} in MinIO storage."""
+        content_bytes = (
+            content_str_or_bytes.encode("utf-8")
+            if isinstance(content_str_or_bytes, str)
+            else content_str_or_bytes
+        )
+        content_hash = self.calculate_hash(content_bytes)
+        clean_domain = domain.replace("www.", "").lower().strip() or "domain"
+        clean_page = page_name.lstrip("/").replace(" ", "_") or "homepage.md"
+        if not clean_page.endswith(".md") and not clean_page.endswith(".html"):
+            clean_page = f"{clean_page}.md"
+            
+        object_name = f"companies/{clean_domain}/pages/{clean_page}"
+        content_type = "text/markdown" if clean_page.endswith(".md") else "text/html"
         rel_path = self._put_object(object_name, content_bytes, content_type)
         return content_hash, rel_path
 

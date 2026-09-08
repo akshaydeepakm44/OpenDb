@@ -86,3 +86,4 @@ if __name__ == "__main__":
         reload=True,
         reload_excludes=["*.db*", "*.log", "*.sqlite*", "data/*", "logs/*", "*.png"]
     )
+# Trigger Uvicorn Reload

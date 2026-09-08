@@ -92,33 +92,16 @@ def build_extraction_pipeline() -> Optional["Pipeline"]:
         from app.config import settings
         import os
 
-        provider = (settings.LLM_PROVIDER or "ollama").lower()
         model = settings.LLM_MODEL
-
-        if provider == "ollama":
-            # Use the generic ChatGenerator with OpenAI-compatible endpoint
-            generator = ChatGenerator(
-                model=f"openai/{model}",
-                api_base_url=settings.OLLAMA_BASE_URL,
-                api_key=os.environ.get("OLLAMA_API_KEY", "ollama"),
-                generation_kwargs={"temperature": 0.1, "max_tokens": 2048},
-            )
-        elif provider == "openai":
-            api_key = settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY")
-            base_url = getattr(settings, "OPENAI_BASE_URL", "http://115.244.46.68:8000/v1")
-            if not api_key:
-                logger.warning("⚠️  OPENAI_API_KEY not set — extraction pipeline disabled")
-                return None
-            generator = ChatGenerator(
-                model=model,
-                api_key=api_key,
-                api_base_url=base_url,
-                generation_kwargs={"temperature": 0.1, "max_tokens": 2048},
-            )
-        else:
-            # heuristics / qwen_local / unknown → not available via Haystack
-            logger.info(f"ℹ️  LLM_PROVIDER={provider} — Haystack extraction pipeline skipped")
-            return None
+        provider = settings.LLM_PROVIDER
+        base_url = getattr(settings, "OPENAI_BASE_URL", "http://115.244.46.68:8000/v1")
+        api_key = settings.OPENAI_API_KEY or "sk-datai2i-a100-qwen35-27b-8x3f9z"
+        generator = ChatGenerator(
+            model=model,
+            api_key=api_key,
+            api_base_url=base_url,
+            generation_kwargs={"temperature": 0.1, "max_tokens": 2048},
+        )
 
         prompt_builder = ChatMessageBuilder(
             template=_EXTRACTION_PROMPT,

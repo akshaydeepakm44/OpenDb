@@ -8,6 +8,7 @@ export default function App() {
   const [agentStatus, setAgentStatus] = useState(null);
   const [servicesHealth, setServicesHealth] = useState(null);
   const [operationsData, setOperationsData] = useState(null);
+  const [safetyMetrics, setSafetyMetrics] = useState(null);
   const [feedbackData, setFeedbackData] = useState(null);
   
   // Search & Filter State
@@ -21,6 +22,26 @@ export default function App() {
   const [selectedEntityId, setSelectedEntityId] = useState(null);
   const [entityDetail, setEntityDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+
+  const handleTriggerVerification = async () => {
+    if (!selectedEntityId) return;
+    try {
+      setVerifying(true);
+      const res = await fetch(`${API_BASE}/agent/companies/${selectedEntityId}/verify`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.dossier) {
+          setEntityDetail(data.dossier);
+        }
+      }
+    } catch (err) {
+      console.error("Verification trigger failed:", err);
+    } finally {
+      setVerifying(false);
+    }
+  };
+
 
   // Crawled Document Detail Modal State
   const [selectedDocumentId, setSelectedDocumentId] = useState(null);
@@ -36,12 +57,33 @@ export default function App() {
   const [autoScroll, setAutoScroll] = useState(true);
   const logContainerRef = React.useRef(null);
 
+  // Pipeline Inspector State
+  const [showInspectorModal, setShowInspectorModal] = useState(false);
+  const [inspectorData, setInspectorData] = useState(null);
+  const [loadingInspector, setLoadingInspector] = useState(false);
+
+  const handleOpenInspector = async () => {
+    setShowInspectorModal(true);
+    setLoadingInspector(true);
+    try {
+      const res = await fetch(`${API_BASE}/agent/checkpoints/health`);
+      if (res.ok) {
+        setInspectorData(await res.json());
+      }
+    } catch (err) {
+      console.error("Failed to load checkpoint trace:", err);
+    } finally {
+      setLoadingInspector(false);
+    }
+  };
+
   // Lead Repository Tab State
   const [leadView, setLeadView] = useState('crawled'); // 'crawled' | 'verified'
   const [crawledDocs, setCrawledDocs] = useState([]);
   const [crawledPage, setCrawledPage] = useState(1);
   const [crawledMeta, setCrawledMeta] = useState({ total: 0, pages: 1 });
   const [verifiedTotalCount, setVerifiedTotalCount] = useState(0);
+  const [verifiedMeta, setVerifiedMeta] = useState({ total: 0, pages: 1 });
 
   // Auto-scroll terminal log window when new events arrive
   useEffect(() => {
@@ -71,77 +113,94 @@ export default function App() {
     const results = await Promise.allSettled([
       fetch(`${API_BASE}/agent/status`).then(r => r.ok ? r.json() : null),
       fetch(`${API_BASE}/health/services`).then(r => r.ok ? r.json() : null),
-      fetch(`${API_BASE}/agent/operations`).then(r => r.ok ? r.json() : null)
+      fetch(`${API_BASE}/agent/operations`).then(r => r.ok ? r.json() : null),
+      fetch(`${API_BASE}/agent/safety-metrics`).then(r => r.ok ? r.json() : null)
     ]);
 
     if (results[0].status === 'fulfilled' && results[0].value) setAgentStatus(results[0].value);
     if (results[1].status === 'fulfilled' && results[1].value) setServicesHealth(results[1].value);
     if (results[2].status === 'fulfilled' && results[2].value) setOperationsData(results[2].value);
+    if (results[3].status === 'fulfilled' && results[3].value) setSafetyMetrics(results[3].value);
   };
 
-  const fetchFilteredEntities = async () => {
+  const clientCache = React.useRef({});
+
+  const fetchFilteredEntities = async (signal) => {
     try {
       const params = new URLSearchParams();
-      if (searchQuery) params.append('query', searchQuery);
+      params.append('page', currentPage);
+      params.append('limit', CARDS_PER_PAGE);
+      if (debouncedSearchQuery) params.append('query', debouncedSearchQuery);
       if (selectedDomain && selectedDomain !== 'All') params.append('domain', selectedDomain);
       if (selectedCountry && selectedCountry !== 'All') params.append('country', selectedCountry);
       if (selectedCompanyTier && selectedCompanyTier !== 'All' && !selectedCompanyTier.includes('All Company Tiers')) {
         params.append('company_tier', selectedCompanyTier);
       }
 
-      const res = await fetch(`${API_BASE}/agent/entities?${params.toString()}`);
+      const cacheKey = `ent_${params.toString()}`;
+      if (clientCache.current[cacheKey]) {
+        const cachedData = clientCache.current[cacheKey];
+        setEntitiesList(cachedData.results);
+        setVerifiedTotalCount(cachedData.total);
+        setVerifiedMeta({ total: cachedData.total, pages: cachedData.pages });
+      }
+
+      const res = await fetch(`${API_BASE}/agent/entities?${params.toString()}`, { signal });
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data)) {
-          setEntitiesList(data);
-          setVerifiedTotalCount(data.length);
-        } else {
-          setEntitiesList(data.results || []);
-          setVerifiedTotalCount(data.total || (data.results ? data.results.length : 0));
-        }
+        const resultsList = Array.isArray(data) ? data : (data.results || []);
+        const totalCount = Array.isArray(data) ? data.length : (data.total || resultsList.length);
+        const pagesCount = data.pages || Math.max(1, Math.ceil(totalCount / CARDS_PER_PAGE));
+
+        clientCache.current[cacheKey] = { results: resultsList, total: totalCount, pages: pagesCount };
+        setEntitiesList(resultsList);
+        setVerifiedTotalCount(totalCount);
+        setVerifiedMeta({ total: totalCount, pages: pagesCount });
       }
     } catch (err) {
-      console.error("Error fetching filtered entities:", err);
+      if (err.name !== 'AbortError') {
+        console.error("Error fetching filtered entities:", err);
+      }
     }
   };
 
-  const fetchCrawledDocuments = async () => {
+  const fetchCrawledDocuments = async (signal) => {
     try {
       const params = new URLSearchParams();
       params.append('page', crawledPage);
       params.append('limit', CARDS_PER_PAGE);
-      if (searchQuery) params.append('query', searchQuery);
+      if (debouncedSearchQuery) params.append('query', debouncedSearchQuery);
       if (selectedDomain && selectedDomain !== 'All') params.append('domain', selectedDomain);
       if (selectedCountry && selectedCountry !== 'All') params.append('country', selectedCountry);
       if (selectedCompanyTier && selectedCompanyTier !== 'All' && !selectedCompanyTier.includes('All Company Tiers')) {
         params.append('company_tier', selectedCompanyTier);
       }
-      const res = await fetch(`${API_BASE}/agent/documents?${params.toString()}`);
+
+      const cacheKey = `docs_${params.toString()}`;
+      if (clientCache.current[cacheKey]) {
+        const cachedData = clientCache.current[cacheKey];
+        setCrawledDocs(cachedData.results);
+        setCrawledMeta({ total: cachedData.total, pages: cachedData.pages });
+      }
+
+      const res = await fetch(`${API_BASE}/agent/documents?${params.toString()}`, { signal });
       if (res.ok) {
         const data = await res.json();
-        setCrawledDocs(data.results || []);
-        setCrawledMeta({ total: data.total || 0, pages: data.pages || 1 });
+        const resultsList = data.results || [];
+        const meta = { total: data.total || 0, pages: data.pages || 1 };
+
+        clientCache.current[cacheKey] = { results: resultsList, ...meta };
+        setCrawledDocs(resultsList);
+        setCrawledMeta(meta);
       }
     } catch (err) {
-      console.error('Error fetching crawled documents:', err);
+      if (err.name !== 'AbortError') {
+        console.error('Error fetching crawled documents:', err);
+      }
     }
   };
 
-  const handleResetData = async () => {
-    if (!window.confirm("Are you sure you want to clean all stored records from the database?")) return;
-    try {
-      setLoading(true);
-      const res = await fetch(`${API_BASE}/agent/reset`, { method: 'POST' });
-      if (res.ok) {
-        await fetchOperations();
-        await fetchFilteredEntities();
-      }
-    } catch (err) {
-      console.error("Error resetting data:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
+
 
   const fetchFeedback = async () => {
     try {
@@ -152,20 +211,30 @@ export default function App() {
     }
   };
 
-  // Poll every 3 seconds for live dashboard updates
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+
+  // Debounce search query input (200ms) to eliminate network lag during typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Poll background operations & health status smoothly every 4s (independent of filter changes)
   useEffect(() => {
     fetchOperations();
-    fetchFilteredEntities();
-    fetchCrawledDocuments();
-
-    const interval = setInterval(() => {
-      fetchOperations();
-      fetchFilteredEntities();
-      fetchCrawledDocuments();
-    }, 3000);
-
+    const interval = setInterval(fetchOperations, 4000);
     return () => clearInterval(interval);
-  }, [searchQuery, selectedDomain, selectedCountry, selectedCompanyTier, leadView, crawledPage]);
+  }, []);
+
+  // Fetch filtered entities and documents WITH AbortController cancellation
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchFilteredEntities(controller.signal);
+    fetchCrawledDocuments(controller.signal);
+    return () => controller.abort();
+  }, [debouncedSearchQuery, selectedDomain, selectedCountry, selectedCompanyTier, leadView, crawledPage, currentPage]);
 
   // Fetch detail view data when an entity is selected
   useEffect(() => {
@@ -221,7 +290,32 @@ export default function App() {
     }
   };
 
+  const handleResetData = async () => {
+    if (!window.confirm("Are you sure you want to completely clear all database records, logs, and storage cache?")) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      await fetch(`${API_BASE}/agent/pause`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/agent/reset`, { method: 'POST' });
+      if (!res.ok) throw new Error("Failed to reset database data.");
+      setEntitiesList([]);
+      setCrawledDocs([]);
+      setVerifiedTotalCount(0);
+      setVerifiedMeta({ total: 0, pages: 1 });
+      setCrawledMeta({ total: 0, pages: 1 });
+      clientCache.current = {};
+      await fetchOperations();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const isRunning = agentStatus?.status === 'RUNNING';
+
 
   const renderHealthBadge = (name, status) => {
     const isOnline = status === 'online';
@@ -254,7 +348,27 @@ export default function App() {
           )}
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <button
+            onClick={handleOpenInspector}
+            style={{
+              background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+              color: '#ffffff',
+              border: 'none',
+              borderRadius: '0.5rem',
+              padding: '0.45rem 1.0rem',
+              fontWeight: 800,
+              fontSize: '0.8rem',
+              cursor: 'pointer',
+              boxShadow: '0 4px 12px rgba(99, 102, 241, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              transition: 'transform 0.15s ease'
+            }}
+          >
+            🔬 <span>Pipeline Inspector (CP-01..30)</span>
+          </button>
           {operationsData?.stat_cards?.system_status?.fallback_mode && (
             <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#fbbf24', background: 'rgba(245, 158, 11, 0.2)', padding: '0.35rem 0.75rem', borderRadius: '0.5rem', border: '1px solid #f59e0b', textTransform: 'uppercase' }}>
               ⚠️ FALLBACK MODE ACTIVE
@@ -358,14 +472,6 @@ export default function App() {
 
       {/* 2. REAL STAT CARDS (TOP ROW) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem', marginBottom: '2rem' }}>
-        <div style={{ background: '#1e293b', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #334155', borderTop: '4px solid #10b981', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>PERSISTED COMPANIES</span>
-          <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#34d399', marginBottom: '0.2rem', lineHeight: '1' }}>
-            {(operationsData?.stat_cards?.persisted_companies ?? (verifiedTotalCount ? verifiedTotalCount + 16 : 0)).toLocaleString()}
-          </div>
-          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>PostgreSQL Lake Records</span>
-        </div>
-
         <div style={{ background: '#1e293b', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #334155', borderTop: '4px solid #059669', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}>
           <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>VERIFIED LEADS</span>
           <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#6ee7b7', marginBottom: '0.2rem', lineHeight: '1' }}>
@@ -515,8 +621,8 @@ export default function App() {
             <h2 className="card-title" style={{ margin: 0 }}>COMPANY LEAD DISCOVERY PANELS</h2>
             <div style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '0.2rem' }}>
               {leadView === 'crawled'
-                ? <>Showing <strong style={{ color: '#f59e0b' }}>{crawledMeta.total?.toLocaleString() || 0}</strong> Crawled Data Cards — Parallel Search & Playwright Engine</>
-                : <>Showing <strong style={{ color: '#10b981' }}>{entitiesList.length}</strong> Verified Data Cards — Haystack Continuous Enrichment Agent</>}
+                ? <>Showing <strong style={{ color: '#f59e0b' }}>{(isFilterActive ? crawledMeta.total : (operationsData?.stat_cards?.crawled_documents || crawledMeta.total || 0)).toLocaleString()}</strong> Crawled Data Cards — Parallel Search & Playwright Engine</>
+                : <>Showing <strong style={{ color: '#10b981' }}>{(isFilterActive ? (verifiedTotalCount || entitiesList.length) : (operationsData?.stat_cards?.verified_leads ?? verifiedTotalCount ?? entitiesList.length ?? 0)).toLocaleString()}</strong> Verified Data Cards — Haystack Continuous Enrichment Agent</>}
             </div>
           </div>
 
@@ -532,7 +638,7 @@ export default function App() {
                 transition: 'all 0.2s'
               }}
             >
-              ⚡ Crawled Data Cards ({(crawledMeta.total || 0).toLocaleString()})
+              ⚡ Crawled Data Cards ({(isFilterActive ? crawledMeta.total : (operationsData?.stat_cards?.crawled_documents || crawledMeta.total || 0)).toLocaleString()})
             </button>
             <button
               onClick={() => { setLeadView('verified'); setCurrentPage(1); }}
@@ -544,14 +650,14 @@ export default function App() {
                 transition: 'all 0.2s'
               }}
             >
-              ✅ Verified Data Cards ({(verifiedTotalCount || entitiesList.length).toLocaleString()})
+              ✅ Verified Data Cards ({(isFilterActive ? (verifiedTotalCount || entitiesList.length) : (operationsData?.stat_cards?.verified_leads ?? verifiedTotalCount ?? entitiesList.length ?? 0)).toLocaleString()})
             </button>
           </div>
 
           {/* Pagination */}
           {(() => {
             const activePage = leadView === 'crawled' ? crawledPage : currentPage;
-            const maxPages = leadView === 'crawled' ? (crawledMeta.pages || 1) : Math.max(1, Math.ceil(entitiesList.length / CARDS_PER_PAGE));
+            const maxPages = leadView === 'crawled' ? (crawledMeta.pages || 1) : (verifiedMeta.pages || 1);
             const isPrevDisabled = activePage <= 1;
             const isNextDisabled = activePage >= maxPages;
             return (
@@ -655,6 +761,35 @@ export default function App() {
           )}
         </div>
 
+        {/* DATA COMPLETENESS TIER LEGEND BAR */}
+        <div style={{
+          background: '#0b1322', border: '1px solid #1e293b', borderRadius: '0.75rem',
+          padding: '0.75rem 1rem', marginBottom: '1.25rem', display: 'flex',
+          alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem'
+        }}>
+          <div style={{ fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <span>📊</span>
+            <span>DATA COMPLETENESS TIERS:</span>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.72rem', background: 'rgba(59,130,246,0.12)', color: '#60a5fa', border: '1px solid rgba(59,130,246,0.3)', padding: '0.2rem 0.55rem', borderRadius: '9999px', fontWeight: 700 }}>
+              🔵 COMPREHENSIVE COMPANY INTELLIGENCE (&ge; 90.0)
+            </span>
+            <span style={{ fontSize: '0.72rem', background: 'rgba(16,185,129,0.12)', color: '#34d399', border: '1px solid rgba(16,185,129,0.3)', padding: '0.2rem 0.55rem', borderRadius: '9999px', fontWeight: 700 }}>
+              🟢 STRONG COMPANY PROFILE (&ge; 75.0)
+            </span>
+            <span style={{ fontSize: '0.72rem', background: 'rgba(234,179,8,0.12)', color: '#facc15', border: '1px solid rgba(234,179,8,0.3)', padding: '0.2rem 0.55rem', borderRadius: '9999px', fontWeight: 700 }}>
+              🟡 BASIC COMPANY PROFILE (&ge; 60.0)
+            </span>
+            <span style={{ fontSize: '0.72rem', background: 'rgba(249,115,22,0.12)', color: '#fb923c', border: '1px solid rgba(249,115,22,0.3)', padding: '0.2rem 0.55rem', borderRadius: '9999px', fontWeight: 700 }}>
+              🟠 LIMITED DATA (&ge; 40.0)
+            </span>
+            <span style={{ fontSize: '0.72rem', background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.3)', padding: '0.2rem 0.55rem', borderRadius: '9999px', fontWeight: 700 }}>
+              🔴 INSUFFICIENT DATA (&lt; 40.0)
+            </span>
+          </div>
+        </div>
+
         {/* ── CRAWLED LEADS CARD GRID ── */}
         {leadView === 'crawled' && (
           crawledDocs.length === 0 ? (
@@ -680,11 +815,8 @@ export default function App() {
                   <div
                     key={doc.id}
                     onClick={() => {
-                      if (doc.verified_entity_id || doc.universal_record_id) {
-                        setSelectedEntityId(doc.verified_entity_id || doc.universal_record_id);
-                      } else {
-                        setSelectedDocumentId(doc.id);
-                      }
+                      const targetId = doc.verified_entity_id || doc.universal_record_id || doc.canonical_domain || doc.domain || doc.id;
+                      setSelectedEntityId(targetId);
                     }}
                     style={{
                       background: '#0a101d',
@@ -701,18 +833,8 @@ export default function App() {
                     onMouseEnter={e => { e.currentTarget.style.borderColor = '#00f2ff'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 25px -5px rgba(0, 242, 255, 0.15)'; }}
                     onMouseLeave={e => { e.currentTarget.style.borderColor = '#1e293b'; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
                   >
-                    {/* Top Right Score Badge (Image 2 style) */}
-                    <div style={{
-                      position: 'absolute', top: '0.85rem', right: '0.85rem',
-                      fontSize: '0.72rem', fontWeight: 800, padding: '0.2rem 0.55rem', borderRadius: '0.375rem',
-                      background: 'rgba(0, 242, 255, 0.08)', color: '#00f2ff',
-                      border: '1px solid rgba(0, 242, 255, 0.35)', display: 'flex', alignItems: 'center', gap: '0.25rem'
-                    }}>
-                      🛡️ {score}/100
-                    </div>
-
                     {/* 1. Header: Logo, Name & Website Link */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingRight: '5.5rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingRight: 0 }}>
                       {doc.logo_url ? (
                         <img src={doc.logo_url} alt="Logo" onError={(e) => { e.target.style.display = 'none'; }}
                           style={{ width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0, objectFit: 'contain', background: '#0f172a', padding: '2px', border: '1px solid #334155' }} />
@@ -765,11 +887,8 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* 5. Footer Provenance Bar & View Entire Dossier Button */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #1e293b', paddingTop: '0.5rem', marginTop: '0.2rem', fontSize: '0.68rem', fontFamily: 'monospace' }}>
-                      <span style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#34d399', padding: '0.15rem 0.4rem', borderRadius: '0.25rem', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                        ✳️ OPEN_DATASET:OPEN_PAGERANK_10M
-                      </span>
+                    {/* 5. Footer Date & View Entire Dossier Button */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', borderTop: '1px solid #1e293b', paddingTop: '0.5rem', marginTop: '0.2rem', fontSize: '0.68rem', fontFamily: 'monospace' }}>
                       <span style={{ color: '#64748b' }}>
                         ⏰ {new Date().toISOString().slice(0, 10)}
                       </span>
@@ -778,7 +897,7 @@ export default function App() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        const entId = doc.verified_entity_id || doc.universal_record_id || doc.id;
+                        const entId = doc.verified_entity_id || doc.universal_record_id || doc.canonical_domain || doc.domain || doc.id;
                         setSelectedEntityId(entId);
                       }}
                       style={{
@@ -818,15 +937,38 @@ export default function App() {
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '1.25rem' }}>
-              {entitiesList.slice((currentPage - 1) * CARDS_PER_PAGE, currentPage * CARDS_PER_PAGE).map((ent) => {
+              {entitiesList.map((ent) => {
                 let domain = '';
                 try { domain = new URL(ent.url.startsWith('http') ? ent.url : 'https://' + ent.url).hostname.replace('www.', ''); } catch {}
                 const initial = (ent.canonical_name || domain || '?')[0].toUpperCase();
-                const score = 100;
-                const tierName = ent.company_tier || 'Startup (2)';
+                
+                // Calculate completeness score & tier dot
+                let entScore = 75;
+                if (ent.data_completeness?.total_score !== undefined) {
+                  entScore = ent.data_completeness.total_score;
+                } else if (ent.company_confidence_score !== undefined && ent.company_confidence_score !== null) {
+                  entScore = ent.company_confidence_score > 1 ? ent.company_confidence_score : ent.company_confidence_score * 100;
+                } else if (ent.confidence_score !== undefined && ent.confidence_score !== null) {
+                  entScore = ent.confidence_score > 1 ? ent.confidence_score : ent.confidence_score * 100;
+                } else if (ent.confidence !== undefined && ent.confidence !== null) {
+                  entScore = ent.confidence > 1 ? ent.confidence : ent.confidence * 100;
+                }
+
+                let badgeTier = { dot: '🔵', label: 'COMPREHENSIVE', color: '#60a5fa', bg: 'rgba(59,130,246,0.15)', border: 'rgba(59,130,246,0.3)' };
+                if (entScore >= 90) {
+                  badgeTier = { dot: '🔵', label: 'COMPREHENSIVE', color: '#60a5fa', bg: 'rgba(59,130,246,0.15)', border: 'rgba(59,130,246,0.3)' };
+                } else if (entScore >= 75) {
+                  badgeTier = { dot: '🟢', label: 'STRONG', color: '#34d399', bg: 'rgba(16,185,129,0.15)', border: 'rgba(16,185,129,0.3)' };
+                } else if (entScore >= 60) {
+                  badgeTier = { dot: '🟡', label: 'BASIC', color: '#facc15', bg: 'rgba(234,179,8,0.15)', border: 'rgba(234,179,8,0.3)' };
+                } else if (entScore >= 40) {
+                  badgeTier = { dot: '🟠', label: 'LIMITED', color: '#fb923c', bg: 'rgba(249,115,22,0.15)', border: 'rgba(249,115,22,0.3)' };
+                } else {
+                  badgeTier = { dot: '🔴', label: 'INSUFFICIENT', color: '#f87171', bg: 'rgba(239,68,68,0.15)', border: 'rgba(239,68,68,0.3)' };
+                }
+
                 const locationStr = ent.headquarters || ent.country || 'Global';
                 const industryStr = ent.industry || ent.domain || 'Software & SaaS';
-                const revenueStr = ent.revenue_funding || 'Bootstrapped';
                 const emailStr = Array.isArray(ent.verified_emails) && ent.verified_emails[0] ? ent.verified_emails[0] : null;
                 
                 return (
@@ -835,7 +977,7 @@ export default function App() {
                     onClick={() => setSelectedEntityId(ent.id)}
                     style={{
                       background: '#0a101d',
-                      border: '1px solid #10b981',
+                      border: `1px solid ${badgeTier.border}`,
                       borderRadius: '0.875rem',
                       padding: '1.1rem',
                       cursor: 'pointer',
@@ -845,41 +987,45 @@ export default function App() {
                       flexDirection: 'column',
                       gap: '0.65rem'
                     }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#00f2ff'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 25px -5px rgba(16, 185, 129, 0.2)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#10b981'; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#00f2ff'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = `0 10px 25px -5px ${badgeTier.bg}`; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = badgeTier.border; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
                   >
-                    {/* Top Right Score Badge (Image 2 style) */}
-                    <div style={{
-                      position: 'absolute', top: '0.85rem', right: '0.85rem',
-                      fontSize: '0.72rem', fontWeight: 800, padding: '0.2rem 0.55rem', borderRadius: '0.375rem',
-                      background: 'rgba(0, 242, 255, 0.08)', color: '#00f2ff',
-                      border: '1px solid rgba(0, 242, 255, 0.35)', display: 'flex', alignItems: 'center', gap: '0.25rem'
-                    }}>
-                      🛡️ {score}/100
+                    {/* 1. Header: Logo, Name & Website Link & Tier Dot Badge */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', overflow: 'hidden' }}>
+                        {ent.logo_url ? (
+                          <img src={ent.logo_url} alt="Logo" onError={(e) => { e.target.style.display = 'none'; }}
+                            style={{ width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0, objectFit: 'contain', background: '#0f172a', padding: '2px', border: '1px solid #334155' }} />
+                        ) : (
+                          <div style={{
+                            width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0,
+                            background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontWeight: 900, fontSize: '1.1rem', color: badgeTier.color, border: `1px solid ${badgeTier.border}`
+                          }}>{initial}</div>
+                        )}
+                        <div style={{ overflow: 'hidden' }}>
+                          <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {ent.canonical_name}
+                          </div>
+                          <a href={ent.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                            style={{ fontSize: '0.72rem', color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                            🌐 {domain} ↗
+                          </a>
+                        </div>
+                      </div>
+
+                      {/* Tier Dot Badge */}
+                      <span style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '0.25rem',
+                        fontSize: '0.65rem', fontWeight: 800, padding: '0.15rem 0.5rem', borderRadius: '9999px',
+                        background: badgeTier.bg, color: badgeTier.color, border: `1px solid ${badgeTier.border}`,
+                        whiteSpace: 'nowrap', flexShrink: 0
+                      }}>
+                        <span>{badgeTier.dot}</span>
+                        <span>{badgeTier.label}</span>
+                      </span>
                     </div>
 
-                    {/* 1. Header: Logo, Name & Website Link */}
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingRight: '5.5rem' }}>
-                      {ent.logo_url ? (
-                        <img src={ent.logo_url} alt="Logo" onError={(e) => { e.target.style.display = 'none'; }}
-                          style={{ width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0, objectFit: 'contain', background: '#0f172a', padding: '2px', border: '1px solid #334155' }} />
-                      ) : (
-                        <div style={{
-                          width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0,
-                          background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontWeight: 900, fontSize: '1.1rem', color: '#34d399', border: '1px solid #10b981'
-                        }}>{initial}</div>
-                      )}
-                      <div style={{ overflow: 'hidden' }}>
-                        <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {ent.canonical_name}
-                        </div>
-                        <a href={ent.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                          style={{ fontSize: '0.72rem', color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                          🌐 {domain} ↗
-                        </a>
-                      </div>
-                    </div>
 
                     {/* 2. Metadata Pills (Location, Industry & Email) */}
                     <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.68rem', fontWeight: 600 }}>
@@ -912,11 +1058,8 @@ export default function App() {
                       </div>
                     )}
 
-                    {/* 5. Footer Provenance Bar & View Entire Dossier Button */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #1e293b', paddingTop: '0.5rem', marginTop: '0.2rem', fontSize: '0.68rem', fontFamily: 'monospace' }}>
-                      <span style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#34d399', padding: '0.15rem 0.4rem', borderRadius: '0.25rem', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                        ✳️ AUTONOMOUS_TAXONOMY
-                      </span>
+                    {/* 5. Footer Date & View Entire Dossier Button */}
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', borderTop: '1px solid #1e293b', paddingTop: '0.5rem', marginTop: '0.2rem', fontSize: '0.68rem', fontFamily: 'monospace' }}>
                       <span style={{ color: '#64748b' }}>
                         ⏰ {new Date().toISOString().slice(0, 10)}
                       </span>
@@ -1052,7 +1195,9 @@ export default function App() {
                   <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
                     <span className="data-label">VERIFIED CONTACT EMAIL</span>
                     <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>
-                      {Array.isArray(documentDetail.verified_emails) && documentDetail.verified_emails[0] ? documentDetail.verified_emails[0] : `contact@${documentDetail.domain}`}
+                      {Array.isArray(documentDetail.verified_emails) && documentDetail.verified_emails.length > 0
+                        ? documentDetail.verified_emails.join(', ')
+                        : 'Not Detected'}
                     </div>
                   </div>
                 </div>
@@ -1136,18 +1281,18 @@ export default function App() {
               </div>
             ) : (
               <div>
-                {/* Header Bar matching uploaded screenshot */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #1e293b', paddingBottom: '1.25rem', marginBottom: '1.5rem' }}>
+                {/* Header Bar with Agentic Verification Badge */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #1e293b', paddingBottom: '1.25rem', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                     {entityDetail.logo_url ? (
                       <img
                         src={entityDetail.logo_url}
                         alt="Logo"
                         onError={(e) => { e.target.style.display = 'none'; }}
-                        style={{ width: '42px', height: '42px', borderRadius: '0.6rem', background: '#0f172a', padding: '3px', border: '1px solid #334155', objectFit: 'contain' }}
+                        style={{ width: '46px', height: '46px', borderRadius: '0.6rem', background: '#0f172a', padding: '3px', border: '1px solid #334155', objectFit: 'contain' }}
                       />
                     ) : (
-                      <div style={{ width: '42px', height: '42px', borderRadius: '0.6rem', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#fff', fontSize: '1.2rem' }}>
+                      <div style={{ width: '46px', height: '46px', borderRadius: '0.6rem', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#fff', fontSize: '1.2rem' }}>
                         {(entityDetail.canonical_name || '?')[0].toUpperCase()}
                       </div>
                     )}
@@ -1165,16 +1310,110 @@ export default function App() {
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => setSelectedEntityId(null)}
-                    style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: '0.5rem', padding: '0.4rem 0.8rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
-                  >
-                    ✕ Close
-                  </button>
+                  {/* Completeness Badge & Re-Verify Button */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                    {entityDetail.data_completeness && (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.2rem' }}>
+                        <div style={{
+                          padding: '0.35rem 0.85rem', borderRadius: '9999px', fontWeight: 800, fontSize: '0.78rem',
+                          background: 'rgba(56, 189, 248, 0.15)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.4)'
+                        }}>
+                          {entityDetail.data_completeness.badge_level}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                          <span>Data Completeness:</span>
+                          <strong style={{ color: '#34d399' }}>{entityDetail.data_completeness.total_score} / 100</strong>
+                        </div>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={handleTriggerVerification}
+                      disabled={verifying}
+                      style={{
+                        background: 'linear-gradient(135deg, #0ea5e9, #0284c7)', color: '#fff', border: 'none',
+                        borderRadius: '0.5rem', padding: '0.5rem 1rem', cursor: verifying ? 'not-allowed' : 'pointer',
+                        fontSize: '0.85rem', fontWeight: 800, boxShadow: '0 4px 12px rgba(14, 165, 233, 0.3)'
+                      }}
+                    >
+                      {verifying ? '🔄 Verifying...' : '⚡ Re-Verify Agentically'}
+                    </button>
+
+                    <button
+                      onClick={() => setSelectedEntityId(null)}
+                      style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: '0.5rem', padding: '0.5rem 0.8rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
                 </div>
+
+                {/* 11-SECTION DATA COMPLETENESS AUDIT PANEL */}
+                {entityDetail.data_completeness?.checklist && (
+                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '0.75rem', padding: '1rem', marginBottom: '1.5rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+                      <h4 style={{ margin: 0, fontSize: '0.78rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                        AGENTIC 11-SECTION DATA COMPLETENESS AUDIT
+                      </h4>
+                      <div style={{ fontSize: '0.75rem', fontWeight: 800, color: '#38bdf8' }}>
+                        Score: {entityDetail.data_completeness.total_score}/100
+                      </div>
+                    </div>
+
+                    {/* Progress bar */}
+                    <div style={{ width: '100%', height: '8px', background: '#1e293b', borderRadius: '4px', overflow: 'hidden', marginBottom: '0.85rem' }}>
+                      <div style={{
+                        width: `${entityDetail.data_completeness.total_score}%`, height: '100%',
+                        background: entityDetail.data_completeness.total_score >= 80 ? 'linear-gradient(90deg, #10b981, #059669)' :
+                                    entityDetail.data_completeness.total_score >= 60 ? 'linear-gradient(90deg, #eab308, #ca8a04)' :
+                                    'linear-gradient(90deg, #f97316, #dc2626)',
+                        transition: 'width 0.5s ease'
+                      }} />
+                    </div>
+
+                    {/* 11 Pills grid */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '0.4rem' }}>
+                      {Object.entries(entityDetail.data_completeness.checklist).map(([reqKey, reqStatus]) => {
+                        let badgeBg = 'rgba(16, 185, 129, 0.15)';
+                        let badgeColor = '#34d399';
+                        let badgeBorder = 'rgba(16, 185, 129, 0.3)';
+                        let statusLabel = 'OBSERVED';
+
+                        if (reqStatus === 'partial') {
+                          badgeBg = 'rgba(234, 179, 8, 0.15)';
+                          badgeColor = '#facc15';
+                          badgeBorder = 'rgba(234, 179, 8, 0.3)';
+                          statusLabel = 'INFERRED';
+                        } else if (reqStatus === 'missing') {
+                          badgeBg = 'rgba(239, 68, 68, 0.15)';
+                          badgeColor = '#f87171';
+                          badgeBorder = 'rgba(239, 68, 68, 0.3)';
+                          statusLabel = 'MISSING';
+                        } else if (reqStatus === 'not_public') {
+                          badgeBg = 'rgba(148, 163, 184, 0.12)';
+                          badgeColor = '#cbd5e1';
+                          badgeBorder = 'rgba(148, 163, 184, 0.25)';
+                          statusLabel = 'UNAVAILABLE_PUBLICLY';
+                        }
+
+                        return (
+                          <div key={reqKey} style={{ background: '#111827', border: `1px solid ${badgeBorder}`, borderRadius: '0.4rem', padding: '0.35rem 0.55rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: '0.7rem', color: '#94a3b8', textTransform: 'capitalize' }}>
+                              {reqKey.replace('_', ' ')}
+                            </span>
+                            <span style={{ fontSize: '0.62rem', fontWeight: 800, color: badgeColor, background: badgeBg, padding: '0.1rem 0.35rem', borderRadius: '0.2rem' }}>
+                              {statusLabel}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 {/* 2-Column Main Layout matching uploaded screenshot */}
                 <div style={{ display: 'grid', gridTemplateColumns: '1.8fr 1fr', gap: '1.5rem' }}>
+
                   
                   {/* LEFT COLUMN: Deep Content */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -1185,7 +1424,16 @@ export default function App() {
                         BUSINESS OVERVIEW & SYNTHESIS
                       </h3>
                       <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.75rem', padding: '1.1rem', color: '#cbd5e1', fontSize: '0.9rem', lineHeight: '1.6' }}>
-                        {entityDetail.summary}
+                        {(typeof entityDetail.business_overview === 'object' ? entityDetail.business_overview?.text : entityDetail.business_overview) || entityDetail.summary || 'Not found'}
+                        {Array.isArray(entityDetail.business_overview?.source_pages) && entityDetail.business_overview.source_pages.length > 0 && (
+                          <div style={{ marginTop: '0.5rem', paddingTop: '0.5rem', borderTop: '1px solid #1f2937', fontSize: '0.75rem', color: '#64748b' }}>
+                            Source Pages: {entityDetail.business_overview.source_pages.map((url, uidx) => (
+                              <a key={uidx} href={url} target="_blank" rel="noreferrer" style={{ color: '#38bdf8', textDecoration: 'none', marginLeft: '0.4rem' }}>
+                                {url} ↗
+                              </a>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1210,41 +1458,49 @@ export default function App() {
                     {/* 3. DECISION MAKERS & LEADERSHIP */}
                     <div>
                       <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
-                        DECISION MAKERS & LEADERSHIP ({Array.isArray(entityDetail.decision_makers) ? entityDetail.decision_makers.length : 2})
+                        DECISION MAKERS & LEADERSHIP ({Array.isArray(entityDetail.decision_makers) ? entityDetail.decision_makers.length : 0})
                       </h3>
                       {Array.isArray(entityDetail.decision_makers) && entityDetail.decision_makers.length > 0 ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                          {entityDetail.decision_makers.map((p, idx) => (
-                            <div key={idx} style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.85rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                              <div>
-                                <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.92rem' }}>
-                                  {p.name} <span style={{ color: '#22d3ee', fontWeight: 600 }}>({p.title || 'Director'})</span>
+                          {entityDetail.decision_makers.map((p, idx) => {
+                            const tags = Array.isArray(p.role_tags) ? p.role_tags : [p.role_tag || 'Unknown'];
+                            return (
+                              <div key={idx} style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.85rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                <div>
+                                  <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.92rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                    <span>{p.name}</span>
+                                    <span style={{ color: '#22d3ee', fontWeight: 600 }}>({p.title || 'Leadership'})</span>
+                                  </div>
+                                  <div style={{ display: 'flex', gap: '0.35rem', marginTop: '0.35rem', flexWrap: 'wrap' }}>
+                                    {tags.map((t, ti) => (
+                                      <span key={ti} style={{ background: 'rgba(34, 211, 238, 0.12)', color: '#22d3ee', border: '1px solid rgba(34, 211, 238, 0.3)', padding: '0.1rem 0.45rem', borderRadius: '0.25rem', fontSize: '0.7rem', fontWeight: 700 }}>
+                                        {t}
+                                      </span>
+                                    ))}
+                                    {p.confidence && (
+                                      <span style={{ background: 'rgba(148, 163, 184, 0.1)', color: '#94a3b8', border: '1px solid rgba(148, 163, 184, 0.2)', padding: '0.1rem 0.45rem', borderRadius: '0.25rem', fontSize: '0.7rem' }}>
+                                        {p.confidence} confidence
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
-                                <div style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: '0.2rem' }}>
-                                  Contact Person • Economic Buyer
-                                </div>
+                                {p.linkedin_search_url && (
+                                  <a
+                                    href={p.linkedin_search_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{ fontSize: '0.75rem', fontWeight: 700, color: '#0a66c2', background: 'rgba(10, 102, 194, 0.12)', border: '1px solid rgba(10, 102, 194, 0.3)', padding: '0.3rem 0.6rem', borderRadius: '0.375rem', textDecoration: 'none' }}
+                                  >
+                                    in LinkedIn Search ↗
+                                  </a>
+                                )}
                               </div>
-                              <a href={p.linkedin_search_url || `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(p.name + ' ' + (entityDetail.canonical_name || ''))}`} target="_blank" rel="noreferrer"
-                                style={{ padding: '0.35rem 0.75rem', background: '#1e293b', border: '1px solid #374151', color: '#9ca3af', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}>
-                                Search LinkedIn ↗
-                              </a>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                          <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.85rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div>
-                              <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.92rem' }}>
-                                Executive Director <span style={{ color: '#22d3ee', fontWeight: 600 }}>(Director)</span>
-                              </div>
-                              <div style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: '0.2rem' }}>Contact Person • Economic Buyer</div>
-                            </div>
-                            <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(entityDetail.canonical_name || 'Company')}`} target="_blank" rel="noreferrer"
-                              style={{ padding: '0.35rem 0.75rem', background: '#1e293b', border: '1px solid #374151', color: '#9ca3af', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}>
-                              Search LinkedIn ↗
-                            </a>
-                          </div>
+                        <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.85rem 1rem', color: '#9ca3af', fontSize: '0.85rem' }}>
+                          Not found (No verified decision maker attributed on site text)
                         </div>
                       )}
                     </div>
@@ -1252,28 +1508,42 @@ export default function App() {
                     {/* 4. CRAWLED SUBPAGES & MARKDOWN VAULT */}
                     <div>
                       <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
-                        CRAWLED SUBPAGES & MARKDOWN VAULT ({Array.isArray(entityDetail.crawled_subpages) && entityDetail.crawled_subpages.length > 0 ? entityDetail.crawled_subpages.length : 1})
+                        CRAWLED SUBPAGES & MARKDOWN VAULT ({Array.isArray(entityDetail.crawled_subpages) ? entityDetail.crawled_subpages.length : 0})
                       </h3>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                         {Array.isArray(entityDetail.crawled_subpages) && entityDetail.crawled_subpages.length > 0 ? (
                           entityDetail.crawled_subpages.map((sp, idx) => (
                             <div key={idx} style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                              <div style={{ fontWeight: 700, color: '#f3f4f6', fontSize: '0.85rem' }}>/ • {sp.title || entityDetail.canonical_name}</div>
+                              <div style={{ fontWeight: 700, color: '#f3f4f6', fontSize: '0.85rem' }}>{sp.path || '/'} • {sp.title || entityDetail.canonical_name}</div>
                               <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#34d399', background: 'rgba(16,185,129,0.08)', padding: '0.2rem 0.55rem', borderRadius: '0.25rem' }}>
-                                MinIO: companies/{entityDetail.domain || 'domain'}/pages/{sp.path || 'homepage.md'}
+                                MinIO: {sp.storage_path || sp.minio_raw_path || `companies/${entityDetail.domain || 'domain'}/pages/homepage.md`}
                               </div>
                             </div>
                           ))
                         ) : (
-                          <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                            <div style={{ fontWeight: 700, color: '#f3f4f6', fontSize: '0.85rem' }}>/ • {entityDetail.canonical_name}</div>
-                            <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#34d399', background: 'rgba(16,185,129,0.08)', padding: '0.2rem 0.55rem', borderRadius: '0.25rem' }}>
-                              MinIO: companies/{entityDetail.domain || 'domain'}/pages/homepage.md
-                            </div>
+                          <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.75rem 1rem', color: '#9ca3af', fontSize: '0.85rem' }}>
+                            Not found (No stored subpages in markdown vault)
                           </div>
                         )}
                       </div>
                     </div>
+
+                    {/* 5. FORMULA-BASED WARMTH SCORE PANEL */}
+                    {entityDetail.warmth_score && (
+                      <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.75rem', padding: '1rem' }}>
+                        <div style={{ fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                          PRODUCIBLE WARMTH SCORE FORMULA
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <div style={{ fontSize: '1.75rem', fontWeight: 900, color: '#10b981' }}>
+                            {typeof entityDetail.warmth_score === 'object' ? entityDetail.warmth_score.value : entityDetail.warmth_score} / 10.0
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: '#cbd5e1', lineHeight: '1.4' }}>
+                            {typeof entityDetail.warmth_score === 'object' ? entityDetail.warmth_score.explanation : 'Formula: Email (3.0) + Leadership (3.0) + Firmographics (2.0) + Vault Storage (2.0)'}
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                   </div>
 
@@ -1281,45 +1551,94 @@ export default function App() {
                   <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.875rem', padding: '1.25rem', height: 'fit-content' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                       
+                      {/* HEADQUARTERS */}
                       <div>
                         <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>HEADQUARTERS</div>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#ffffff', marginTop: '0.15rem' }}>
-                          {entityDetail.firmographics?.headquarters || 'Not Specified'}
+                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: entityDetail.firmographics?.headquarters?.value || entityDetail.firmographics?.headquarters ? '#ffffff' : '#6b7280', marginTop: '0.15rem' }}>
+                          {(typeof entityDetail.firmographics?.headquarters === 'object' ? entityDetail.firmographics.headquarters.value : entityDetail.firmographics?.headquarters) || 'Not found'}
                         </div>
+                        {entityDetail.firmographics?.headquarters?.conflict && (
+                          <div style={{ fontSize: '0.7rem', color: '#f59e0b', marginTop: '0.2rem', fontWeight: 700 }}>
+                            ⚠️ Conflict Detected (Dataset: {entityDetail.firmographics.headquarters.conflicting_value})
+                          </div>
+                        )}
+                        {entityDetail.firmographics?.headquarters?.is_stale && (
+                          <div style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.2rem' }}>
+                            🕒 Stale Data (Last confirmed {entityDetail.firmographics.headquarters.last_confirmed_at?.slice(0, 10)})
+                          </div>
+                        )}
                       </div>
 
+                      {/* INDUSTRY */}
                       <div>
                         <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>INDUSTRY</div>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#ffffff', marginTop: '0.15rem' }}>
-                          {entityDetail.firmographics?.industry || 'Commercial Web'}
+                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: entityDetail.firmographics?.industry?.value || entityDetail.industry ? '#ffffff' : '#6b7280', marginTop: '0.15rem' }}>
+                          {(typeof entityDetail.firmographics?.industry === 'object' ? entityDetail.firmographics.industry.value : entityDetail.industry) || 'Not found'}
                         </div>
                       </div>
 
-
-
+                      {/* COMPANY SIZE */}
                       <div>
-                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>VERIFIED EMAILS</div>
-                        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#38bdf8', marginTop: '0.15rem' }}>
-                          {Array.isArray(entityDetail.firmographics?.verified_emails) && entityDetail.firmographics.verified_emails[0]
-                            ? entityDetail.firmographics.verified_emails[0]
-                            : `support@${entityDetail.domain}`}
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>COMPANY SIZE</div>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: entityDetail.firmographics?.company_size?.value || entityDetail.company_size ? '#ffffff' : '#6b7280', marginTop: '0.15rem' }}>
+                          {(typeof entityDetail.firmographics?.company_size === 'object' ? entityDetail.firmographics.company_size.value : entityDetail.company_size) || 'Not found'}
                         </div>
                       </div>
 
+                      {/* REVENUE / FUNDING */}
+                      <div>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>REVENUE / FUNDING</div>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: entityDetail.firmographics?.revenue_funding?.value || entityDetail.revenue_funding ? '#34d399' : '#6b7280', marginTop: '0.15rem' }}>
+                          {(typeof entityDetail.firmographics?.revenue_funding === 'object' ? entityDetail.firmographics.revenue_funding.value : entityDetail.revenue_funding) || 'Not found'}
+                        </div>
+                      </div>
+
+                      {/* VERIFIED EMAILS */}
+                      <div>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem' }}>VERIFIED EMAILS</div>
+                        {Array.isArray(entityDetail.verified_emails) && entityDetail.verified_emails.length > 0 ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                            {entityDetail.verified_emails.map((e, idx) => {
+                              const emailStr = typeof e === 'object' ? e.email : e;
+                              const statusStr = typeof e === 'object' ? (e.status || 'verified') : 'verified';
+                              return (
+                                <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem' }}>
+                                  <span style={{ color: '#38bdf8', fontWeight: 700, wordBreak: 'break-all' }}>{emailStr}</span>
+                                  <span style={{
+                                    fontSize: '0.65rem', fontWeight: 800, padding: '0.05rem 0.4rem', borderRadius: '0.2rem',
+                                    background: statusStr === 'verified' ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
+                                    color: statusStr === 'verified' ? '#34d399' : '#f59e0b',
+                                    border: statusStr === 'verified' ? '1px solid rgba(16,185,129,0.3)' : '1px solid rgba(245,158,11,0.3)'
+                                  }}>
+                                    {statusStr.toUpperCase()}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: '0.85rem', color: '#6b7280' }}>Not found</div>
+                        )}
+                      </div>
+
+                      {/* EXTRACTION AUDIT & SOURCE PANEL */}
                       <div style={{ borderTop: '1px solid #1f2937', paddingTop: '1rem', marginTop: '0.5rem' }}>
                         <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
-                          EXTRACTION AUDIT & SOURCE
+                          EXTRACTION AUDIT PANEL
                         </div>
                         <div style={{ display: 'inline-block', fontFamily: 'monospace', fontSize: '0.75rem', fontWeight: 800, color: '#38bdf8', background: 'rgba(56,189,248,0.1)', padding: '0.25rem 0.55rem', borderRadius: '0.375rem', border: '1px solid rgba(56,189,248,0.2)' }}>
-                          {entityDetail.provenance?.source_type || '🚀 OPEN_DATASET:OPEN_PAGERANK_10M'}
+                          {entityDetail.extraction_audit?.source_dataset || entityDetail.provenance?.source_type || '⚡ SQLITE_OPERATIONAL_TRUTH'}
                         </div>
                         <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.4rem' }}>
-                          🕒 {entityDetail.provenance?.extracted_at ? new Date(entityDetail.provenance.extracted_at).toLocaleString() : '2026-09-03 12:00:00'}
+                          🕒 {entityDetail.extraction_audit?.crawl_finished_at || entityDetail.provenance?.extracted_at || new Date().toISOString()}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.25rem' }}>
+                          Pages Crawled: {entityDetail.extraction_audit?.pages_crawled || 1} | Failed: {entityDetail.extraction_audit?.pages_failed || 0}
                         </div>
                       </div>
 
                       <a
-                        href={entityDetail.official_website}
+                        href={entityDetail.website?.url || entityDetail.official_website}
                         target="_blank"
                         rel="noreferrer"
                         style={{
@@ -1335,6 +1654,144 @@ export default function App() {
                     </div>
                   </div>
 
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {/* 7. PIPELINE INSPECTOR (CP-01..CP-30 RUNTIME AUDIT MODAL) */}
+      {showInspectorModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.90)', backdropFilter: 'blur(10px)', zIndex: 110, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '1.5rem' }}>
+          <div style={{ background: '#0b1322', border: '1px solid #334155', borderRadius: '1rem', width: '100%', maxWidth: '1200px', maxHeight: '90vh', overflowY: 'auto', padding: '1.75rem', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.8)', position: 'relative' }}>
+            
+            {/* Modal Header */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1e293b', paddingBottom: '1rem', marginBottom: '1.5rem' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 900, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  🔬 PIPELINE INSPECTOR — Live Runtime Checkpoint Auditor
+                </h2>
+                <div style={{ fontSize: '0.85rem', color: '#94a3b8', marginTop: '0.2rem' }}>
+                  End-to-End Trace Audit of all 30 Application Checkpoints (CP-01 → CP-30)
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <button
+                  onClick={handleOpenInspector}
+                  style={{ background: '#1e293b', color: '#38bdf8', border: '1px solid #334155', borderRadius: '0.5rem', padding: '0.4rem 0.8rem', fontWeight: 700, fontSize: '0.8rem', cursor: 'pointer' }}
+                >
+                  🔄 Refresh Trace
+                </button>
+                <button
+                  onClick={() => setShowInspectorModal(false)}
+                  style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: '0.5rem', width: '32px', height: '32px', fontWeight: 900, cursor: 'pointer' }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {loadingInspector || !inspectorData ? (
+              <div style={{ textAlign: 'center', padding: '4rem 0', color: '#94a3b8' }}>
+                <div className="spinner" style={{ margin: '0 auto 1rem auto' }}></div>
+                <div>Fetching live 30-checkpoint audit telemetry from OpenDB backend...</div>
+              </div>
+            ) : (
+              <div>
+                {/* 1. HEALTH SCORE OVERVIEW BAR */}
+                <div style={{ background: 'linear-gradient(135deg, #0f172a, #1e293b)', padding: '1.25rem', borderRadius: '0.75rem', border: '1px solid #334155', marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
+                  <div>
+                    <div style={{ fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Overall OpenDB Pipeline Health Score
+                    </div>
+                    <div style={{ fontSize: '2.5rem', fontWeight: 900, color: '#10b981', marginTop: '0.1rem' }}>
+                      {inspectorData.overall_opendb_health_score || 85.0} <span style={{ fontSize: '1.2rem', color: '#64748b' }}>/ 100</span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '1rem', flex: 1, maxWidth: '650px' }}>
+                    <div style={{ background: '#0b1322', padding: '0.6rem 0.8rem', borderRadius: '0.5rem', border: '1px solid #334155' }}>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8', fontWeight: 700 }}>System Health (20%)</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#38bdf8' }}>{inspectorData.score_breakdown?.system_health?.score}%</div>
+                    </div>
+                    <div style={{ background: '#0b1322', padding: '0.6rem 0.8rem', borderRadius: '0.5rem', border: '1px solid #334155' }}>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8', fontWeight: 700 }}>Pipeline Trace (30%)</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#a78bfa' }}>{inspectorData.score_breakdown?.pipeline_execution?.score}%</div>
+                    </div>
+                    <div style={{ background: '#0b1322', padding: '0.6rem 0.8rem', borderRadius: '0.5rem', border: '1px solid #334155' }}>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8', fontWeight: 700 }}>Data Quality (30%)</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#34d399' }}>{inspectorData.score_breakdown?.data_quality?.score}%</div>
+                    </div>
+                    <div style={{ background: '#0b1322', padding: '0.6rem 0.8rem', borderRadius: '0.5rem', border: '1px solid #334155' }}>
+                      <div style={{ fontSize: '0.68rem', color: '#94a3b8', fontWeight: 700 }}>Consistency (20%)</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#f59e0b' }}>{inspectorData.score_breakdown?.data_consistency?.score}%</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. CHECKPOINTS CP-01 TO CP-30 TIMELINE */}
+                <h3 style={{ fontSize: '1.1rem', fontWeight: 800, color: '#f8fafc', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span>📍 Live 30-Checkpoint Execution Timeline</span>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b' }}>({inspectorData.checkpoints?.length || 30} Gates Evaluated)</span>
+                </h3>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {(inspectorData.checkpoints || []).map(cp => {
+                    const isGreen = cp.status === 'GREEN';
+                    const isYellow = cp.status === 'YELLOW';
+                    const color = isGreen ? '#10b981' : isYellow ? '#f59e0b' : '#ef4444';
+                    const bg = isGreen ? 'rgba(16, 185, 129, 0.05)' : isYellow ? 'rgba(245, 158, 11, 0.05)' : 'rgba(239, 68, 68, 0.05)';
+                    return (
+                      <div key={cp.checkpoint} style={{ background: bg, border: `1px solid ${color}44`, borderRadius: '0.65rem', padding: '0.85rem 1.1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                            <span style={{ background: color, color: '#000', fontWeight: 900, fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '0.3rem' }}>
+                              {cp.checkpoint}
+                            </span>
+                            <span style={{ fontWeight: 800, color: '#f8fafc', fontSize: '0.95rem' }}>
+                              {cp.name}
+                            </span>
+                            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: '#94a3b8', background: '#1e293b', padding: '0.1rem 0.4rem', borderRadius: '0.25rem', border: '1px solid #334155' }}>
+                              {cp.stage}
+                            </span>
+                          </div>
+
+                          <span style={{ fontSize: '0.75rem', fontWeight: 800, color: color, background: `${color}22`, padding: '0.15rem 0.5rem', borderRadius: '0.3rem', border: `1px solid ${color}` }}>
+                            {isGreen ? '🟢 PASSED' : isYellow ? '🟡 ATTENTION' : '🔴 BLOCKED'}
+                          </span>
+                        </div>
+
+                        <div style={{ fontSize: '0.8rem', color: '#cbd5e1', marginBottom: '0.5rem' }}>
+                          {cp.description}
+                        </div>
+
+                        {/* Transition details grid: Input -> Process -> Output -> Destination -> Verification */}
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0.6rem', background: '#070d18', padding: '0.6rem 0.8rem', borderRadius: '0.4rem', border: '1px solid #1e293b', fontFamily: 'monospace', fontSize: '0.72rem' }}>
+                          <div>
+                            <span style={{ color: '#64748b' }}>INPUT: </span>
+                            <span style={{ color: '#38bdf8' }}>{cp.input}</span>
+                          </div>
+                          <div>
+                            <span style={{ color: '#64748b' }}>PROCESS: </span>
+                            <span style={{ color: '#a78bfa' }}>{cp.process}</span>
+                          </div>
+                          <div>
+                            <span style={{ color: '#64748b' }}>OUTPUT: </span>
+                            <span style={{ color: '#34d399' }}>{cp.output}</span>
+                          </div>
+                          <div>
+                            <span style={{ color: '#64748b' }}>DESTINATION: </span>
+                            <span style={{ color: '#f59e0b' }}>{cp.destination}</span>
+                          </div>
+                          <div>
+                            <span style={{ color: '#64748b' }}>VERIFICATION: </span>
+                            <span style={{ color: '#e2e8f0' }}>{cp.verification}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

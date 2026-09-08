@@ -23,23 +23,18 @@ def _check_postgres(db: Session) -> str:
         from app.persistence.database import IS_FALLBACK_ACTIVE
         if IS_FALLBACK_ACTIVE:
             return "degraded (SQLite fallback active)"
-        db.execute(text("SELECT 1"))
-        return "online"
-    except Exception:
-        return "down"
+        res = db.execute(text("SELECT 1")).scalar()
+        if res == 1:
+            return "online"
+        return "degraded"
+    except Exception as e:
+        return f"down ({type(e).__name__})"
 
 def _check_redis() -> str:
     try:
-        from urllib.parse import urlparse
-        p = urlparse(settings.REDIS_URL.replace("localhost", "127.0.0.1"))
-        r = redis.Redis(
-            host=p.hostname or "127.0.0.1",
-            port=p.port or 6379,
-            password=p.password,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0
-        )
-        if r.ping():
+        from app.cache.redis_client import get_redis
+        r = get_redis()
+        if r is not None and r.ping():
             return "online"
     except Exception:
         pass
@@ -47,56 +42,116 @@ def _check_redis() -> str:
 
 def _check_minio() -> str:
     try:
-        import socket
-        from urllib.parse import urlparse
-        ep = settings.MINIO_ENDPOINT
-        p = urlparse(f"http://{ep}" if "://" not in ep else ep)
-        h = p.hostname or "127.0.0.1"
-        pt = p.port or 9000
-        with socket.create_connection((h, pt), timeout=0.1):
+        from app.storage.file_storage import file_storage
+        if getattr(file_storage, "minio_client", None) is not None:
+            # Real bucket access check
+            buckets = file_storage.minio_client.list_buckets()
             return "online"
+        return "degraded (local disk)"
+    except Exception as e:
+        return f"degraded (local disk: {type(e).__name__})"
+
+def _check_searxng() -> str:
+    try:
+        url = f"{settings.SEARXNG_URL.rstrip('/')}/search"
+        with httpx.Client(timeout=0.2) as client:
+            resp = client.get(url, params={"q": "test", "format": "json"})
+            if resp.status_code == 200 and "results" in resp.json():
+                return "online"
     except Exception:
         pass
+    return "degraded (Bing search fallback)"
+
+def _check_celery() -> str:
+    try:
+        from app.worker.celery_app import celery_app
+        inspector = celery_app.control.inspect(timeout=0.15)
+        pings = inspector.ping()
+        if pings:
+            return f"online ({len(pings)} worker{'s' if len(pings)>1 else ''})"
+    except Exception:
+        pass
+    return "degraded (thread dispatch mode)"
+
+def _check_llm() -> str:
+    try:
+        base_url = getattr(settings, "OPENAI_BASE_URL", "http://115.244.46.68:8000/v1")
+        with httpx.Client(timeout=0.2) as client:
+            resp = client.get(f"{base_url.rstrip('/')}/models")
+            if resp.status_code in (200, 401):
+                return "online (Qwen GPU API)"
+    except Exception:
+        pass
+    return "degraded (local extractor)"
+
+def _check_playwright() -> str:
+    try:
+        import importlib.util
+        if importlib.util.find_spec("playwright") is not None:
+            return "online"
+        return "degraded (httpx parser)"
+    except Exception:
+        return "degraded (httpx parser)"
+
+def _check_sqlite_staging() -> str:
+    try:
+        from app.persistence.database import staging_engine
+        with staging_engine.connect() as conn:
+            res = conn.execute(text("SELECT 1")).scalar()
+            if res == 1:
+                return "online"
+    except Exception as e:
+        return f"down ({type(e).__name__})"
     return "down"
 
-def _quick_port_check(url_or_endpoint: str, default_port: int) -> bool:
-    import socket
-    from urllib.parse import urlparse
+def _check_postgres_verified() -> str:
     try:
-        if "://" not in url_or_endpoint:
-            url_or_endpoint = f"http://{url_or_endpoint}"
-        parsed = urlparse(url_or_endpoint)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or default_port
-        with socket.create_connection((host, port), timeout=0.05):
-            return True
-    except Exception:
-        return False
+        from app.persistence.database import verified_engine, IS_POSTGRES_AVAILABLE
+        if not IS_POSTGRES_AVAILABLE or verified_engine is None:
+            return "offline (staging in SQLite)"
+        with verified_engine.connect() as conn:
+            res = conn.execute(text("SELECT 1")).scalar()
+            if res == 1:
+                return "online"
+    except Exception as e:
+        return f"offline ({type(e).__name__})"
+    return "offline"
 
 @router.get("/health/services")
-def services_health_check(db: Session = Depends(get_db)):
-    """Instant non-blocking service health status check (<5ms total latency)."""
-    from app.persistence.database import IS_FALLBACK_ACTIVE
+async def services_health_check(db: Session = Depends(get_db)):
+    """Truthful, ultra-fast runtime service health status check."""
+    import time
+    now_ts = time.time()
+    if hasattr(services_health_check, "_cache") and (now_ts - getattr(services_health_check, "_cache_ts", 0)) < 3:
+        return services_health_check._cache
 
-    pg_status = "degraded (SQLite fallback active)" if IS_FALLBACK_ACTIVE else (_check_postgres(db))
-    redis_status = _check_redis()
-    minio_status = _check_minio()
-    searx_status = "online" if _quick_port_check(settings.SEARXNG_URL, 8080) else "degraded (Live DuckDuckGo Active)"
-    
-    ollama_online = _quick_port_check(settings.OLLAMA_BASE_URL, 11434)
-    if ollama_online:
-        llm_status = "online (Ollama active)"
-    elif getattr(settings, "OPENAI_API_KEY", None):
-        llm_status = "online (OpenAI API)"
-    else:
-        llm_status = "degraded (Local Extractor)"
+    # Execute all health checks in parallel threads concurrently
+    sqlite_task = asyncio.to_thread(_check_sqlite_staging)
+    postgres_task = asyncio.to_thread(_check_postgres_verified)
+    redis_task = asyncio.to_thread(_check_redis)
+    minio_task = asyncio.to_thread(_check_minio)
+    searxng_task = asyncio.to_thread(_check_searxng)
+    celery_task = asyncio.to_thread(_check_celery)
+    pw_task = asyncio.to_thread(_check_playwright)
+    llm_task = asyncio.to_thread(_check_llm)
 
-    return {
-        "postgres": pg_status,
-        "redis": redis_status,
-        "minio": minio_status,
-        "searxng": searx_status,
-        "crawl4ai": "online",
-        "llm": llm_status
+    sqlite_res, pg_res, redis_res, minio_res, searxng_res, celery_res, pw_res, llm_res = await asyncio.gather(
+        sqlite_task, postgres_task, redis_task, minio_task, searxng_task, celery_task, pw_task, llm_task
+    )
+
+    res = {
+        "sqlite_operational_db": sqlite_res,
+        "postgres_verified_db": pg_res,
+        "redis": redis_res,
+        "minio": minio_res,
+        "searxng": searxng_res,
+        "celery": celery_res,
+        "playwright": pw_res,
+        "crawl4ai": pw_res,
+        "llm": llm_res
     }
+
+    services_health_check._cache = res
+    services_health_check._cache_ts = now_ts
+    return res
 

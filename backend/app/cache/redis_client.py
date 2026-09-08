@@ -33,8 +33,8 @@ def get_redis() -> Optional[redis.Redis]:
         if _client is not None and _redis_available is True:
             return _client
         try:
-            # Fast 0.02s socket test on initial connect
-            with socket.create_connection(("127.0.0.1", 6379), timeout=0.02):
+            # Socket test before connecting (0.5s timeout to handle busy system)
+            with socket.create_connection(("127.0.0.1", 6379), timeout=0.5):
                 pass
             from urllib.parse import urlparse
             p = urlparse(settings.REDIS_URL.replace("localhost", "127.0.0.1"))

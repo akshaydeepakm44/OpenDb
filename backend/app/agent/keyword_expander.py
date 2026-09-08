@@ -1,13 +1,33 @@
 """
-Keyword Expander — §5 of Master Prompt
+Keyword Expander — §5 of Master Prompt & Phase 1 Architecture
 Dynamically generates semantic search variations for each domain/subdomain,
-using a rich global taxonomy + geo/intent/entity-expansion modifiers.
+attaching explicit DiscoveryQueryIntent metadata and third-party domain safety rules.
 """
 import logging
 import random
-from typing import List, Dict, Optional
+from enum import Enum
+from typing import List, Dict, Optional, Any
+from app.safety.search_query_guard import search_query_guard
 
 logger = logging.getLogger(__name__)
+
+
+class DiscoveryQueryIntent(str, Enum):
+    OFFICIAL_COMPANY_DISCOVERY = "official_company_discovery"
+    DIRECTORY_DISCOVERY = "directory_discovery"
+    COMPANY_EXPANSION = "company_expansion"
+    OFFICIAL_DOMAIN_VERIFICATION = "official_domain_verification"
+    RECRAWL = "recrawl"
+
+
+# List of third-party domains that may be used for intelligence discovery
+# but MUST NEVER directly enter the crawl queue as company candidate websites.
+RESTRICTED_THIRD_PARTY_DOMAINS = [
+    "linkedin.com", "crunchbase.com", "tracxn.com", "g2.com", "capterra.com",
+    "clutch.co", "producthunt.com", "angellist.com", "wellfound.com", "ycombinator.com",
+    "github.com", "wikipedia.org", "reddit.com", "medium.com", "substack.com",
+    "quora.com", "facebook.com", "instagram.com", "x.com", "twitter.com", "youtube.com"
+]
 
 # ─── Global 8-Domain Taxonomy ─────────────────────────────────────────────────
 GLOBAL_TAXONOMY: Dict[str, Dict[str, List[str]]] = {
@@ -175,7 +195,6 @@ GLOBAL_TAXONOMY: Dict[str, Dict[str, List[str]]] = {
     },
 }
 
-# ─── Geographic Modifiers ──────────────────────────────────────────────────────
 GEO_MODIFIERS = [
     "", "", "",  # Empty = global search (3x weight)
     "United States", "Europe", "United Kingdom", "Germany", "India",
@@ -184,66 +203,61 @@ GEO_MODIFIERS = [
     "South Korea", "Middle East", "Africa", "Latin America",
 ]
 
-# ─── Intent Modifiers ─────────────────────────────────────────────────────────
-INTENT_MODIFIERS = [
-    "companies list", "top companies", "leading firms", "directory",
-    "startups", "vendors", "providers", "solutions", "platforms",
-    "organizations site:linkedin.com/company",
-    "site:crunchbase.com",
-    "site:tracxn.com",
-    "site:g2.com categories",
-    "site:ycombinator.com",
-    "emerging companies", "notable companies 2024", "notable companies 2025",
-    "funded startups", "best companies", "enterprise solutions",
-    "B2B companies", "global companies",
+# Safe discovery intent patterns targeting official company websites directly
+CLEAN_DISCOVERY_INTENT_MODIFIERS = [
+    "official website",
+    "technology provider official site",
+    "enterprise software official page",
+    "software solutions company",
+    "business platform official website",
+    "industry leaders official site",
 ]
 
-# ─── Source Discovery Queries (listing pages) ─────────────────────────────────
-LISTING_SOURCE_TEMPLATES = [
-    "list of {domain_kw} companies",
-    "top {domain_kw} startups directory",
-    "best {domain_kw} vendors comparison",
-    "{domain_kw} companies site:clutch.co",
-    "{domain_kw} companies site:g2.com",
-    "{domain_kw} companies site:capterra.com",
-    "{domain_kw} companies site:crunchbase.com",
-    "{domain_kw} companies site:angellist.com",
-    "category:{domain_kw} site:producthunt.com",
-    "{domain_kw} companies database",
-    "{domain_kw} industry leaders {geo}",
-    "{domain_kw} market map {geo}",
+# Directory discovery intent patterns (requires company domain resolution)
+DIRECTORY_DISCOVERY_INTENT_MODIFIERS = [
+    "site:linkedin.com/company",
+    "site:crunchbase.com",
+    "site:g2.com categories",
+    "site:ycombinator.com",
+    "site:tracxn.com"
 ]
 
 
 class KeywordExpander:
     """
-    Generates diverse global discovery queries.
-    - Round-robin through domains/subdomains
-    - Mixes base keywords, geo modifiers, intent modifiers
-    - Expands from discovered entity names to find related companies
+    Generates diverse global discovery queries with Intent Metadata.
+    Phase 1 — Structural Query Classification.
     """
 
     def __init__(self):
         self._domain_list = list(GLOBAL_TAXONOMY.keys())
-        self._subdomain_ptr: Dict[str, int] = {}  # tracks rotation per domain
-        self._keyword_ptr: Dict[str, int] = {}    # tracks rotation per subdomain
+        self._subdomain_ptr: Dict[str, int] = {}
+        self._keyword_ptr: Dict[str, int] = {}
 
     def get_next_query(
         self,
         domain: str,
         subdomain: Optional[str] = None,
         skip_geos: Optional[List[str]] = None,
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Any]:
         """
-        Return the next search query for a given domain.
-        Returns: { "query": "...", "domain": "...", "subdomain": "...", "keyword": "..." }
+        Return the next search query with explicit intent metadata.
+        Returns:
+        {
+            "query": "...",
+            "intent": DiscoveryQueryIntent.value,
+            "can_crawl_result_directly": bool,
+            "requires_company_domain_resolution": bool,
+            "domain": "...",
+            "subdomain": "...",
+            "keyword": "..."
+        }
         """
         domain_data = GLOBAL_TAXONOMY.get(domain, {})
         if not domain_data:
             domain = self._domain_list[0]
             domain_data = GLOBAL_TAXONOMY[domain]
 
-        # Select subdomain (round-robin)
         subdomain_keys = list(domain_data.keys())
         ptr = self._subdomain_ptr.get(domain, 0)
         selected_subdomain = subdomain or subdomain_keys[ptr % len(subdomain_keys)]
@@ -253,55 +267,70 @@ class KeywordExpander:
         if not keywords:
             keywords = [f"{selected_subdomain} companies"]
 
-        # Select keyword (round-robin)
         kw_ptr = self._keyword_ptr.get(f"{domain}:{selected_subdomain}", 0)
         base_keyword = keywords[kw_ptr % len(keywords)]
         self._keyword_ptr[f"{domain}:{selected_subdomain}"] = kw_ptr + 1
 
-        # Randomly pick a geo modifier (weighted towards global)
         available_geos = [g for g in GEO_MODIFIERS if g not in (skip_geos or [])]
         geo = random.choice(available_geos)
 
-        # Randomly pick an intent modifier
-        intent = random.choice(INTENT_MODIFIERS)
+        # 80% official company discovery, 20% directory discovery
+        is_directory_search = random.random() < 0.20
 
-        # Build query
-        if geo:
-            query = f"{base_keyword} {intent} {geo}".strip()
+        if is_directory_search:
+            intent = DiscoveryQueryIntent.DIRECTORY_DISCOVERY
+            modifier = random.choice(DIRECTORY_DISCOVERY_INTENT_MODIFIERS)
+            can_crawl_directly = False
+            requires_resolution = True
         else:
-            query = f"{base_keyword} {intent}".strip()
+            intent = DiscoveryQueryIntent.OFFICIAL_COMPANY_DISCOVERY
+            modifier = random.choice(CLEAN_DISCOVERY_INTENT_MODIFIERS)
+            can_crawl_directly = True
+            requires_resolution = False
+
+        if geo:
+            raw_query = f"{base_keyword} {modifier} {geo}".strip()
+        else:
+            raw_query = f"{base_keyword} {modifier}".strip()
+
+        # Sanitize query with negative operators
+        final_query = search_query_guard.sanitize_query_with_negative_operators(raw_query)
 
         return {
-            "query": query,
+            "query": final_query,
+            "intent": intent.value,
+            "can_crawl_result_directly": can_crawl_directly,
+            "requires_company_domain_resolution": requires_resolution,
             "domain": domain,
             "subdomain": selected_subdomain,
             "keyword": base_keyword,
             "geo": geo,
-            "intent": intent,
         }
 
-    def get_listing_discovery_queries(
-        self, domain: str, subdomain: str, keyword: str, count: int = 3
-    ) -> List[str]:
-        """Generate listing-page-focused queries to find directory/catalog sources."""
-        geo = random.choice(GEO_MODIFIERS)
-        queries = []
-        templates = random.sample(LISTING_SOURCE_TEMPLATES, min(count, len(LISTING_SOURCE_TEMPLATES)))
-        for tmpl in templates:
-            queries.append(tmpl.format(domain_kw=keyword, geo=geo).strip())
-        return queries
-
-    def expand_from_entity(self, entity_name: str, domain: str) -> List[str]:
+    def expand_from_entity(self, entity_name: str, domain: str) -> List[Dict[str, Any]]:
         """
         Given a discovered entity name, generate search queries to find similar/competing companies.
-        §5 — semantic expansion from extracted results.
+        Phase 1 — Intent: COMPANY_EXPANSION.
         """
         expansions = [
-            f"{entity_name} competitors",
-            f"companies like {entity_name}",
-            f"{entity_name} alternatives",
-            f"{domain} companies similar to {entity_name}",
-            f"{entity_name} industry peers",
+            {
+                "query": search_query_guard.sanitize_query_with_negative_operators(f"{entity_name} competitors official website"),
+                "intent": DiscoveryQueryIntent.COMPANY_EXPANSION.value,
+                "can_crawl_result_directly": True,
+                "requires_company_domain_resolution": False
+            },
+            {
+                "query": search_query_guard.sanitize_query_with_negative_operators(f"companies like {entity_name} official website"),
+                "intent": DiscoveryQueryIntent.COMPANY_EXPANSION.value,
+                "can_crawl_result_directly": True,
+                "requires_company_domain_resolution": False
+            },
+            {
+                "query": search_query_guard.sanitize_query_with_negative_operators(f"{entity_name} alternatives official site"),
+                "intent": DiscoveryQueryIntent.COMPANY_EXPANSION.value,
+                "can_crawl_result_directly": True,
+                "requires_company_domain_resolution": False
+            }
         ]
         return expansions
 

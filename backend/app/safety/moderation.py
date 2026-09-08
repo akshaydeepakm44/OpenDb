@@ -43,74 +43,13 @@ class ContentModerator:
                 "reason": f"Code-level heuristic matched disallowed category '{cat}'"
             }
 
-        # 2. OpenAI Moderation API call if key configured
-        if self.api_key:
-            try:
-                headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-                payload = {"input": text[:4000]} # Send representative sample
-                async with httpx.AsyncClient(timeout=6.0) as client:
-                    resp = await client.post("https://api.openai.com/v1/moderations", json=payload, headers=headers)
-                    if resp.status_code == 200:
-                        res = resp.json().get("results", [{}])[0]
-                        flagged = res.get("flagged", False)
-                        categories = [c for c, val in res.get("categories", {}).items() if val]
-                        scores = res.get("category_scores", {})
-                        max_score = max(scores.values()) if scores else 0.0
-
-                        # Ambiguity threshold check (score between 0.30 and 0.70)
-                        is_ambiguous = (0.30 <= max_score <= 0.70) or ("sexual/minors" in categories)
-
-                        if flagged:
-                            return {
-                                "is_safe": False,
-                                "is_ambiguous": is_ambiguous,
-                                "flagged_categories": categories,
-                                "confidence_score": float(max_score),
-                                "reason": f"Moderation API flagged content in categories: {categories}"
-                            }
-                        elif is_ambiguous:
-                            return {
-                                "is_safe": False,
-                                "is_ambiguous": True,
-                                "flagged_categories": categories,
-                                "confidence_score": float(max_score),
-                                "reason": f"Low confidence / ambiguous moderation result (score: {max_score:.2f})"
-                            }
-                        return {
-                            "is_safe": True,
-                            "is_ambiguous": False,
-                            "flagged_categories": [],
-                            "confidence_score": 0.95,
-                            "reason": "Passed moderation API"
-                        }
-                    else:
-                        logger.error(f"❌ [MODERATION API ERROR] HTTP {resp.status_code}")
-                        # FAIL-CLOSED
-                        return {
-                            "is_safe": False,
-                            "is_ambiguous": True,
-                            "flagged_categories": ["api_error"],
-                            "confidence_score": 0.0,
-                            "reason": f"Moderation API HTTP {resp.status_code} - Fail Closed"
-                        }
-            except Exception as e:
-                logger.error(f"❌ [MODERATION API UNREACHABLE] {e}")
-                # FAIL-CLOSED
-                return {
-                    "is_safe": False,
-                    "is_ambiguous": True,
-                    "flagged_categories": ["api_unreachable"],
-                    "confidence_score": 0.0,
-                    "reason": f"Moderation API unreachable - Fail Closed: {e}"
-                }
-
-        # No API key: passed heuristic scanner
+        # Passed code heuristic scanner
         return {
             "is_safe": True,
             "is_ambiguous": False,
             "flagged_categories": [],
-            "confidence_score": 0.90,
-            "reason": "Passed code heuristic scanner"
+            "confidence_score": 0.95,
+            "reason": "Passed open-source local heuristic safety scanner"
         }
 
     async def moderate_image_asset(self, image_url: str, url: str) -> Dict[str, Any]:

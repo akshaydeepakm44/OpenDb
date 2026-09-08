@@ -28,13 +28,14 @@ from app.persistence.repositories import repo
 from app.persistence.models import (
     SearchHistory, Document, UniversalRecord, DomainRecord,
     VerificationRecord, ExtractedFact, BatchResult, CrawlError,
-    CrawlActivityLog, utc_now,
+    CrawlActivityLog, SearchCandidate, Company, PostgresSyncOutbox, utc_now,
 )
 
 from app.crawler.searxng_service import searxng_service
 from app.crawler.crawler_service import crawler_service
 from app.crawler.listing_detector import listing_detector
 from app.crawler.quality_filter import quality_filter
+from app.crawler.candidate_classifier import candidate_classifier
 from app.storage.file_storage import file_storage
 from app.extraction.extractor import extraction_pipeline
 from app.normalization.normalizer import normalizer
@@ -94,9 +95,20 @@ def _has_active_celery_worker() -> bool:
 def _safe_dispatch(task_func, **kwargs):
     """
     Safely dispatch task.
-    Attempts Celery enqueueing if a worker process is active.
-    Otherwise dispatches to background daemon thread so discovery proceeds immediately without Redis delay.
+    Skips dispatch if agent is PAUSED.
     """
+    try:
+        from app.agent.discovery_agent import discovery_agent
+        db = SessionLocal()
+        state = discovery_agent._get_or_create_state(db)
+        is_paused = (state.status != "RUNNING")
+        db.close()
+        if is_paused:
+            logger.info(f"[Safe Dispatch] Agent is PAUSED — skipping task '{task_func.name}'")
+            return
+    except Exception:
+        pass
+
     dispatched_to_celery = False
     if _has_active_celery_worker():
         try:
@@ -114,6 +126,7 @@ def _safe_dispatch(task_func, **kwargs):
                 logger.error(f"[Safe Dispatch] Background task execution failed: {err}")
 
         threading.Thread(target=_run_bg, daemon=True).start()
+
 
 
 
@@ -162,7 +175,7 @@ def _log_activity(db, url: str, stage: str, status: str, message: str = "",
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# WORKER A — Search & Discover
+# WORKER A — Search & Discover (Candidate First + Multi-Gate Filter)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @celery_app.task(
@@ -180,32 +193,29 @@ def search_and_discover_task(
     batch_id: str = None,
 ) -> Dict[str, Any]:
     """
-    §11 — Worker A: Search SearXNG → classify results → enqueue entity crawls.
-    Each SearXNG URL is classified as listing page or entity page.
-    Listing pages get their entity links extracted and each entity enqueued separately.
+    Worker A: Search SearXNG → Save search candidates → Gate 1 classification + Dedup
+    → Stage 1 Homepage Crawl + Gate 2 Qualification.
+    Search engine outputs are stored strictly as SearchCandidates first.
     """
-    # Backward compat: if called without 'query', build it from keyword + domain
     if not query:
         query = f"{domain or ''} {keyword or ''}".strip()
     if not keyword:
         keyword = query
 
-    logger.info(f"[Worker A] Search: '{query}' | domain='{domain}' batch={batch_id}")
+    logger.info(f"[Worker A] Search Discovery: '{query}' | domain='{domain}' batch={batch_id}")
 
     db = SessionLocal()
     try:
         search_results, is_fallback, log_msg = run_async(
-            searxng_service.search_with_meta(query=query, max_results=20)
+            searxng_service.search_initial_with_metadata_targets(query=query, max_results=20)
         )
 
-        # Log search event
         fallback_tag = " [FALLBACK]" if is_fallback else ""
         _log_activity(db, url=f"QUERY: {query}", stage="SEARCH", domain=domain,
                       status="OK" if search_results else "EMPTY",
-                      message=f"{log_msg}{fallback_tag} → {len(search_results)} URLs found",
+                      message=f"{log_msg}{fallback_tag} → {len(search_results)} URLs discovered",
                       batch_id=batch_id)
 
-        # Save Search History
         history = SearchHistory(
             id=str(uuid.uuid4()),
             keyword=keyword,
@@ -223,41 +233,88 @@ def search_and_discover_task(
         if not search_results:
             return {"keyword": keyword, "sources_found": 0, "enqueued_crawls": 0}
 
-        # Process each search result URL
-        enqueued = 0
+        enqueued_candidates = 0
+        from app.events.event_bus import publish_pipeline_event, EventType
+
         for res in search_results:
             target_url = res.get("url")
-            if not target_url:
+            if not target_url or not target_url.startswith("http"):
                 continue
 
-            # Stage 1: URL-level quality filter
-            keep, reason = quality_filter.filter_url(target_url)
-            if not keep:
+            title = res.get("title", "")
+            snippet = res.get("snippet", "")
+
+            # 1. Save raw search result into SQLite search_candidates (SEARCH_CANDIDATE)
+            candidate = SearchCandidate(
+                id=str(uuid.uuid4()),
+                search_query=query,
+                raw_url=target_url,
+                title=title,
+                snippet=snippet,
+                batch_id=batch_id,
+                status="SEARCH_CANDIDATE"
+            )
+            db.add(candidate)
+            db.commit()
+
+            # 2. Gate 1 — Source Classification & Domain Blocklist
+            cat, cat_reason, is_allowed = candidate_classifier.classify(target_url, title=title, snippet=snippet)
+
+            if not is_allowed:
+                candidate.status = "REJECTED"
+                candidate.source_category = cat
+                candidate.rejection_reason = f"Gate 1 ({cat}): {cat_reason}"
+                candidate.gate1_passed = False
+                db.commit()
+
+                _log_activity(db, url=target_url, stage="GATE1_FILTER", domain=domain,
+                              status="REJECTED", message=f"Gate 1 Rejected ({cat}): {cat_reason}", batch_id=batch_id)
+                publish_pipeline_event(EventType.URL_REJECTED, {"category": cat, "reason": cat_reason}, entity_url=target_url, domain=domain)
+                continue
+
+            candidate.gate1_passed = True
+            candidate.source_category = cat
+
+            # 3. Canonical Domain Normalization
+            canonical_domain = normalizer.extract_canonical_root_domain(target_url)
+            candidate.canonical_domain = canonical_domain
+
+            # 4. Redis + SQLite Domain Deduplication Check
+            existing_company = db.query(Company).filter(Company.canonical_domain == canonical_domain).first()
+            if existing_company:
+                candidate.status = "DEDUPLICATED"
+                candidate.rejection_reason = f"Domain {canonical_domain} already registered in Company Lake"
+                db.commit()
                 _log_activity(db, url=target_url, stage="FILTER", domain=domain,
-                              status="FILTERED", message=f"URL rejected: {reason}", batch_id=batch_id)
+                              status="DEDUPLICATED", message=f"Duplicate domain: {canonical_domain}", batch_id=batch_id)
                 continue
 
-            # Stage 2: Classify listing vs entity
-            classification = listing_detector.classify_url(target_url)
+            existing_candidate = db.query(SearchCandidate).filter(
+                SearchCandidate.id != candidate.id,
+                SearchCandidate.canonical_domain == canonical_domain,
+                SearchCandidate.status.in_(["QUALIFIED", "STAGE1_CRAWLED", "ALLOWED"])
+            ).first()
 
-            if classification == "listing":
-                _log_activity(db, url=target_url, stage="CRAWL", domain=domain,
-                              status="QUEUED", message="Classified as LISTING page — queuing source extraction",
-                              batch_id=batch_id)
-                _safe_dispatch(crawl_source_task, source_url=target_url, domain=domain, batch_id=batch_id)
-                enqueued += 1
-            else:
-                _log_activity(db, url=target_url, stage="CRAWL", domain=domain,
-                              status="QUEUED", message="Classified as ENTITY page — queuing entity crawl",
-                              batch_id=batch_id)
-                _safe_dispatch(crawl_entity_task, url=target_url, domain=domain, batch_id=batch_id)
-                enqueued += 1
+            if existing_candidate:
+                candidate.status = "DEDUPLICATED"
+                candidate.rejection_reason = f"Domain {canonical_domain} already in candidate pipeline"
+                db.commit()
+                continue
+
+            candidate.status = "ALLOWED"
+            db.commit()
+
+            publish_pipeline_event(EventType.URL_CLASSIFIED, {"category": cat, "title": title}, entity_url=target_url, domain=domain)
+
+            # 5. Dispatch Stage 1 Homepage Crawl & Gate 2 Qualification
+            _safe_dispatch(process_candidate_qualification_task, candidate_id=candidate.id, domain=domain, batch_id=batch_id)
+            enqueued_candidates += 1
 
         return {
             "query": query,
             "keyword": keyword,
             "sources_found": len(search_results),
-            "enqueued_crawls": enqueued,
+            "enqueued_crawls": enqueued_candidates,
             "is_fallback": is_fallback,
         }
 
@@ -271,6 +328,137 @@ def search_and_discover_task(
             return {"error": str(e)}
     finally:
         db.close()
+
+
+@celery_app.task(
+    name="tasks.process_candidate_qualification",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+)
+def process_candidate_qualification_task(
+    self,
+    candidate_id: str,
+    domain: str = None,
+    batch_id: str = None,
+) -> Dict[str, Any]:
+    """
+    Stage 1 Lightweight Crawl (Homepage only) + Gate 2 Company Qualification Engine.
+    Only candidates scoring >= 60 are inserted into SQLite `companies` table and `postgres_sync_outbox`.
+    """
+    db = SessionLocal()
+    try:
+        candidate = db.query(SearchCandidate).filter(SearchCandidate.id == candidate_id).first()
+        if not candidate:
+            return {"status": "error", "message": "Candidate not found"}
+
+        canonical_domain = candidate.canonical_domain or normalizer.extract_canonical_root_domain(candidate.raw_url)
+        homepage_url = f"https://{canonical_domain}" if not canonical_domain.startswith("http") else canonical_domain
+
+        # Stage 1: Lightweight Homepage Crawl
+        crawled_items = run_async(
+            crawler_service.crawl_site(starting_url=homepage_url, max_depth=1, max_pages=1)
+        )
+
+        html_text = ""
+        page_title = candidate.title or ""
+        meta_desc = candidate.snippet or ""
+
+        if crawled_items and len(crawled_items) > 0:
+            item = crawled_items[0]
+            html_text = item.text or item.html_content or ""
+            page_title = item.title or page_title
+
+        # Gate 2: Deterministic Signals & Company Confidence Score
+        from app.crawler.company_qualification_engine import qualification_engine
+        score, qual_status, meta = qualification_engine.evaluate(
+            domain=canonical_domain,
+            html_text=html_text,
+            title=page_title,
+            meta_desc=meta_desc
+        )
+
+        candidate.confidence_score = score
+
+        if qual_status == "REJECTED":
+            candidate.status = "REJECTED"
+            candidate.rejection_reason = f"Gate 2 Qualification Score ({score}/100) below threshold. Reasons: {', '.join(meta.get('reasons', []))}"
+            db.commit()
+            _log_activity(db, url=homepage_url, stage="GATE2_QUALIFICATION", domain=domain,
+                          status="REJECTED", message=f"Gate 2 Rejected ({score}/100) — {canonical_domain}", batch_id=batch_id)
+            return {"status": "rejected", "score": score, "domain": canonical_domain}
+
+        elif qual_status == "LLM_REVIEW":
+            candidate.status = "LLM_REVIEW"
+            candidate.rejection_reason = f"Gate 2 Score ({score}/100) requires review"
+            db.commit()
+            _log_activity(db, url=homepage_url, stage="GATE2_QUALIFICATION", domain=domain,
+                          status="LLM_REVIEW", message=f"Gate 2 LLM Review Needed ({score}/100) — {canonical_domain}", batch_id=batch_id)
+            return {"status": "llm_review", "score": score, "domain": canonical_domain}
+
+        # Gate 2 Passed -> QUALIFIED_COMPANY!
+        candidate.status = "QUALIFIED"
+        db.commit()
+
+        # Save to SQLite `companies` table (Operational Truth)
+        company = db.query(Company).filter(Company.canonical_domain == canonical_domain).first()
+        if not company:
+            company = Company(
+                id=str(uuid.uuid4()),
+                canonical_domain=canonical_domain,
+                company_name=meta["company_name"],
+                company_type=meta["company_type"],
+                industry=domain or "Technology & Business Services",
+                official_url=homepage_url,
+                status="QUALIFIED_COMPANY",
+                company_confidence_score=score,
+                qualification_reasons=meta.get("reasons", []),
+                meta_info={"raw_candidate_url": candidate.raw_url}
+            )
+            db.add(company)
+        else:
+            company.company_confidence_score = max(company.company_confidence_score, score)
+            company.status = "QUALIFIED_COMPANY"
+        db.commit()
+
+        # Insert into `postgres_sync_outbox` for asynchronous sync to PostgreSQL
+        outbox_entry = PostgresSyncOutbox(
+            id=str(uuid.uuid4()),
+            entity_type="COMPANY",
+            entity_id=company.id,
+            action="UPSERT",
+            payload={
+                "id": company.id,
+                "domain": company.canonical_domain,
+                "company_name": company.company_name,
+                "company_type": company.company_type,
+                "industry": company.industry,
+                "official_url": company.official_url,
+                "quality_score": company.company_confidence_score,
+                "qualification_reasons": company.qualification_reasons,
+                "status": company.status,
+                "updated_at": company.updated_at.isoformat() if company.updated_at else None
+            },
+            sync_status="PENDING"
+        )
+        db.add(outbox_entry)
+        db.commit()
+
+        _log_activity(db, url=homepage_url, stage="QUALIFIED_COMPANY", domain=domain,
+                      status="QUALIFIED", message=f"Company Qualified ({score}/100): {company.company_name} [{canonical_domain}]",
+                      entity_name=company.company_name, batch_id=batch_id)
+
+        # Stage 2: Deep Crawl subpages (/about, /contact, /team)
+        _safe_dispatch(crawl_entity_task, url=homepage_url, domain=domain, batch_id=batch_id)
+
+        return {"status": "qualified", "company_id": company.id, "domain": canonical_domain, "score": score}
+
+    except Exception as e:
+        logger.error(f"[Qualification Engine] Error processing candidate {candidate_id}: {e}")
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -606,11 +794,16 @@ def crawl_entity_task(
         ).first()
 
         if univ_rec:
-            _log_activity(db, url=url, stage="POSTGRES", domain=domain,
+            from app.persistence.models import RecordState
+            from app.events.event_bus import publish_pipeline_event, EventType
+            univ_rec.status = RecordState.RAW_INGESTED
+            db.commit()
+
+            _log_activity(db, url=url, stage="RAW_INGESTED", domain=domain,
                           status="OK",
-                          message=f"UniversalRecord persisted — name='{entity_name}' ID={univ_rec.id[:8]} confidence={entity_confidence:.0%}",
+                          message=f"Raw company record ingested into SQLite Staging DB — name='{entity_name}' ID={univ_rec.id[:8]}",
                           entity_name=entity_name, batch_id=batch_id)
-            _safe_dispatch(enrich_and_verify_task, universal_record_id=univ_rec.id)
+            publish_pipeline_event(EventType.RAW_INGESTED, {"record_id": univ_rec.id, "entity_name": entity_name}, entity_url=url, domain=domain)
 
         return {
             "status": "success",
@@ -719,22 +912,51 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
                 "duplicate_of": (name_dup or domain_dup).id,
             }
 
-        # ── 3. Verification — confidence scoring ──────────────────────────────
+        # ── 3. Dedicated Playwright & SearXNG Verification Pipeline ─────────
+        domain_key = urlparse(record.url).netloc.lower().replace("www.", "") if record.url else record.canonical_name.lower()
+        
+        # Playwright Live Browser Verification Check
+        from app.verifier.playwright_verifier import playwright_verifier
+        pw_result = playwright_verifier.verify_url(record.url)
+
+        verification_data = run_async(
+            searxng_service.verify_and_enrich_with_searxng(
+                company_name=record.canonical_name,
+                domain=domain_key
+            )
+        )
+
         confidence = float(record.confidence or 0.5)
         score_reasons = []
 
+        if pw_result.get("is_verified"):
+            confidence += 0.25
+            score_reasons.append("playwright_live_site_verified")
+            if pw_result.get("extracted_emails"):
+                verification_data.setdefault("verified_emails", []).extend(pw_result["extracted_emails"])
+        elif pw_result.get("reason"):
+            score_reasons.append(f"playwright_notice='{pw_result.get('reason')}'")
+
         if len(canonical_name) > 3:
-            confidence += 0.10
+            confidence += 0.05
             score_reasons.append("name_ok")
         if record.url:
-            confidence += 0.10
-            score_reasons.append("has_url")
-        if record.description and len(record.description) > 50:
-            confidence += 0.10
-            score_reasons.append("has_description")
-        if record.country:
             confidence += 0.05
-            score_reasons.append("has_country")
+            score_reasons.append("has_url")
+
+        # SearXNG Verification Cross-Check Signals
+        if verification_data.get("verified_hq"):
+            record.location = verification_data["verified_hq"]
+            confidence += 0.20
+            score_reasons.append(f"searxng_hq_verified='{verification_data['verified_hq']}'")
+
+        if verification_data.get("verified_emails"):
+            confidence += 0.15
+            score_reasons.append(f"searxng_emails_verified={len(verification_data['verified_emails'])}")
+
+        if verification_data.get("verified_people"):
+            confidence += 0.20
+            score_reasons.append(f"searxng_linkedin_people_verified={len(verification_data['verified_people'])}")
 
         # Check domain record for additional fields
         dom_rec = db.query(DomainRecord).filter(
@@ -746,28 +968,52 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
             score_reasons.append(f"completeness={filled_fields:.2f}")
 
         confidence = round(min(1.0, confidence), 4)
-        is_verified = confidence >= 0.60
+        is_verified = bool(verification_data.get("is_verified") and confidence >= 0.55)
+
+        from app.persistence.models import RecordState
+        from app.events.event_bus import publish_pipeline_event, EventType
+        from app.worker.sync_worker import sync_verified_records_to_postgres
 
         record.confidence = confidence
-        record.status = "Verified" if is_verified else "Discovered"
+        if is_verified:
+            record.status = RecordState.VERIFIED
+            record.postgres_sync_status = "PENDING"
+            publish_pipeline_event(EventType.PLAYWRIGHT_VERIFIED, {"confidence": confidence}, entity_url=record.url)
+            publish_pipeline_event(EventType.EXTRACTION_COMPLETED, {"company": record.canonical_name}, entity_url=record.url)
+            publish_pipeline_event(EventType.VALIDATION_COMPLETED, {"company": record.canonical_name}, entity_url=record.url)
+            publish_pipeline_event(EventType.COMPANY_VERIFIED, {"company": record.canonical_name, "confidence": confidence}, entity_url=record.url)
+        else:
+            record.status = RecordState.INVALID
+            publish_pipeline_event(EventType.COMPANY_REJECTED, {"reason": "Verification score below threshold", "confidence": confidence}, entity_url=record.url)
+            
         db.commit()
+
+        # Trigger PostgreSQL Atomic Sync Worker
+        if is_verified:
+            try:
+                sync_res = sync_verified_records_to_postgres()
+                logger.info(f"[Worker C] PostgreSQL sync result: {sync_res}")
+            except Exception as sync_err:
+                logger.warning(f"[Worker C] PostgreSQL sync notice: {sync_err}")
 
         # Sync to Master Vault if verified
         if is_verified and record.url:
             try:
                 from app.persistence.vault_service import MasterVaultService
-                domain_key = urlparse(record.url).netloc.lower().lstrip("www.")
                 dom_data = dom_rec.data if dom_rec and isinstance(dom_rec.data, dict) else {}
+                d_makers = dom_data.get("key_people") or dom_data.get("leadership") or verification_data.get("verified_people")
+                v_emails = dom_data.get("contact_emails") or verification_data.get("verified_emails")
                 MasterVaultService.persist_master_lead(
                     db=db,
                     domain=domain_key,
                     company_name=record.canonical_name,
                     technology_stack=dom_data.get("technologies") or [],
                     quality_score=confidence * 10.0,
-                    headquarters=dom_data.get("headquarters") or record.location,
+                    headquarters=verification_data.get("verified_hq") or dom_data.get("headquarters") or record.location,
                     industry=record.domain.name if (record.domain and hasattr(record.domain, "name")) else "Technology",
-                    summary=record.description or f"{record.canonical_name} corporate profile.",
-                    decision_makers=dom_data.get("key_people") or dom_data.get("leadership")
+                    verified_emails=v_emails,
+                    summary=record.description or f"{record.canonical_name} verified enterprise record.",
+                    decision_makers=d_makers
                 )
             except Exception as vault_err:
                 logger.warning(f"[Worker C] Vault sync warning: {vault_err}")
@@ -778,7 +1024,7 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
             universal_record_id=record.id,
             is_verified=is_verified,
             confidence=confidence,
-            verification_notes=f"Signals: {', '.join(score_reasons)}",
+            verification_notes=f"SearXNG Verification Signals: {', '.join(score_reasons)}",
         )
         db.add(v_record)
         db.commit()
@@ -804,3 +1050,30 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
             return {"status": "error", "error": str(e)}
     finally:
         db.close()
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=10)
+def adaptive_verification_loop_task(self, company_id: str, domain: str) -> Dict[str, Any]:
+    """
+    Agentic Data Completeness Verification & Bounded Re-Crawl Task.
+    Runs multi-round verification (MAX_ROUNDS=3) for missing fields.
+    """
+    from app.persistence.database import staging_engine
+    from sqlalchemy.orm import sessionmaker
+    SessionLocalStaging = sessionmaker(autocommit=False, autoflush=False, bind=staging_engine)
+    db = SessionLocalStaging()
+    try:
+        from app.crawler.agentic_verifier import agentic_verifier
+        dossier = agentic_verifier.execute_agentic_verification(company_id, domain, db)
+        return {
+            "status": "success",
+            "company_id": company_id,
+            "domain": domain,
+            "data_completeness": dossier.get("data_completeness")
+        }
+    except Exception as e:
+        logger.error(f"[Agentic Verifier Task] Verification failed for {domain}: {e}")
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
+

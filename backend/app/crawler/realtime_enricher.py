@@ -97,9 +97,23 @@ class RealtimeEnricher:
                     crawled_htmls.append(res_item["html"])
                     u = res_item["url"]
                     page_path = urlparse(u).path or "/"
+                    page_filename = "homepage.md" if page_path in ["", "/"] else f"{page_path.strip('/').replace('/', '_')}.md"
+                    
+                    minio_path = f"companies/{clean_domain}/pages/{page_filename}"
+                    try:
+                        from app.storage.file_storage import file_storage
+                        _, minio_path = file_storage.save_company_page(
+                            domain=clean_domain,
+                            content_str_or_bytes=res_item["text"],
+                            page_name=page_filename
+                        )
+                    except Exception as fe:
+                        logger.warning(f"File storage error saving company page: {fe}")
+
                     crawled_subpages.append({
                         "title": f"{page_path} • {c_name}",
                         "url": u,
+                        "minio_raw_path": minio_path,
                         "http_status": 200,
                         "word_count": res_item["word_count"]
                     })
@@ -109,8 +123,9 @@ class RealtimeEnricher:
         combined_text = "\n\n".join(crawled_texts)
         combined_html = "\n\n".join(crawled_htmls)
 
-        # 1. Real Verified Email Extraction
+        # 1. Real Verified Email & Phone Extraction
         emails = self.extract_real_emails(combined_text, clean_domain)
+        contact_numbers = self.extract_real_phones(combined_text)
 
         # 2. Real Headquarters Extraction
         headquarters = self.extract_real_headquarters(combined_text)
@@ -120,12 +135,13 @@ class RealtimeEnricher:
 
         logger.info(
             f"✅ [Crawl4AI Realtime] {clean_domain} -> "
-            f"Emails: {len(emails)} | HQ: {headquarters or 'Not Found'} | Decision Makers: {len(decision_makers)}"
+            f"Emails: {len(emails)} | Phones: {len(contact_numbers)} | HQ: {headquarters or 'Not Found'} | Decision Makers: {len(decision_makers)}"
         )
 
         return {
             "domain": clean_domain,
             "verified_emails": emails,
+            "contact_numbers": contact_numbers,
             "headquarters": headquarters,
             "decision_makers": decision_makers,
             "crawled_subpages": crawled_subpages
@@ -151,6 +167,24 @@ class RealtimeEnricher:
             valid_emails.append(e)
 
         return valid_emails[:5]
+
+    @staticmethod
+    def extract_real_phones(text: str) -> List[str]:
+        """Extract genuine contact phone numbers found in crawled text."""
+        if not text:
+            return []
+        phone_pattern = r'(?:\+\d{1,4}[\s.-]?)?\(?\d{1,4}\)?[\s.-]?\d{1,4}[\s.-]?\d{1,4}(?:[\s.-]?\d{1,9})?'
+        raw_phones = re.findall(phone_pattern, text)
+        valid_phones = []
+        for p in raw_phones:
+            p_clean = p.strip()
+            digits = re.sub(r'\D', '', p_clean)
+            if 7 <= len(digits) <= 15:
+                if not (len(digits) == 8 and digits.startswith("202")) and not digits.startswith("199"):
+                    if p_clean not in valid_phones and len(valid_phones) < 5:
+                        valid_phones.append(p_clean)
+        return valid_phones
+
 
     @staticmethod
     def extract_real_headquarters(text: str) -> Optional[str]:

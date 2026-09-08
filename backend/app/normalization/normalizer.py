@@ -50,6 +50,27 @@ class DataNormalizer:
             return url
 
     @staticmethod
+    def extract_canonical_root_domain(url: str | None) -> str | None:
+        """
+        Rule #4 & Rule 9 — Canonical Domain Extraction:
+        Extracts the root canonical domain (e.g. 'https://www.example.com/about/team' -> 'example.com').
+        Subdomains like 'blog.example.com', 'careers.example.com' resolve to root 'example.com'.
+        """
+        if not url:
+            return None
+        try:
+            parsed = urlparse(url if url.startswith("http") else "https://" + url)
+            netloc = parsed.netloc.lower().split(":")[0].replace("www.", "")
+            parts = netloc.split(".")
+            if len(parts) >= 2:
+                if len(parts) >= 3 and parts[-2] in ("co", "com", "org", "net", "gov", "ac", "edu", "res") and len(parts[-1]) == 2:
+                    return ".".join(parts[-3:])
+                return ".".join(parts[-2:])
+            return netloc
+        except Exception:
+            return url
+
+    @staticmethod
     def normalize_language(lang: str | None) -> str | None:
         if not lang:
             return None

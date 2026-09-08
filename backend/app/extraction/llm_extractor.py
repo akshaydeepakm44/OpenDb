@@ -30,7 +30,7 @@ class LLMExtractor:
         properties = schema_def.get("properties", {})
         prompt = self._build_prompt(text_content, domain_name, properties)
 
-        # 1. Primary: Try GPU Qwen OpenAI API Endpoint (http://115.244.46.68:8000/v1)
+        # Primary: Directly hit Qwen GPU Endpoint (http://115.244.46.68:8000/v1)
         if self.api_key and self.base_url:
             try:
                 import openai
@@ -49,65 +49,9 @@ class LLMExtractor:
                 logger.info(f"Qwen GPU model ({self.model}) successfully extracted fields for {page_url}")
                 return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
             except Exception as gpu_err:
-                logger.debug(f"Qwen GPU extraction error ({gpu_err}), trying Ollama / LiteLLM fallbacks...")
+                logger.warning(f"Qwen GPU extraction notice ({gpu_err})")
 
-        # 2. Try Qwen via Ollama Local Endpoint (http://localhost:11434)
-        ollama_available = False
-        try:
-            import socket
-            from urllib.parse import urlparse
-            p = urlparse(self.ollama_url)
-            h = p.hostname or "127.0.0.1"
-            pt = p.port or 11434
-            with socket.create_connection((h, pt), timeout=0.05):
-                ollama_available = True
-        except Exception:
-            ollama_available = False
-
-        if ollama_available:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    res = await client.post(
-                        f"{self.ollama_url.rstrip('/')}/api/chat",
-                        json={
-                            "model": self.model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "format": "json",
-                            "stream": False,
-                            "options": {"temperature": 0.0}
-                        }
-                    )
-                    if res.status_code == 200:
-                        content = res.json().get("message", {}).get("content", "")
-                        parsed = json.loads(content)
-                        domain_data = parsed.get("domain_data", {})
-                        evidence_list = parsed.get("evidence", [])
-                        logger.info(f"Ollama model ({self.model}) successfully extracted fields for {page_url}")
-                        return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
-            except Exception as qwen_err:
-                logger.debug(f"Ollama extraction error ({qwen_err}), trying LiteLLM...")
-
-        # 3. Try LiteLLM API call if key is present
-        if self.api_key and self.api_key.strip():
-            try:
-                import litellm
-                response = await litellm.acompletion(
-                    model=self.model,
-                    api_key=self.api_key,
-                    api_base=self.base_url,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.0,
-                    response_format={"type": "json_object"}
-                )
-                content = response.choices[0].message.content
-                parsed = json.loads(content)
-                domain_data = parsed.get("domain_data", {})
-                evidence_list = parsed.get("evidence", [])
-                return self._enforce_schema_nulls(domain_data, properties), self._format_evidence(evidence_list, page_url)
-            except Exception as e:
-                logger.warning(f"LLM extraction failed or unconfigured, falling back to rule extraction: {e}")
-
-        # 4. Heuristic / Deterministic Semantic Extractor Fallback
+        # Code-level Structural & Rule Extraction
         return self._heuristic_semantic_extraction(text_content, domain_name, properties, page_url)
 
     def _format_evidence(self, evidence_list: List[Dict[str, Any]], page_url: str) -> List[Dict[str, Any]]:

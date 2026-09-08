@@ -125,7 +125,7 @@ class Document(Base):
     images_count = Column(Integer, default=0)
     content_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True)  # pgvector 384-dim
     retrieved_at = Column(DateTime(timezone=True), default=utc_now)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
 
     source = relationship("Source", back_populates="documents")
     crawl_job = relationship("CrawlJob", back_populates="documents")
@@ -176,11 +176,35 @@ class ResourceLink(Base):
     anchor_text = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
+class RecordState:
+    DISCOVERED = "DISCOVERED"
+    CLASSIFIED = "CLASSIFIED"
+    QUEUED_FOR_CRAWL = "QUEUED_FOR_CRAWL"
+    CRAWLING = "CRAWLING"
+    CRAWLED = "CRAWLED"
+    RAW_INGESTED = "RAW_INGESTED"
+    QUEUED_FOR_ENRICHMENT = "QUEUED_FOR_ENRICHMENT"
+    VERIFYING = "VERIFYING"
+    EXTRACTING = "EXTRACTING"
+    VALIDATING = "VALIDATING"
+    VERIFIED = "VERIFIED"
+    POSTGRES_SYNC_PENDING = "POSTGRES_SYNC_PENDING"
+    POSTGRES_SYNCED = "POSTGRES_SYNCED"
+    ARCHIVED = "ARCHIVED"
+
+    # Alternative / Terminal Failure States
+    REJECTED = "REJECTED"
+    DEDUPLICATED = "DEDUPLICATED"
+    FAILED = "FAILED"
+    INVALID = "INVALID"
+    DUPLICATE = "DUPLICATE"
+
+
 class UniversalRecord(Base):
     __tablename__ = "universal_records"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     domain_id = Column(Integer, ForeignKey("domains.id", ondelete="SET NULL"), nullable=True)
     subdomain_id = Column(Integer, ForeignKey("subdomains.id", ondelete="SET NULL"), nullable=True)
     entity_type = Column(String(100), nullable=True)
@@ -191,11 +215,17 @@ class UniversalRecord(Base):
     language = Column(String(20), nullable=True)
     country = Column(String(100), nullable=True)
     location = Column(Text, nullable=True)
-    status = Column(String(50), nullable=True)
+    status = Column(String(50), default=RecordState.DISCOVERED, index=True)
     confidence    = Column(Numeric(5, 4), nullable=True)
-    metadata_json = Column(JSONB_TYPE, default=dict)                                              # matches DB column metadata_json
-    entity_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True) # pgvector 384-dim
-    created_at    = Column(DateTime(timezone=True), default=utc_now)
+    metadata_json = Column(JSONB_TYPE, default=dict)
+
+    # Postgres Sync Dual-Layer Tracking
+    postgres_sync_status = Column(String(50), default="PENDING")  # PENDING | SYNCED | FAILED
+    postgres_synced_at = Column(DateTime(timezone=True), nullable=True)
+    sync_error = Column(Text, nullable=True)
+
+    entity_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=utc_now, index=True)
     updated_at    = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     document = relationship("Document", back_populates="universal_records")
@@ -204,11 +234,103 @@ class UniversalRecord(Base):
     domain = relationship("Domain")
     subdomain = relationship("Subdomain")
 
+class SearchCandidate(Base):
+    """Rule 1 & Rule A: Raw SearXNG output stored ONLY as SEARCH_CANDIDATE."""
+    __tablename__ = "search_candidates"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    query = Column(Text, nullable=True)
+    search_query = Column(Text, nullable=True)
+    url = Column(Text, nullable=True)
+    raw_url = Column(Text, nullable=True)
+    title = Column(Text, nullable=True)
+    snippet = Column(Text, nullable=True)
+    canonical_domain = Column(String(255), nullable=True, index=True)
+    source_type = Column(String(50), default="UNKNOWN")  # COMPANY_OFFICIAL_SITE | BLOG | NEWS | DIRECTORY | etc.
+    source_category = Column(String(50), nullable=True)
+    status = Column(String(50), default="SEARCH_CANDIDATE", index=True) # SEARCH_CANDIDATE | REJECTED | ALLOWED | QUALIFIED
+    gate1_passed = Column(Boolean, default=False)
+    rejection_reason = Column(Text, nullable=True)
+    confidence_score = Column(Integer, default=0)
+    batch_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class Company(Base):
+    """SQLite Operational Truth — Only Qualified or Verified Company Entities."""
+    __tablename__ = "companies"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    canonical_domain = Column(String(255), nullable=False, unique=True, index=True)
+    company_name = Column(String(255), nullable=False)
+    company_type = Column(String(100), nullable=True)  # B2B SaaS, IT Services, E-commerce, etc.
+    industry = Column(String(100), nullable=True, index=True)
+    subindustry = Column(String(100), nullable=True)
+    company_confidence_score = Column(Float, default=0.0) # 0 to 100
+    qualification_stage = Column(String(50), default="GATE1_PASSED") # GATE1_PASSED | STAGE1_CRAWLED | QUALIFIED | DEEP_CRAWLED | VERIFIED
+    status = Column(String(50), default="QUALIFIED_COMPANY", index=True) # QUALIFIED_COMPANY | VERIFIED_COMPANY | REJECTED
+    official_website = Column(Text, nullable=True)
+    official_url = Column(Text, nullable=True)
+    hq_country = Column(String(100), nullable=True)
+    hq_city = Column(String(100), nullable=True)
+    employee_size = Column(String(50), nullable=True)
+    employee_count_range = Column(String(50), nullable=True)
+    revenue_range = Column(String(50), nullable=True)
+    logo_url = Column(Text, nullable=True)
+    business_overview = Column(Text, nullable=True)
+    technology_stack = Column(JSONB_TYPE, default=list)
+    verified_emails = Column(JSONB_TYPE, default=list)
+    contact_numbers = Column(JSONB_TYPE, default=list)
+    decision_makers = Column(JSONB_TYPE, default=list)
+    evidence_data = Column(JSONB_TYPE, default=dict)
+    qualification_reasons = Column(JSONB_TYPE, default=list)
+    meta_info = Column(JSONB_TYPE, default=dict)
+
+    postgres_sync_status = Column(String(50), default="PENDING", index=True) # PENDING | SYNCED | FAILED
+    postgres_synced_at = Column(DateTime(timezone=True), nullable=True)
+    sync_error = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class PostgresSyncOutbox(Base):
+    """Rule D & Phase 11: Transactional Outbox for Durable Async Sync from SQLite Staging to PostgreSQL."""
+    __tablename__ = "postgres_sync_outbox"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_type = Column(String(50), default="COMPANY") # COMPANY | SEARCH_CANDIDATE
+    entity_id = Column(String(36), nullable=True)
+    company_id = Column(String(36), nullable=True)
+    domain = Column(String(255), nullable=True, index=True)
+    canonical_domain = Column(String(255), nullable=True)
+    completeness_score = Column(Float, default=0.0)
+    badge = Column(String(100), nullable=True)
+    status_code = Column(String(50), nullable=True) # QUALIFIED_COMPANY, HIGH_QUALITY_COMPANY, VERIFIED_COMPLETE
+    action = Column(String(50), default="UPSERT")
+    payload = Column(JSONB_TYPE, nullable=True)
+    payload_json = Column(JSONB_TYPE, nullable=True)
+    sync_status = Column(String(50), default="PENDING", index=True) # PENDING | SYNCED | FAILED
+    status = Column(String(50), default="PENDING")
+    processed = Column(Boolean, default=False, index=True)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    error_message = Column(Text, nullable=True)
+    retry_count = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
+    synced_at = Column(DateTime(timezone=True), nullable=True)
+
+
+
 class DomainRecord(Base):
     __tablename__ = "domain_records"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    universal_record_id = Column(String(36), ForeignKey("universal_records.id", ondelete="CASCADE"), nullable=False)
+    universal_record_id = Column(String(36), ForeignKey("universal_records.id", ondelete="CASCADE"), nullable=False, index=True)
     domain_id = Column(Integer, ForeignKey("domains.id", ondelete="SET NULL"), nullable=True)
     schema_version = Column(String(50), nullable=False)
     data = Column(JSON, nullable=False, default=dict)
@@ -221,7 +343,7 @@ class ExtractedFact(Base):
     __tablename__ = "extracted_facts"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
     universal_record_id = Column(String(36), ForeignKey("universal_records.id", ondelete="SET NULL"), nullable=True)
     field_name = Column(String(100), nullable=False)
     field_value = Column(Text, nullable=True)
@@ -485,5 +607,167 @@ class GlobalLeadSubpage(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     lead = relationship("GlobalLead", back_populates="subpages")
+
+
+class VerificationRun(Base):
+    """Audit log for each agentic verification round for a company."""
+    __tablename__ = "verification_runs"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(100), nullable=False, index=True)
+    domain = Column(String(255), nullable=False, index=True)
+    verification_round = Column(Integer, default=1)
+    status = Column(String(50), default="INITIATED")  # INITIATED, IN_PROGRESS, COMPLETED, RECRAWL_NEEDED, MAX_ROUNDS_REACHED
+    score_before = Column(Float, default=0.0)
+    score_after = Column(Float, default=0.0)
+    missing_fields = Column(JSONB_TYPE, default=list)
+    fields_found = Column(JSONB_TYPE, default=list)
+    agent_decision = Column(String(50), default="RECRAWL_REQUIRED")
+    details = Column(JSONB_TYPE, default=dict)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class VerificationRequirement(Base):
+    """Field-level completeness requirement checklist for a company."""
+    __tablename__ = "verification_requirements"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(100), nullable=False, index=True)
+    field_name = Column(String(100), nullable=False)
+    status = Column(String(50), default="MISSING")  # OBSERVED, INFERRED, MISSING, CONFLICTING, UNAVAILABLE_PUBLICLY
+    confidence = Column(Float, default=0.0)
+    evidence_source_url = Column(Text, nullable=True)
+    last_checked_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class VerificationCrawlRequest(Base):
+    """Structured crawl plan issued by Agent for Crawler."""
+    __tablename__ = "verification_crawl_requests"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(100), nullable=False, index=True)
+    domain = Column(String(255), nullable=False)
+    verification_round = Column(Integer, default=1)
+    objective = Column(Text, nullable=False)
+    missing_fields = Column(JSONB_TYPE, default=list)
+    priority_pages = Column(JSONB_TYPE, default=list)
+    search_patterns = Column(JSONB_TYPE, default=list)
+    max_pages = Column(Integer, default=5)
+    status = Column(String(50), default="PENDING")  # PENDING, IN_PROGRESS, COMPLETED, FAILED
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class VerificationCrawlResult(Base):
+    """Structured result returned by Crawler to Agent."""
+    __tablename__ = "verification_crawl_results"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    request_id = Column(String(36), ForeignKey("verification_crawl_requests.id", ondelete="CASCADE"), nullable=False)
+    company_id = Column(String(100), nullable=False, index=True)
+    pages_crawled = Column(JSONB_TYPE, default=list)
+    new_facts = Column(JSONB_TYPE, default=list)
+    fields_filled = Column(JSONB_TYPE, default=list)
+    fields_remaining = Column(JSONB_TYPE, default=list)
+    vault_objects = Column(JSONB_TYPE, default=list)
+    failures = Column(JSONB_TYPE, default=list)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class CompanyEvidence(Base):
+    """Granular provenance evidence item linking facts to source URLs."""
+    __tablename__ = "company_evidence"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(100), nullable=False, index=True)
+    field_name = Column(String(100), nullable=False)
+    field_value = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=False)
+    evidence_type = Column(String(50), default="official_company_page")  # official_company_page, meta_tag, dataset, auxiliary_searxng
+    confidence = Column(Float, default=1.0)
+    status = Column(String(50), default="OBSERVED")  # OBSERVED, INFERRED, MISSING, CONFLICTING, UNAVAILABLE_PUBLICLY
+    extracted_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class DataCompletenessScore(Base):
+    """100-Point Data Completeness Score breakdown and badge level."""
+    __tablename__ = "data_completeness_scores"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(100), nullable=False, unique=True, index=True)
+    total_score = Column(Float, default=0.0)
+    badge_level = Column(String(100), default="🔴 INSUFFICIENT DATA")
+    dimension_scores = Column(JSONB_TYPE, default=dict)
+    checklist = Column(JSONB_TYPE, default=dict)
+    formula_explanation = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class QuarantineRecord(Base):
+    """Quarantine Staging Table for Records Failing Dataset-Level Verification Checkpoints."""
+    __tablename__ = "quarantine_records"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(36), nullable=True, index=True)
+    domain = Column(String(255), nullable=False, index=True)
+    canonical_name = Column(String(255), nullable=True)
+    rejection_reasons = Column(JSONB_TYPE, default=list)
+    checkpoint_failures = Column(JSONB_TYPE, default=dict)
+    quarantined_dossier = Column(JSONB_TYPE, default=dict)
+    promoted = Column(Boolean, default=False, index=True)
+    promoted_by = Column(String(255), nullable=True)
+    promotion_reason = Column(Text, nullable=True)
+    promoted_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class GlobalVerificationReport(Base):
+    """Audit Report Log for Dataset Ingestion Runs."""
+    __tablename__ = "global_verification_reports"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    batch_id = Column(String(36), nullable=False, index=True)
+    records_ingested = Column(Integer, default=0)
+    records_rejected_outright = Column(Integer, default=0)
+    checkpoint_failures = Column(JSONB_TYPE, default=dict)
+    batch_accepted = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class DenyListDomain(Base):
+    """Dynamic DB-Backed Denied Aggregator and Malicious Domains Table."""
+    __tablename__ = "denylist_domains"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    domain = Column(String(255), nullable=False, unique=True, index=True)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class DenyListCategory(Base):
+    """Dynamic DB-Backed Denied Content Categories Table."""
+    __tablename__ = "denylist_categories"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    category = Column(String(100), nullable=False, unique=True, index=True)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+
+
+
+
+
 
 

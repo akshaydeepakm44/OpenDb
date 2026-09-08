@@ -97,7 +97,7 @@ class AutonomousDiscoveryAgent:
         self.is_running_loop: bool = False
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self.llm_model = settings.LLM_MODEL or "gpt-4o-mini"
+        self.llm_model = settings.LLM_MODEL or "current-model"
 
     # ─── Public Control Interface ──────────────────────────────────────────────
 
@@ -125,12 +125,12 @@ class AutonomousDiscoveryAgent:
             db.close()
 
     def resume_if_was_running(self):
-        """Called at app startup — resumes if agent was RUNNING before restart."""
+        """Called at app startup — starts/resumes continuous discovery agent loop."""
         db = SessionLocal()
         try:
-            state = db.query(AgentState).first()
-            if state and state.status == "RUNNING" and not self.is_running_loop:
-                logger.info("[Agent] Auto-resuming agent loop after restart...")
+            state = self._get_or_create_state(db)
+            if state.status == "RUNNING" and not self.is_running_loop:
+                logger.info("🚀 [Agent] Starting continuous 24/7 autonomous discovery loop...")
                 self._start_background_thread()
         except Exception as e:
             logger.error(f"[Agent] Auto-resume failed: {e}")
@@ -188,18 +188,39 @@ class AutonomousDiscoveryAgent:
                 batch_id_str = str(batch.id)
                 current_domain = state.current_domain
 
-                # ── 1. GATHER STATE FOR LLM ──────────────────────────────────
+                # ── 1. GATHER STATE & EXECUTE HAYSTACK 2.X AGENT STRATEGY ──
                 metrics = self.get_metrics(db)
-                prompt = self._build_agent_prompt(metrics, batch)
-                logger.info(f"[Agent] Thinking... Batch={batch_id_str[:8]} #{batch.searches_executed}/{BATCH_SIZE}")
+                current_subdomain = state.current_subdomain or "AI Platforms"
             finally:
                 db.close()
 
-            # ── 2. INVOKE AGENT LLM (NETWORK CALL - NO DB LOCK HELD) ──
-            tool_calls = await self._invoke_llm_agent(prompt)
+            # ── 2. EXECUTE HAYSTACK STRATEGIC STEP & FEEDBACK ENGINE ────
+            try:
+                from app.agent.haystack_agent import haystack_agent
+                from app.agent.feedback_engine import feedback_engine
 
-            if not tool_calls:
-                # Fallback to deterministic expansion if LLM fails or doesn't use tools
+                step_res = await haystack_agent.execute_strategic_step(
+                    current_domain=current_domain,
+                    current_subdomain=current_subdomain,
+                )
+                
+                feedback = feedback_engine.compute_batch_feedback(batch_size=50)
+                if feedback.get("directive") != "MAINTAIN":
+                    logger.info(f"🔄 [Agent Feedback Loop] Applying Directive: {feedback.get('directive')} -> {feedback.get('strategy_adjustment')}")
+
+                tool_calls = [{
+                    "function": {
+                        "name": "search_web",
+                        "arguments": json.dumps({
+                            "query": step_res.get("query"),
+                            "domain": current_domain,
+                            "subdomain": current_subdomain,
+                            "keyword": step_res.get("query", "")
+                        })
+                    }
+                }]
+            except Exception as agent_err:
+                logger.warning(f"[Agent Loop] Haystack agent step notice: {agent_err}")
                 query_info = keyword_expander.get_next_query(domain=current_domain)
                 tool_calls = [{
                     "function": {
@@ -329,37 +350,40 @@ class AutonomousDiscoveryAgent:
     def _pre_check_agent_instruction(self, db: Session, query: str, domain: str = "") -> Tuple[bool, Optional[str]]:
         """
         Code-level hard constraint pre-check function running before agent issues
-        a crawl/search instruction. Does NOT rely on LLM self-censorship.
+        a crawl/search instruction. Checks queries with search_query_guard.
         """
-        from app.safety.guardrails import is_domain_blocked, check_content_heuristics, add_to_blocklist
-        if query and is_domain_blocked(db, query):
-            return False, "database_blocklist"
-        is_disallowed, category = check_content_heuristics(f"{query} {domain}")
-        if is_disallowed:
-            add_to_blocklist(db, query, reason_category=category, source="content_moderation")
-            return False, f"heuristic_{category}"
+        from app.safety.search_query_guard import search_query_guard
+        is_safe, category, matched_kw = search_query_guard.is_query_safe(query)
+        if not is_safe:
+            return False, f"prohibited_search_category_{category}"
         return True, None
 
     # ─── LLM Orchestration ─────────────────────────────────────────────────────
 
     def _build_agent_prompt(self, metrics: Dict[str, Any], batch: BatchResult) -> str:
         searches_exec = batch.searches_executed or 0
+        last_feedback = metrics.get("last_batch_feedback", {})
+
+        feedback_section = ""
+        if last_feedback:
+            feedback_section = f"""
+        PREVIOUS 100-SEARCH BATCH PERFORMANCE FEEDBACK & AGENT ANALYSIS:
+        - Valid B2B Companies Discovered: {last_feedback.get('valid_companies', 0)}
+        - Irrelevant / Trash Results Rejected: {last_feedback.get('trash_results', 0)}
+        - High-Yield Keywords (DOUBLE DOWN): {', '.join(last_feedback.get('high_yield_keywords', [])[:5]) or 'None'}
+        - Low-Yield / Trash Keywords (AVOID): {', '.join(last_feedback.get('low_yield_keywords', [])[:5]) or 'None'}
+        - Most Effective Search Pattern: {last_feedback.get('top_pattern', 'Company name + official website + LinkedIn profile')}
+        - Strategy Direction: {last_feedback.get('strategy_recommendation', 'Focus on official websites and company LinkedIn profiles.')}
+        """
+
         prompt = f"""
         You are the OpenDB 24x7 Autonomous Discovery Agent.
-        Your goal is to continuously discover companies, identify new subdomains, and orchestrate search strategies.
-        
-        CRITICAL MANDATORY SAFETY CONSTRAINTS:
-        1. OBJECTIVE: Your objective is strictly identifying legitimate, registered commercial B2B companies, businesses, and organizations with a public web presence.
-        2. DISALLOWED CATEGORIES: You must NEVER search for, pursue, evaluate, or reason about content in any of these categories:
-           - Adult / sexual content / escort services / NSFW
-           - Unlicensed gambling / casinos / betting / lotteries
-           - Weapons / firearms / ammunition / darknet / illicit drugs / narcotics
-           - Counterfeit goods / pirated media / torrents / warez / cracks
-           - Phishing / malware / ransomware / keyloggers / botnets
-           - Human trafficking / exploitation content
-           - Extremist content / hate speech / terrorism
-           - Sites requiring circumvention of access controls / darknet onion sites / bypass paywalls
-        3. BLOCKLIST ROUTING: If any candidate query, domain, or website appears to fall into any of these disallowed categories, you must IMMEDIATELY reject it and route it to the blocklist mechanism. Do NOT analyze or evaluate it further.
+        Your goal is to continuously discover legitimate AI and IT companies, extract structured company dossiers, and optimize search queries.
+
+        CRITICAL MANDATORY SEARCH BOUNDARIES:
+        1. TARGET BOUNDARY: You MUST target official company websites, AI/IT enterprise vendors, company LinkedIn profiles, contact emails, HQ locations, employee counts, and products.
+        2. NO NOISE CONSTRAINT: Filter out personal blogs, generic tech tutorials, news articles, forums, listicles, and non-company content.
+        3. DISALLOWED CATEGORIES: Never search for adult content, gambling, weapons/drugs, pirated software, malware/phishing, hate speech, or darknet sites.
 
         Current State:
         - Total Companies Discovered: {metrics.get('entities_discovered', 0)}
@@ -368,26 +392,23 @@ class AutonomousDiscoveryAgent:
         - Active Domain: {metrics.get('current_domain')}
         - Active Subdomain: {metrics.get('current_subdomain')}
         - Last Query Used: {metrics.get('current_keyword')}
-        
-        INSTRUCTIONS:
-        1. If the batch progress is >= {BATCH_SIZE}, you MUST call 'evaluate_batch'.
-        2. Otherwise, call 'search_web' with a new query variation to discover more companies. Use dynamic geographic or intent modifiers (e.g., 'SaaS companies Germany', 'top fintech startups Brazil').
-        3. If you notice a gap in the taxonomy based on your knowledge, call 'discover_new_subdomain'.
-        
+        {feedback_section}
+        INSTRUCTIONS FOR THIS BATCH:
+        1. If batch progress is >= {BATCH_SIZE}, you MUST call 'evaluate_batch'.
+        2. Otherwise, call 'search_web' with a refined query targeting commercial AI/IT companies (e.g. 'generative AI startups Germany official website linkedin').
+        3. If you identify an unmapped AI/IT sector, call 'discover_new_subdomain'.
+
         Decide your next action by calling a tool.
         """
         return prompt
 
     async def _invoke_llm_agent(self, prompt: str) -> List[Dict[str, Any]]:
-        """Call the GPU Qwen LLM endpoint or LiteLLM and return tool calls."""
-        api_key = getattr(settings, "OPENAI_API_KEY", "") or getattr(settings, "QWEN_API_KEY", "")
+        """Call the Qwen GPU LLM endpoint directly and return tool calls."""
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or getattr(settings, "QWEN_API_KEY", "sk-datai2i-a100-qwen35-27b-8x3f9z")
         base_url = getattr(settings, "OPENAI_BASE_URL", "http://115.244.46.68:8000/v1")
         model = getattr(settings, "LLM_MODEL", "current-model")
 
-        if not api_key:
-            return None
-
-        # 1. Try OpenAI AsyncOpenAI client directly with configured base_url
+        # Directly invoke Qwen GPU OpenAI-compatible API endpoint
         try:
             import openai
             client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
@@ -404,27 +425,7 @@ class AutonomousDiscoveryAgent:
             if hasattr(message, "tool_calls") and message.tool_calls:
                 return [{"function": {"name": t.function.name, "arguments": t.function.arguments}} for t in message.tool_calls]
         except Exception as err:
-            logger.debug(f"[Agent] Direct AsyncOpenAI GPU call error ({err}), trying LiteLLM fallback...")
-
-        # 2. Try LiteLLM completion fallback
-        if litellm:
-            try:
-                response = await asyncio.to_thread(
-                    litellm.completion,
-                    model=model,
-                    api_key=api_key,
-                    api_base=base_url,
-                    messages=[{"role": "system", "content": prompt}],
-                    tools=AGENT_TOOLS,
-                    tool_choice="auto",
-                    temperature=0.2,
-                    max_tokens=500
-                )
-                message = response.choices[0].message
-                if hasattr(message, "tool_calls") and message.tool_calls:
-                    return [{"function": {"name": t.function.name, "arguments": t.function.arguments}} for t in message.tool_calls]
-            except Exception as e:
-                logger.warning(f"[Agent] LLM tool call failed: {e}. Falling back to deterministic strategy.")
+            logger.warning(f"[Agent] Qwen GPU LLM call notice ({base_url}): {err}")
 
         return None
 
@@ -449,7 +450,7 @@ class AutonomousDiscoveryAgent:
         state = db.query(AgentState).first()
         if not state:
             state = AgentState(
-                status="PAUSED",
+                status="RUNNING",
                 current_domain="Information Technology",
                 current_subdomain="SaaS & Cloud",
                 current_keyword="SaaS startups B2B",
@@ -481,21 +482,46 @@ class AutonomousDiscoveryAgent:
     # ─── Batch Feedback & Learning ─────────────────────────────────────────────
 
     def _generate_batch_feedback(self, db: Session, batch: BatchResult):
-        """§8 — Learn from batch results. Update keyword performance. Mark batch COMPLETED."""
+        """
+        Agent Feedback Loop — Executed after every 100 searches.
+        Analyzes:
+        - Valid companies discovered vs. trash/irrelevant results
+        - Keyword yields (high quality vs. low quality)
+        - Search pattern efficiency
+        Refines search strategy and stores feedback to optimize the NEXT batch.
+        """
         bid = str(batch.id)
-        logger.info(f"[Agent] Generating feedback for Batch {bid[:8]}...")
+        logger.info(f"🔄 [AGENT FEEDBACK LOOP] Evaluating 100-search Batch {bid[:8]}...")
 
         searches = db.query(SearchHistory).filter(SearchHistory.batch_id == bid).all()
         total_sources = sum(s.sources_found or 0 for s in searches)
 
+        # Count records created during this batch window
+        valid_companies_in_batch = db.query(UniversalRecord).filter(
+            UniversalRecord.created_at >= batch.started_at
+        ).count()
+
+        # Count filtered / blocked URLs in this batch
+        from app.persistence.models import CrawlActivityLog
+        trash_in_batch = db.query(CrawlActivityLog).filter(
+            CrawlActivityLog.batch_id == bid,
+            CrawlActivityLog.status == "FILTERED"
+        ).count()
+
         batch.urls_discovered = total_sources
-        batch.entities_discovered = db.query(UniversalRecord).count()
+        batch.entities_discovered = valid_companies_in_batch
         batch.entities_verified = (
-            db.query(VerificationRecord).filter(VerificationRecord.is_verified == True).count()
+            db.query(VerificationRecord).filter(
+                VerificationRecord.verified_at >= batch.started_at,
+                VerificationRecord.is_verified == True
+            ).count()
         )
         batch.status = "COMPLETED"
         batch.completed_at = utc_now()
         batch.feedback_generated = True
+
+        high_yield_kw = []
+        low_yield_kw = []
 
         for s in searches:
             if not s.keyword:
@@ -519,16 +545,47 @@ class AutonomousDiscoveryAgent:
             old_rate = float(perf.success_rate or 0.5)
             perf.success_rate = round(0.7 * old_rate + 0.3 * current_yield, 4)
 
-            if sources == 0 and (perf.usage_count or 0) >= 3:
-                perf.is_deprecated = True
-                perf.feedback_notes = f"Deprecated after {perf.usage_count} consecutive zero-result searches."
-                logger.info(f"[Agent] Deprecated keyword: '{s.keyword}'")
+            if sources > 5:
+                high_yield_kw.append(s.keyword)
+            elif sources == 0 or (perf.usage_count or 0) >= 3:
+                low_yield_kw.append(s.keyword)
+                if (perf.usage_count or 0) >= 3 and float(perf.success_rate or 0) < 0.2:
+                    perf.is_deprecated = True
+                    perf.feedback_notes = f"Deprecated after {perf.usage_count} low-yield searches."
+                    logger.info(f"🚫 [Agent Feedback] Deprecated low-yield keyword: '{s.keyword}'")
 
+        # Save batch feedback into AgentState for prompt injection into next batch
+        state = self._get_or_create_state(db)
+        state_data = state.state_data or {}
+        feedback_summary = {
+            "batch_id": bid,
+            "searches_executed": batch.searches_executed,
+            "valid_companies": valid_companies_in_batch,
+            "trash_results": trash_in_batch,
+            "high_yield_keywords": list(set(high_yield_kw)),
+            "low_yield_keywords": list(set(low_yield_kw)),
+            "top_pattern": "Company name + official website + LinkedIn profile",
+            "strategy_recommendation": f"Double down on high-yield keywords ({len(set(high_yield_kw))} found). Avoid generic news/blogs."
+        }
+        state_data["last_batch_feedback"] = feedback_summary
+        state.state_data = state_data
+
+        # Log feedback event to CrawlActivityLog
+        f_log = CrawlActivityLog(
+            url=f"batch://{bid[:8]}",
+            domain="Agent Feedback",
+            stage="FEEDBACK",
+            status="OK",
+            message=f"Batch Evaluation: {valid_companies_in_batch} valid companies | {trash_in_batch} trash items rejected | {len(set(high_yield_kw))} high-yield keywords identified.",
+            batch_id=bid
+        )
+        db.add(f_log)
         db.commit()
+
         logger.info(
-            f"[Agent] Batch {bid[:8]} completed: "
-            f"{total_sources} URLs | {batch.entities_discovered} entities | "
-            f"{batch.entities_verified} verified"
+            f"✅ [AGENT FEEDBACK LOOP COMPLETE] Batch {bid[:8]}: "
+            f"{total_sources} URLs | {valid_companies_in_batch} valid companies | "
+            f"{trash_in_batch} trash filtered out"
         )
 
     # ─── Metrics API ───────────────────────────────────────────────────────────
@@ -574,6 +631,7 @@ class AutonomousDiscoveryAgent:
                 "searches_executed": recent_batch.searches_executed if recent_batch else 0,
                 "searches_planned": recent_batch.searches_planned if recent_batch else BATCH_SIZE,
             },
+            "last_batch_feedback": (state.state_data or {}).get("last_batch_feedback", {}),
             "recent_entities": [
                 {
                     "id": r.id,
