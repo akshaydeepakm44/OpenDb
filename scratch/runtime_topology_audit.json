@@ -1,0 +1,115 @@
+{
+  "timestamp": "2026-09-08T08:11:56.940589+00:00",
+  "topology": [
+    {
+      "service": "FastAPI Backend",
+      "process": "uvicorn app.main:app",
+      "host": "127.0.0.1",
+      "port": 8000,
+      "protocol": "HTTP",
+      "expected_target": "http://127.0.0.1:8000/api/health",
+      "health": "UNREACHABLE",
+      "match": "YES"
+    },
+    {
+      "service": "Haystack Orchestrator",
+      "process": "python background thread",
+      "host": "127.0.0.1",
+      "port": 8000,
+      "protocol": "INTERNAL",
+      "expected_target": "app.agent.haystack_agent",
+      "health": "HEALTHY",
+      "match": "YES"
+    },
+    {
+      "service": "Redis Broker",
+      "process": "docker container / redis-server",
+      "host": "localhost",
+      "port": 6379,
+      "protocol": "RESP",
+      "expected_target": "localhost:6379",
+      "health": "HEALTHY",
+      "match": "YES"
+    },
+    {
+      "service": "Celery Crawl Worker",
+      "process": "celery -A app.worker.tasks worker",
+      "host": "localhost",
+      "port": 6379,
+      "protocol": "AMQP/RESP",
+      "expected_target": "celery@worker queue",
+      "health": "HEALTHY",
+      "match": "YES"
+    },
+    {
+      "service": "SearXNG Engine",
+      "process": "searxng docker container",
+      "host": "localhost",
+      "port": 8080,
+      "protocol": "HTTP",
+      "expected_target": "http://localhost:8080",
+      "health": "FALLBACK_ENGINE_ACTIVE",
+      "match": "NO"
+    },
+    {
+      "service": "Crawl4AI Engine",
+      "process": "playwright async python service",
+      "host": "127.0.0.1",
+      "port": 8000,
+      "protocol": "ASYNC_PYTHON",
+      "expected_target": "app.crawler.crawler_service",
+      "health": "HEALTHY",
+      "match": "YES"
+    },
+    {
+      "service": "Playwright Headless",
+      "process": "chromium browser process",
+      "host": "local process",
+      "port": 0,
+      "protocol": "CDP",
+      "expected_target": "playwright chromium driver",
+      "health": "HEALTHY",
+      "match": "YES"
+    },
+    {
+      "service": "SQLite Operational DB",
+      "process": "local disk database",
+      "host": "local disk",
+      "port": 0,
+      "protocol": "FILE_IO",
+      "expected_target": "e:/crawl/backend/opendb.db",
+      "health": "HEALTHY",
+      "match": "YES"
+    },
+    {
+      "service": "MinIO Vault Storage",
+      "process": "minio docker container",
+      "host": "localhost",
+      "port": 9000,
+      "protocol": "S3_HTTP",
+      "expected_target": "http://localhost:9000",
+      "health": "HEALTHY",
+      "match": "YES"
+    },
+    {
+      "service": "PostgreSQL Verified Lake",
+      "process": "postgres docker container",
+      "host": "localhost",
+      "port": 5433,
+      "protocol": "POSTGRESQL",
+      "expected_target": "localhost:5433",
+      "health": "STAGING_ISOLATED_IN_SQLITE",
+      "match": "NO"
+    },
+    {
+      "service": "React Vite Frontend",
+      "process": "npm run dev / vite node process",
+      "host": "localhost",
+      "port": 5173,
+      "protocol": "HTTP",
+      "expected_target": "http://localhost:5173",
+      "health": "UNREACHABLE",
+      "match": "NO"
+    }
+  ]
+}
