@@ -678,6 +678,32 @@ def get_crawled_documents(
         # Decision Makers
         leadership = dom_data.get("key_people") or dom_data.get("leadership") or dom_data.get("founders")
         if not leadership or not isinstance(leadership, list):
+            leadership = []
+
+        # Merge SearXNG Key People Candidates discovered for this company
+        try:
+            from app.persistence.models import KeyPersonCandidate
+            c_name_clean = (linked.canonical_name if (linked and linked.canonical_name) else name).strip()
+            kp_cands = db.query(KeyPersonCandidate).filter(
+                or_(
+                    KeyPersonCandidate.company_name.ilike(f"%{c_name_clean}%"),
+                    KeyPersonCandidate.company_name.ilike(f"%{clean_dom.split('.')[0]}%")
+                )
+            ).limit(6).all()
+            if kp_cands:
+                existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
+                for kp in kp_cands:
+                    if kp.person_name and kp.person_name.lower() not in existing_names:
+                        leadership.append({
+                            "name": kp.person_name,
+                            "title": kp.role or "Executive / Leadership",
+                            "linkedin_url": kp.source_url or f"https://www.linkedin.com/search/results/all/?keywords={quote(kp.person_name + ' ' + c_name_clean)}"
+                        })
+                        existing_names.add(kp.person_name.lower())
+        except Exception:
+            pass
+
+        if not leadership:
             leadership = [
                 {"name": f"Leadership Team ({name})", "title": "Co-Founders & Executive Lead"}
             ]
