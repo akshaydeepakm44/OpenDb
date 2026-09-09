@@ -301,6 +301,31 @@ CREATE TABLE IF NOT EXISTS verification_records (
     verified_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ─── Key Person Candidates Table (KP-01 to KP-08) ───────────────────────────
+
+CREATE TABLE IF NOT EXISTS key_person_candidates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id TEXT,
+    company_name VARCHAR(255) NOT NULL,
+    person_name VARCHAR(255) NOT NULL,
+    role VARCHAR(255),
+    source_url TEXT,
+    source_domain VARCHAR(255),
+    source_type VARCHAR(100),
+    discovery_query TEXT,
+    evidence_text TEXT,
+    confidence_score NUMERIC(5, 2) DEFAULT 0,
+    verification_status VARCHAR(50) DEFAULT 'DISCOVERED', -- DISCOVERED, PENDING_VERIFICATION, HIGH_CONFIDENCE, VERIFIED, REJECTED, INSUFFICIENT_EVIDENCE
+    crawl_status VARCHAR(50) DEFAULT 'COMPLETED',
+    discovered_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_person_company_id ON key_person_candidates (company_id);
+CREATE INDEX IF NOT EXISTS idx_key_person_company_name ON key_person_candidates (company_name);
+CREATE INDEX IF NOT EXISTS idx_key_person_verification_status ON key_person_candidates (verification_status);
+
+
 -- ─── Seed Domains ─────────────────────────────────────────────────────────────
 
 INSERT INTO domains (name, description) VALUES

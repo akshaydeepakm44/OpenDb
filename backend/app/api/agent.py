@@ -898,6 +898,18 @@ def get_entities_list(
         for g in g_leads:
             people_recs = db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id == g.id).all()
             d_makers = [{"name": p.full_name, "title": p.title, "linkedin_search_url": p.linkedin_search_url} for p in people_recs]
+            
+            from app.persistence.models import KeyPersonCandidate
+            kp_cands = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name == g.company_name).all()
+            existing_names = {p["name"].lower() for p in d_makers}
+            for kp in kp_cands:
+                if kp.person_name.lower() not in existing_names:
+                    d_makers.append({
+                        "name": kp.person_name,
+                        "title": kp.role,
+                        "linkedin_search_url": kp.source_url
+                    })
+            
             g_results.append({
                 "id": g.id,
                 "canonical_name": g.company_name,
@@ -933,6 +945,17 @@ def get_entities_list(
         d.universal_record_id: (d.data or {}) for d in db.query(DomainRecord).filter(DomainRecord.universal_record_id.in_(rec_ids)).all()
     } if rec_ids else {}
 
+    cnames = [r.canonical_name for r in records if r.canonical_name]
+    from app.persistence.models import KeyPersonCandidate
+    kp_candidates = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name.in_(cnames)).all() if cnames else []
+    kp_map = {}
+    for kp in kp_candidates:
+        kp_map.setdefault(kp.company_name, []).append({
+            "name": kp.person_name,
+            "title": kp.role,
+            "linkedin_search_url": kp.source_url
+        })
+
     results = []
     for r in records:
         dom_data = dom_map.get(r.id, {}) if isinstance(dom_map.get(r.id), dict) else {}
@@ -964,6 +987,12 @@ def get_entities_list(
             tech_stack = ["Web Infrastructure", "Cloud Hosting"]
         
         leadership = dom_data.get("key_people") or dom_data.get("leadership") or dom_data.get("founders") or []
+        if isinstance(leadership, list):
+            extra_people = kp_map.get(clean_c_name, [])
+            existing_names = { (p.get("name") if isinstance(p, dict) else str(p)).lower() for p in leadership }
+            for ep in extra_people:
+                if ep["name"].lower() not in existing_names:
+                    leadership.append(ep)
         
         subpages = dom_data.get("crawled_subpages") or [
             {"title": f"/ • {clean_c_name}", "url": r.url or "", "minio_raw_path": f"companies/{clean_domain}/pages/homepage.md"}
@@ -1034,6 +1063,17 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             v_emails = vault_lead.get("verified_emails") or []
             v_hq = vault_lead.get("headquarters")
             v_people = vault_lead.get("people") or []
+
+            from app.persistence.models import KeyPersonCandidate
+            kp_cands = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name == vault_lead["company_name"]).all()
+            existing_names = {p.get("name", "").lower() for p in v_people}
+            for kp in kp_cands:
+                if kp.person_name.lower() not in existing_names:
+                    v_people.append({
+                        "name": kp.person_name,
+                        "title": kp.role,
+                        "linkedin_search_url": kp.source_url
+                    })
 
             # Perform Crawl4AI real-time enrichment if any key field is missing
             if not v_emails or not v_hq or not v_people:
@@ -1165,6 +1205,17 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                     "name": name,
                     "title": role,
                     "linkedin_search_url": f"https://www.linkedin.com/search/results/all/?keywords={search_query}"
+                })
+
+        from app.persistence.models import KeyPersonCandidate
+        kp_cands = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name == clean_c_name).all()
+        existing_names = {p["name"].lower() for p in decision_makers}
+        for kp in kp_cands:
+            if kp.person_name.lower() not in existing_names:
+                decision_makers.append({
+                    "name": kp.person_name,
+                    "title": kp.role,
+                    "linkedin_search_url": kp.source_url
                 })
 
         # Extract Emails & HQ

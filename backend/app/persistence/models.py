@@ -487,3 +487,29 @@ class GlobalLeadSubpage(Base):
     lead = relationship("GlobalLead", back_populates="subpages")
 
 
+class KeyPersonCandidate(Base):
+    """
+    Key Person Candidates (KP-01 to KP-08)
+    Discovered asynchronously via parallel SearXNG search & evidence verification.
+    """
+    __tablename__ = "key_person_candidates"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(255), nullable=True, index=True)
+    company_name = Column(String(255), nullable=False, index=True)
+    person_name = Column(String(255), nullable=False)
+    role = Column(String(255), nullable=True)
+    source_url = Column(Text, nullable=True)
+    source_domain = Column(String(255), nullable=True)
+    source_type = Column(String(100), nullable=True)
+    discovery_query = Column(Text, nullable=True)
+    evidence_text = Column(Text, nullable=True)
+    confidence_score = Column(Float, default=0.0)
+    verification_status = Column(String(50), default="DISCOVERED", index=True) # DISCOVERED, PENDING_VERIFICATION, HIGH_CONFIDENCE, VERIFIED, REJECTED, INSUFFICIENT_EVIDENCE
+    crawl_status = Column(String(50), default="COMPLETED")
+    discovered_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+

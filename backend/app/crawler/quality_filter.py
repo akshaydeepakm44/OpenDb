@@ -234,10 +234,11 @@ class QualityFilter:
             "what is", "what are", "what does", "how to", "definition of",
             "guide to", "introduction to", "tutorial", "key concepts", "types of",
             "top 10", "best 10", "versus", "is whatsapp", "reservar", "car rental",
-            "rent a car", "vehicle rental"
+            "rent a car", "vehicle rental", "best", "top", "guide", "list of",
+            "dishes", "recipes", "food guide", "how-to", "review"
         )
-        if name_lower.startswith(article_prefixes):
-            return False, f"Informational article title rejected: '{canonical_name}'"
+        if name_lower.startswith(article_prefixes) or "guide" in name_lower or "best" in name_lower:
+            return False, f"Informational article/guide title rejected: '{canonical_name}'"
 
         # Junk entity names
         junk_patterns = [

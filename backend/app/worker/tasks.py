@@ -253,6 +253,12 @@ def search_and_discover_task(
                 _safe_dispatch(crawl_entity_task, url=target_url, domain=domain, batch_id=batch_id)
                 enqueued += 1
 
+                company_title_for_people = res.get("title")
+                if company_title_for_people:
+                    clean_cname = company_title_for_people.split("|")[0].split("-")[0].strip()
+                    if len(clean_cname) > 2:
+                        _safe_dispatch(search_company_people_task, company_name=clean_cname, domain=domain, batch_id=batch_id)
+
         return {
             "query": query,
             "keyword": keyword,
@@ -719,6 +725,25 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
                 "duplicate_of": (name_dup or domain_dup).id,
             }
 
+        # ── 2b. Strict Media/Blog Rejection ──────────────────────────────────
+        desc_lower = (record.description or "").lower()
+        title_lower = (record.canonical_name or "").lower()
+        
+        media_indicators = [
+            "news portal", "latest news", "breaking news", "daily news", "read our blog", 
+            "welcome to my blog", "vlog", "magazine", "journal", "publication", 
+            "news agency", "recipes", "food guide", "lifestyle blog"
+        ]
+        is_news_or_blog = any(ind in desc_lower for ind in media_indicators) or any(ind in title_lower for ind in media_indicators)
+
+        if is_news_or_blog:
+            record.status = "Filtered"
+            db.commit()
+            _log_activity(db, url=record.url or "", stage="VERIFIED", domain="Media/Blog",
+                          status="FILTERED", message="Entity identified as news/media/blog, rejected from B2B vault",
+                          entity_name=record.canonical_name)
+            return {"status": "filtered", "reason": "Entity identified as news/media/blog, not a B2B company"}
+
         # ── 3. Verification — confidence scoring ──────────────────────────────
         confidence = float(record.confidence or 0.5)
         score_reasons = []
@@ -798,9 +823,83 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"[Worker C] Enrichment failed for {universal_record_id}: {e}")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WORKER P — Search Company People
+# ─────────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(
+    name="tasks.search_company_people",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=60,
+)
+def search_company_people_task(
+    self,
+    company_name: str,
+    domain: str,
+    batch_id: str = None,
+) -> Dict[str, Any]:
+    """
+    Search SearXNG for key people belonging to the discovered company.
+    """
+    logger.info(f"[Worker P] People search for: '{company_name}'")
+    db = SessionLocal()
+    try:
+        from app.extraction.key_people_extractor import key_people_extractor
+        from app.persistence.models import KeyPersonCandidate
+        
+        queries = [
+            f'"{company_name}" CEO',
+            f'"{company_name}" founder',
+            f'"{company_name}" LinkedIn'
+        ]
+        
+        all_snippets = []
+        for q in queries:
+            try:
+                results, is_fallback, log_msg = run_async(
+                    searxng_service.search_with_meta(query=q, max_results=5)
+                )
+                all_snippets.extend(results)
+            except Exception as e:
+                logger.warning(f"[Worker P] SearXNG error on query {q}: {e}")
+
+        if not all_snippets:
+            return {"status": "no_results", "company_name": company_name}
+
+        people = key_people_extractor.extract_from_linkedin_search_snippets(all_snippets, company_name)
+        
+        saved_count = 0
+        for p in people:
+            existing = db.query(KeyPersonCandidate).filter(
+                KeyPersonCandidate.company_name == company_name,
+                KeyPersonCandidate.person_name == p["name"]
+            ).first()
+            if not existing:
+                cand = KeyPersonCandidate(
+                    company_name=company_name,
+                    person_name=p["name"],
+                    role=p["title"],
+                    source_url=p["linkedin_search_url"],
+                    discovery_query=queries[0],
+                    confidence_score=0.85
+                )
+                db.add(cand)
+                saved_count += 1
+                
+                _log_activity(db, url=p["linkedin_search_url"], stage="SEARCH", domain=domain,
+                              status="OK", message=f"Discovered Key Person: {p['name']} ({p['title']})",
+                              entity_name=company_name, batch_id=batch_id)
+        
+        db.commit()
+        return {"status": "success", "company_name": company_name, "people_found": saved_count}
+        
+    except Exception as e:
+        logger.error(f"[Worker P] People search failed for '{company_name}': {e}")
         try:
             raise self.retry(exc=e)
         except Exception:
-            return {"status": "error", "error": str(e)}
+            return {"error": str(e)}
     finally:
         db.close()
