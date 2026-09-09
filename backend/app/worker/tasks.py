@@ -604,6 +604,28 @@ def crawl_entity_task(
                 decision_makers=d_makers,
                 crawled_subpages=subpages_list
             )
+
+            # Also persist discovered key people to KeyPersonCandidate table
+            if d_makers and isinstance(d_makers, list):
+                from app.persistence.models import KeyPersonCandidate
+                for dm in d_makers:
+                    if isinstance(dm, dict) and dm.get("name"):
+                        p_name = dm["name"].strip()
+                        if not p_name.lower().startswith("leadership team"):
+                            existing_kp = db.query(KeyPersonCandidate).filter(
+                                KeyPersonCandidate.company_name == entity_name,
+                                KeyPersonCandidate.person_name == p_name
+                            ).first()
+                            if not existing_kp:
+                                db.add(KeyPersonCandidate(
+                                    company_name=entity_name,
+                                    person_name=p_name,
+                                    role=dm.get("title") or "Executive / Leadership",
+                                    source_url=dm.get("linkedin_url") or dm.get("linkedin_search_url") or url,
+                                    discovery_query="Webpage HTML / Team Extraction",
+                                    confidence_score=0.90
+                                ))
+                db.commit()
         except Exception as vault_err:
             logger.warning(f"[Worker B] MasterVault persistence notice for {domain_key}: {vault_err}")
 
@@ -850,9 +872,11 @@ def search_company_people_task(
         from app.persistence.models import KeyPersonCandidate
         
         queries = [
+            f'"{company_name}" CEO site:linkedin.com/in',
+            f'"{company_name}" founder site:linkedin.com/in',
             f'"{company_name}" CEO',
             f'"{company_name}" founder',
-            f'"{company_name}" LinkedIn'
+            f'"{company_name}" leadership LinkedIn'
         ]
         
         all_snippets = []

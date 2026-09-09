@@ -1,6 +1,7 @@
 import os
 import redis
 import logging
+import asyncio
 from urllib.parse import quote, urlparse
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
@@ -694,12 +695,35 @@ def get_crawled_documents(
                 existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
                 for kp in kp_cands:
                     if kp.person_name and kp.person_name.lower() not in existing_names:
+                        link_val = kp.source_url or f"https://www.linkedin.com/search/results/all/?keywords={quote(kp.person_name + ' ' + c_name_clean)}"
                         leadership.append({
                             "name": kp.person_name,
                             "title": kp.role or "Executive / Leadership",
-                            "linkedin_url": kp.source_url or f"https://www.linkedin.com/search/results/all/?keywords={quote(kp.person_name + ' ' + c_name_clean)}"
+                            "linkedin_url": link_val,
+                            "linkedin_search_url": link_val
                         })
                         existing_names.add(kp.person_name.lower())
+
+            # Also check GlobalLeadPerson from Master Vault
+            from app.persistence.models import GlobalLeadPerson
+            gl_people = db.query(GlobalLeadPerson).filter(
+                or_(
+                    GlobalLeadPerson.lead_id == (linked.id if linked else ""),
+                    GlobalLeadPerson.full_name.isnot(None)
+                )
+            ).limit(4).all()
+            if gl_people:
+                existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
+                for glp in gl_people:
+                    if glp.full_name and glp.full_name.lower() not in existing_names:
+                        l_url = glp.linkedin_url or f"https://www.linkedin.com/search/results/all/?keywords={quote(glp.full_name + ' ' + c_name_clean)}"
+                        leadership.append({
+                            "name": glp.full_name,
+                            "title": glp.role_title or "Executive / Leadership",
+                            "linkedin_url": l_url,
+                            "linkedin_search_url": l_url
+                        })
+                        existing_names.add(glp.full_name.lower())
         except Exception:
             pass
 
@@ -754,8 +778,15 @@ def get_crawled_documents(
 
 
 @router.get("/documents/{document_id}")
-def get_document_detail(document_id: str, db: Session = Depends(get_db)):
-    """Drill-in Crawled Document Detail View Modal Data."""
+async def get_document_detail(document_id: str, db: Session = Depends(get_db)):
+    """Drill-in Crawled Document Detail View Modal Data with fast caching."""
+    try:
+        cached_doc = cache_get("doc", document_id)
+        if cached_doc:
+            return cached_doc
+    except Exception:
+        pass
+
     from sqlalchemy.orm import defer
     doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.id == document_id).first()
     if not doc:
@@ -814,7 +845,7 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
     clean_c_name = linked.canonical_name if (linked and linked.canonical_name) else (doc.title or name)
     logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else ""
 
-    return {
+    doc_payload = {
         "id": doc.id,
         "url": doc.url,
         "domain": domain,
@@ -840,6 +871,11 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         "verified_emails": dom_data.get("contact_emails") or dom_data.get("verified_emails") or ([f"contact@{domain}", f"support@{domain}"] if domain and "." in domain and "undefined" not in domain else []),
         "revenue_funding": dom_data.get("funding_stage") or dom_data.get("revenue_funding") or "Bootstrapped / Private",
     }
+    try:
+        cache_set("doc", document_id, doc_payload, ttl=300)
+    except Exception:
+        pass
+    return doc_payload
 
 
 
@@ -1065,9 +1101,77 @@ def get_entities_list(
     }
 
 
+async def _async_background_enrich(domain: str, company_name: str, entity_id: str):
+    """Enrich domain data asynchronously in background using asyncio without blocking UI."""
+    if not domain:
+        return
+    try:
+        from app.crawler.realtime_enricher import realtime_enricher
+        from app.persistence.database import SessionLocal
+        from app.persistence.models import KeyPersonCandidate, DomainRecord, UniversalRecord
+        from app.cache.redis_cache import cache_set, cache_get
+
+        rt_res = await realtime_enricher.enrich_domain_realtime(domain, company_name)
+        if not rt_res:
+            return
+
+        with SessionLocal() as s:
+            new_people = rt_res.get("decision_makers") or []
+            for p in new_people:
+                p_name = p.get("name")
+                p_role = p.get("title") or "Leadership"
+                p_url = p.get("linkedin_url") or p.get("linkedin_search_url") or ""
+                if p_name:
+                    existing = s.query(KeyPersonCandidate).filter(
+                        KeyPersonCandidate.company_name == company_name,
+                        KeyPersonCandidate.person_name == p_name
+                    ).first()
+                    if not existing:
+                        s.add(KeyPersonCandidate(
+                            company_name=company_name,
+                            person_name=p_name,
+                            role=p_role,
+                            source_url=p_url,
+                            confidence=0.85
+                        ))
+
+            rec = s.query(UniversalRecord).filter(UniversalRecord.id == entity_id).first()
+            if rec:
+                dom_rec = s.query(DomainRecord).filter(DomainRecord.universal_record_id == rec.id).first()
+                if dom_rec and isinstance(dom_rec.data, dict):
+                    data = dict(dom_rec.data)
+                    if rt_res.get("headquarters") and not data.get("headquarters"):
+                        data["headquarters"] = rt_res["headquarters"]
+                    if rt_res.get("verified_emails") and not data.get("emails"):
+                        data["emails"] = rt_res["verified_emails"]
+                    if new_people and not data.get("key_people"):
+                        data["key_people"] = new_people
+                    dom_rec.data = data
+            s.commit()
+
+            cached = cache_get("entity", entity_id)
+            if cached and isinstance(cached, dict):
+                if rt_res.get("headquarters") and cached.get("headquarters") in ["Not Specified", None]:
+                    cached["headquarters"] = rt_res["headquarters"]
+                    if "firmographics" in cached:
+                        cached["firmographics"]["headquarters"] = rt_res["headquarters"]
+                if rt_res.get("verified_emails") and not cached.get("verified_emails"):
+                    cached["verified_emails"] = rt_res["verified_emails"]
+                    if "firmographics" in cached:
+                        cached["firmographics"]["verified_emails"] = rt_res["verified_emails"]
+                if new_people:
+                    existing_dm_names = {d.get("name", "").lower() for d in cached.get("decision_makers", [])}
+                    for p in new_people:
+                        if p.get("name", "").lower() not in existing_dm_names:
+                            cached.setdefault("decision_makers", []).append(p)
+                cache_set("entity", entity_id, cached, ttl=300)
+    except Exception as e:
+        logger.warning(f"Background enrichment failed for {domain}: {e}")
+
+
 @router.get("/entities/{entity_id}")
-def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
-    """Drill-in Entity Detail View Modal Data."""
+async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
+    """Drill-in Entity Detail View Modal Data with near-instant asyncio response."""
     import time
     t0 = time.time()
     try:
@@ -1081,8 +1185,6 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         t_cache = time.time()
 
         from app.persistence.vault_service import MasterVaultService
-        from app.crawler.realtime_enricher import realtime_enricher
-        from app.worker.tasks import run_async
 
         vault_lead = MasterVaultService.get_master_lead(db, entity_id)
         if vault_lead:
@@ -1101,18 +1203,11 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                         "linkedin_search_url": kp.source_url
                     })
 
-            # Perform Crawl4AI real-time enrichment if any key field is missing
-            if not v_emails or not v_hq or not v_people:
-                rt_res = run_async(realtime_enricher.enrich_domain_realtime(vault_lead["domain"], vault_lead["company_name"]))
-                if rt_res:
-                    if not v_emails and rt_res.get("verified_emails"):
-                        v_emails = rt_res["verified_emails"]
-                    if not v_hq and rt_res.get("headquarters"):
-                        v_hq = rt_res["headquarters"]
-                    if not v_people and rt_res.get("decision_makers"):
-                        v_people = rt_res["decision_makers"]
+            # Fire non-blocking asyncio background enrichment if key fields are missing
+            if (not v_emails or not v_hq or not v_people) and vault_lead.get("domain"):
+                asyncio.create_task(_async_background_enrich(vault_lead["domain"], vault_lead["company_name"], entity_id))
 
-            return {
+            vault_payload = {
                 "id": vault_lead["id"],
                 "canonical_name": vault_lead["company_name"],
                 "domain": vault_lead["domain"],
@@ -1159,6 +1254,11 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                     "evidence_count": len(vault_lead.get("subpages", [])),
                 }
             }
+            try:
+                cache_set("entity", entity_id, vault_payload, ttl=300)
+            except Exception:
+                pass
+            return vault_payload
 
         from sqlalchemy.orm import defer
         record = db.query(UniversalRecord).filter(UniversalRecord.id == entity_id).first()
@@ -1252,16 +1352,9 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         rec_loc = getattr(record, "location", None)
         hq_val = rec_loc or domain_data.get("headquarters") or domain_data.get("location")
 
-        # Perform Crawl4AI Real-Time Crawl if data is incomplete
+        # Dispatch non-blocking asyncio background enrichment if data is incomplete
         if (not decision_makers or not emails or not hq_val) and clean_domain:
-            rt_res = run_async(realtime_enricher.enrich_domain_realtime(clean_domain, clean_c_name))
-            if rt_res:
-                if not decision_makers and rt_res.get("decision_makers"):
-                    decision_makers = rt_res["decision_makers"]
-                if not emails and rt_res.get("verified_emails"):
-                    emails = rt_res["verified_emails"]
-                if not hq_val and rt_res.get("headquarters"):
-                    hq_val = rt_res["headquarters"]
+            asyncio.create_task(_async_background_enrich(clean_domain, clean_c_name, entity_id))
 
         # Final clean HQ value - no guesses
         if not hq_val:
@@ -1376,7 +1469,7 @@ def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         }
 
         try:
-            cache_set("entity", entity_id, entity_payload, ttl=120)
+            cache_set("entity", entity_id, entity_payload, ttl=300)
         except Exception:
             pass
 

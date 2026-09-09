@@ -127,36 +127,41 @@ class SearXNGService:
             with urllib.request.urlopen(req, timeout=2.5) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
                 soup = BeautifulSoup(html, "html.parser")
-                for h2 in soup.find_all("h2"):
-                    a = h2.find("a")
-                    if not a:
-                        continue
-                    raw_href = a.get("href", "")
-                    target_url = None
+            for item in soup.find_all(["li", "div"], class_=lambda c: c and "b_algo" in c):
+                h2 = item.find("h2")
+                if not h2:
+                    continue
+                a = h2.find("a")
+                if not a:
+                    continue
+                raw_href = a.get("href", "")
+                target_url = None
+                
+                if "/ck/a?!" in raw_href:
+                    try:
+                        parsed = urlparse(raw_href)
+                        qs = parse_qs(parsed.query)
+                        u_val = qs.get("u", [""])[0]
+                        if u_val.startswith("a1"):
+                            b64 = u_val[2:]
+                            b64 += "=" * ((4 - len(b64) % 4) % 4)
+                            target_url = base64.b64decode(b64).decode("utf-8", errors="ignore")
+                    except Exception:
+                        pass
+                elif raw_href.startswith("http"):
+                    target_url = raw_href
                     
-                    if "/ck/a?!" in raw_href:
-                        try:
-                            parsed = urlparse(raw_href)
-                            qs = parse_qs(parsed.query)
-                            u_val = qs.get("u", [""])[0]
-                            if u_val.startswith("a1"):
-                                b64 = u_val[2:]
-                                b64 += "=" * ((4 - len(b64) % 4) % 4)
-                                target_url = base64.b64decode(b64).decode("utf-8", errors="ignore")
-                        except Exception:
-                            pass
-                    elif raw_href.startswith("http"):
-                        target_url = raw_href
-                        
-                    if target_url and target_url.startswith("http"):
-                        title = a.text.strip() if a.text else "Discovered Enterprise"
-                        results.append({
-                            "title": title,
-                            "url": target_url,
-                            "snippet": f"Discovered via live web search for '{query}'",
-                            "engine": "bing_live_fallback",
-                            "score": 1.0
-                        })
+                if target_url and target_url.startswith("http"):
+                    title = a.text.strip() if a.text else "Discovered Enterprise"
+                    p_elem = item.find("p") or item.find("div", class_=lambda c: c and "caption" in c)
+                    snippet_text = p_elem.text.strip() if p_elem else ""
+                    results.append({
+                        "title": title,
+                        "url": target_url,
+                        "snippet": snippet_text or f"Search result for '{query}'",
+                        "engine": "bing_live_fallback",
+                        "score": 1.0
+                    })
         except Exception as e:
             logger.warning(f"Bing live search fallback failed: {e}")
 

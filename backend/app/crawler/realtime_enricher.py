@@ -47,64 +47,50 @@ class RealtimeEnricher:
         crawled_htmls: List[str] = []
         crawled_subpages: List[Dict[str, Any]] = []
 
-        async def fetch_one(url: str) -> Optional[Dict[str, Any]]:
-            try:
-                from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode
-                config = CrawlerRunConfig(
-                    cache_mode=CacheMode.BYPASS,
-                    word_count_threshold=5,
-                    page_timeout=4000,
-                    verbose=False
-                )
-                async with AsyncWebCrawler(verbose=False) as crawler:
-                    res = await crawler.arun(url=url, config=config)
-                    if res and res.success:
-                        text_c = res.markdown or res.cleaned_html or ""
-                        html_c = res.html or ""
-                        if text_c:
-                            return {
-                                "url": url,
-                                "text": text_c,
-                                "html": html_c,
-                                "word_count": len(text_c.split())
-                            }
-            except Exception:
-                pass
+        import httpx
+        from bs4 import BeautifulSoup
 
-            # Fast httpx fallback if AsyncWebCrawler runner skips URL
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        }
+
+        async def fetch_one(client: httpx.AsyncClient, url: str) -> Optional[Dict[str, Any]]:
             try:
-                import httpx
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                async with httpx.AsyncClient(timeout=3.0, follow_redirects=True, headers=headers) as client:
-                    resp = await client.get(url)
-                    if resp.status_code == 200 and resp.text:
+                resp = await client.get(url)
+                if resp.status_code == 200 and resp.text:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for tag in soup(["script", "style", "meta", "noscript"]):
+                        tag.extract()
+                    clean_txt = soup.get_text(separator=" ", strip=True)
+                    if clean_txt:
                         return {
                             "url": url,
-                            "text": resp.text,
+                            "text": clean_txt,
                             "html": resp.text,
-                            "word_count": len(resp.text.split())
+                            "word_count": len(clean_txt.split())
                         }
             except Exception:
                 pass
             return None
 
         try:
-            tasks = [fetch_one(u) for u in urls_to_crawl]
-            done_results = await asyncio.gather(*tasks, return_exceptions=True)
-            for res_item in done_results:
-                if isinstance(res_item, dict) and res_item.get("text"):
-                    crawled_texts.append(res_item["text"])
-                    crawled_htmls.append(res_item["html"])
-                    u = res_item["url"]
-                    page_path = urlparse(u).path or "/"
-                    crawled_subpages.append({
-                        "title": f"{page_path} • {c_name}",
-                        "url": u,
-                        "http_status": 200,
-                        "word_count": res_item["word_count"]
-                    })
+            async with httpx.AsyncClient(timeout=3.0, follow_redirects=True, headers=headers) as client:
+                tasks = [fetch_one(client, u) for u in urls_to_crawl]
+                done_results = await asyncio.gather(*tasks, return_exceptions=True)
+                for res_item in done_results:
+                    if isinstance(res_item, dict) and res_item.get("text"):
+                        crawled_texts.append(res_item["text"])
+                        crawled_htmls.append(res_item["html"])
+                        u = res_item["url"]
+                        page_path = urlparse(u).path or "/"
+                        crawled_subpages.append({
+                            "title": f"{page_path} • {c_name}",
+                            "url": u,
+                            "word_count": res_item["word_count"],
+                            "status": 200
+                        })
         except Exception as e:
-            logger.warning(f"[Crawl4AI Realtime] Concurrent gather notice: {e}")
+            logger.warning(f"Error during async crawl of {clean_domain}: {e}")
 
         combined_text = "\n\n".join(crawled_texts)
         combined_html = "\n\n".join(crawled_htmls)
