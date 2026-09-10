@@ -33,6 +33,12 @@ def _clean_name(raw_name: str, url: str = "") -> str:
             netloc = urlparse(url if url.startswith("http") else "https://" + url).netloc
             return netloc.replace("www.", "").split(".")[0].replace("-", " ").title()
         return "Discovered Entity"
+    for suffix in [
+        "Official Portal", "official portal", "Official Website", "official website",
+        "Official Web Portal", "official web portal", "Home Page", "Homepage", "Official Site", "Official"
+    ]:
+        if raw_name.endswith(suffix):
+            raw_name = raw_name[:-len(suffix)].strip()
     clean = raw_name.split("|")[0].split(" - ")[0].split(" – ")[0].split(" : ")[0].strip()
     return clean if clean else raw_name
 
@@ -651,6 +657,14 @@ def _clean_name(canonical_name: str, url: str = "") -> str:
         except Exception:
             return "Organization"
 
+    # Strip generic suffixes such as "Official Portal", "Official Website", "Home Page"
+    for suffix in [
+        "Official Portal", "official portal", "Official Website", "official website",
+        "Official Web Portal", "official web portal", "Home Page", "Homepage", "Official Site", "Official"
+    ]:
+        if canonical_name.endswith(suffix):
+            canonical_name = canonical_name[:-len(suffix)].strip()
+
     # Check for CJK or non-Latin script sentence pollution
     has_non_latin = any(ord(char) > 127 for char in canonical_name)
     if has_non_latin and len(canonical_name) > 20:
@@ -807,8 +821,8 @@ def get_crawled_documents(
 
         # Business Overview — synthesis from evidence, NEVER template text
         overview = (linked.description if linked else None) or dom_data.get("business_overview") or ""
-        if "indexed by opendb" in overview.lower() or not overview.strip():
-            overview = "Unknown"
+        if "indexed by opendb" in overview.lower() or "web portal indexed" in overview.lower() or not overview.strip():
+            overview = ""
 
         # Tech Stack
         tech_stack = dom_data.get("technologies") or dom_data.get("tech_stack")
@@ -1038,14 +1052,14 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         for f in facts
     ]
 
-    word_count = doc.word_count or (len(clean_text.split()) if clean_text else len((doc.title or "").split()) + 45)
-    fallback_text = f"Official web document ingested for {name} ({domain}). Title: '{doc.title or name}'. Content successfully captured into OpenDB vault storage."
+    clean_c_name = _clean_name(linked.canonical_name if (linked and linked.canonical_name) else (doc.title or name), domain)
+    word_count = len(clean_text.split()) if clean_text else (doc.word_count or 0)
+    fallback_text = f"Official web document ingested for {clean_c_name} ({domain})."
     text_preview = clean_text[:2500] if clean_text else (raw_content[:2500] if raw_content else fallback_text)
 
     # Extract firmographics if linked record exists
     dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == linked.id).first() if linked else None
     dom_data = dom_rec.data if dom_rec else {}
-    clean_c_name = _clean_name(linked.canonical_name if (linked and linked.canonical_name) else (doc.title or name), domain)
     logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else ""
 
     # Decision Makers

@@ -875,7 +875,9 @@ export default function App() {
 
                     {/* 3. Business Overview Text Snippet */}
                     <div style={{ fontSize: '0.78rem', color: '#94a3b8', lineHeight: '1.45', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                      {doc.business_overview || `${doc.canonical_name || doc.domain} offers specialized services in ${industryStr}.`}
+                      {doc.business_overview && doc.business_overview !== 'Unknown' && !doc.business_overview.toLowerCase().includes('indexed by opendb') && !doc.business_overview.toLowerCase().includes('web portal indexed')
+                        ? doc.business_overview
+                        : `${doc.canonical_name || doc.domain} commercial entity profile.`}
                     </div>
 
                     {/* 4. Tech Stack Tags (Image 2 style) */}

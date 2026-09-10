@@ -38,7 +38,7 @@ class StorageManager:
                 p = urlparse(f"http://{endpoint}" if "://" not in endpoint else endpoint)
                 h = p.hostname or "127.0.0.1"
                 pt = p.port or 9000
-                with socket.create_connection((h, pt), timeout=0.3):
+                with socket.create_connection((h, pt), timeout=2.0):
                     pass
             except Exception as sock_err:
                 if settings.OPENDB_ENV.lower() == "production":
@@ -50,7 +50,7 @@ class StorageManager:
             if not self.use_local:
                 import urllib3, threading
                 http_client = urllib3.PoolManager(
-                    timeout=urllib3.Timeout(connect=0.2, read=0.2),
+                    timeout=urllib3.Timeout(connect=2.0, read=5.0),
                     retries=False
                 )
                 
@@ -73,12 +73,12 @@ class StorageManager:
 
                 minio_thread = threading.Thread(target=_init_minio, daemon=True)
                 minio_thread.start()
-                minio_thread.join(timeout=0.3)
+                minio_thread.join(timeout=3.0)
                 if minio_thread.is_alive() or self.client is None:
                     if settings.OPENDB_ENV.lower() == "production":
                         logger.error("MinIO connection timed out in PRODUCTION mode.")
                         raise RuntimeError("MinIO connection timed out in PRODUCTION mode.")
-                    logger.warning("MinIO initialization timed out (>0.3s). Falling back to local storage.")
+                    logger.warning("MinIO initialization timed out (>3.0s). Falling back to local storage.")
                     self.use_local = True
                     self.client = None
 
@@ -192,8 +192,7 @@ class StorageManager:
             response = self.client.get_object(self.bucket_name, clean_rel)
             return response.read().decode("utf-8", errors="ignore")
         except Exception as e:
-            logger.info(f"MinIO get_object unavailable ({e.__class__.__name__}), latching to local storage.")
-            self.use_local = True
+            logger.debug(f"MinIO get_object for {clean_rel} not found/error: {e}")
             return None
 
     def read_file_bytes(self, relative_path: str) -> Tuple[Optional[bytes], str]:
