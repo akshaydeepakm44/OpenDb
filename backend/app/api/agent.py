@@ -738,13 +738,23 @@ def get_crawled_documents(
                 existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
                 for kp in kp_cands:
                     if kp.person_name and kp.person_name.lower() not in existing_names:
-                        link_val = kp.source_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(kp.person_name + ' ' + c_name_clean)}"
-                        leadership.append({
+                        # STRICT: only store a real linkedin.com/in/<slug> URL.
+                        # Never fabricate a search URL as a profile URL.
+                        raw_src = kp.source_url or ""
+                        import re as _re
+                        real_profile = None
+                        m_in = _re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_src)
+                        if m_in:
+                            real_profile = f"https://www.linkedin.com/in/{m_in.group(1)}"
+                        person_entry = {
                             "name": kp.person_name,
                             "title": kp.role or "Executive / Leadership",
-                            "linkedin_url": link_val,
-                            "linkedin_search_url": link_val
-                        })
+                            "linkedin_url": real_profile,  # None if no real profile found
+                            "source_url": raw_src or None,
+                            "source_type": kp.source_type or "search_discovery",
+                            "evidence": kp.evidence_text or None,
+                        }
+                        leadership.append(person_entry)
                         existing_names.add(kp.person_name.lower())
 
             # Also check GlobalLeadPerson from Master Vault
@@ -759,21 +769,25 @@ def get_crawled_documents(
                 existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
                 for glp in gl_people:
                     if glp.full_name and glp.full_name.lower() not in existing_names:
-                        l_url = glp.linkedin_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(glp.full_name + ' ' + c_name_clean)}"
+                        # STRICT: only use a real /in/ profile URL from GlobalLeadPerson.
+                        raw_li = glp.linkedin_url or ""
+                        import re as _re2
+                        real_li = None
+                        m_gli = _re2.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_li)
+                        if m_gli:
+                            real_li = f"https://www.linkedin.com/in/{m_gli.group(1)}"
                         leadership.append({
                             "name": glp.full_name,
                             "title": glp.role_title or "Executive / Leadership",
-                            "linkedin_url": l_url,
-                            "linkedin_search_url": l_url
+                            "linkedin_url": real_li,  # None if no real /in/ profile
+                            "source_type": "vault_person",
                         })
                         existing_names.add(glp.full_name.lower())
         except Exception:
             pass
 
-        if not leadership:
-            leadership = [
-                {"name": f"Leadership Team ({name})", "title": "Co-Founders & Executive Lead"}
-            ]
+        # No fake fallback person — if no real people found, return empty list.
+        # The dashboard will show "No key people discovered yet" instead of a fabricated entry.
 
         # Crawled Subpages
         subpages = dom_data.get("crawled_subpages") or [

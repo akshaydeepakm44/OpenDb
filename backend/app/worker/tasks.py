@@ -912,6 +912,19 @@ def search_company_people_task(
         from app.agent.key_people_discovery_agent import key_people_agent
         from app.extraction.key_people_extractor import key_people_extractor
         from app.persistence.models import KeyPersonCandidate
+        import re as _li_re
+        
+        def _is_real_linkedin_profile(url: str) -> bool:
+            """Return True only for genuine linkedin.com/in/<slug> URLs."""
+            if not url or not isinstance(url, str):
+                return False
+            m = _li_re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]{2,})', url)
+            if not m:
+                return False
+            slug = m.group(1).lower()
+            # Reject known non-profile slugs
+            bad_slugs = {"search", "jobs", "feed", "login", "signup", "home", "pub", "in", "sharing", "posts"}
+            return slug not in bad_slugs
         
         clean_company = key_people_extractor.clean_company_name(company_name)
 
