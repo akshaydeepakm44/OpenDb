@@ -450,6 +450,17 @@ def crawl_entity_task(
     item = crawled_items[0]
     word_count = item.metadata.get("word_count", 0) if item.metadata else 0
 
+    # ── Stage 1.5: Reject HTTP error status codes (403 Forbidden, 404, 500, etc.) ──
+    if item.http_status and item.http_status >= 400:
+        logger.warning(f"[Worker B] HTTP error/blocked ({item.http_status}) for {url} — skipping storage.")
+        db = SessionLocal()
+        try:
+            _log_activity(db, url=url, stage="CRAWL", domain=domain,
+                          status="FILTERED", message=f"HTTP {item.http_status} error/blocked", batch_id=batch_id)
+        finally:
+            db.close()
+        return {"status": "http_error", "http_status": item.http_status, "url": url}
+
     # ── Stage 2: Content quality filter (MUST pass before persisting document) ──
     keep, reason = quality_filter.filter_content(
         url=url,

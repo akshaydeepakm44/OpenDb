@@ -295,6 +295,21 @@ class QualityFilter:
                 if re.search(pattern, text_lower):
                     return False, f"Spam/parked page: matched '{pattern}'"
 
+        # Anti-bot / Cloudflare challenge interstitials
+        if text_content:
+            text_lower = text_content.lower()
+            challenge_phrases = [
+                "enable javascript to complete the security check",
+                "additional verification required please enable javascript",
+                "attention required! | cloudflare",
+                "just a moment... cloudflare",
+                "please enable javascript and cookies to continue",
+                "verify you are human by completing the action",
+            ]
+            for cp in challenge_phrases:
+                if cp in text_lower:
+                    return False, f"Anti-bot/challenge interstitial: '{cp}'"
+
         # HTTP error pages
         if title:
             title_lower = title.lower()

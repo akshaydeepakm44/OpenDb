@@ -1182,8 +1182,13 @@ export default function App() {
                       }}>
                         {documentDetail.status === 'Verified' ? '✅ Verified Entity' : '⚡ Raw Ingested Page'}
                       </span>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '0.2rem 0.6rem', borderRadius: '9999px', background: 'rgba(16,185,129,0.15)', color: '#34d399', border: '1px solid #10b981' }}>
-                        HTTP {documentDetail.http_status} OK
+                      <span style={{
+                        fontSize: '0.7rem', fontWeight: 700, padding: '0.2rem 0.6rem', borderRadius: '9999px',
+                        background: (documentDetail.http_status === 200 || !documentDetail.http_status) ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
+                        color: (documentDetail.http_status === 200 || !documentDetail.http_status) ? '#34d399' : '#f87171',
+                        border: `1px solid ${(documentDetail.http_status === 200 || !documentDetail.http_status) ? '#10b981' : '#ef4444'}`
+                      }}>
+                        HTTP {documentDetail.http_status || 200} {(documentDetail.http_status === 200 || !documentDetail.http_status) ? 'OK' : (documentDetail.http_status === 403 ? 'Blocked / Forbidden' : 'Response')}
                       </span>
                     </div>
                     <a href={documentDetail.url} target="_blank" rel="noreferrer" style={{ color: '#60a5fa', fontSize: '0.9rem', marginTop: '0.25rem', display: 'inline-block' }}>
@@ -1233,12 +1238,12 @@ export default function App() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
                   <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
                     <span className="data-label">REVENUE & FUNDING</span>
-                    <div style={{ color: '#34d399', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>{documentDetail.revenue_funding || 'Bootstrapped'}</div>
+                    <div style={{ color: '#34d399', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>{documentDetail.revenue_funding || 'Unknown'}</div>
                   </div>
                   <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
                     <span className="data-label">VERIFIED CONTACT EMAIL</span>
                     <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>
-                      {Array.isArray(documentDetail.verified_emails) && documentDetail.verified_emails[0] ? documentDetail.verified_emails[0] : `contact@${documentDetail.domain}`}
+                      {Array.isArray(documentDetail.verified_emails) && documentDetail.verified_emails[0] ? documentDetail.verified_emails[0] : 'None discovered'}
                     </div>
                   </div>
                 </div>
