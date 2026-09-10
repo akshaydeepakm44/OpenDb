@@ -85,35 +85,45 @@ def _infer_location(domain: str, title: str = "", summary: str = "") -> str:
         if keyword in combined:
             return location_str
 
-    return "Not Specified"
+    return "Unknown"
 
 def _infer_industry(domain: str, title: str = "", summary: str = "") -> str:
     combined = f"{domain} {title} {summary}".lower()
+
+    def _has_keyword(words):
+        for w in words:
+            if len(w) <= 3:
+                if re.search(rf"\b{re.escape(w)}\b", combined):
+                    return True
+            else:
+                if w in combined:
+                    return True
+        return False
     
-    if any(k in combined for k in ["ai", "artificial intelligence", "llm", "gpt", "model", "neural", "deep learning", "agent"]):
+    if _has_keyword(["ai", "artificial intelligence", "llm", "gpt", "neural", "deep learning"]):
         return "Artificial Intelligence & ML"
-    elif any(k in combined for k in ["dev", "api", "code", "github", "docs", "developer", "sdk", "library", "git"]):
+    elif _has_keyword(["dev", "api", "code", "github", "developer", "sdk", "library"]):
         return "Developer Tools & Software"
-    elif any(k in combined for k in ["cloud", "aws", "server", "docker", "kubernetes", "hosting", "infrastructure", "devops"]):
+    elif _has_keyword(["cloud", "aws", "server", "docker", "kubernetes", "infrastructure", "devops"]):
         return "Cloud Infrastructure & DevOps"
-    elif any(k in combined for k in ["security", "auth", "cyber", "firewall", "privacy", "vault", "encrypt"]):
+    elif _has_keyword(["security", "auth", "cyber", "firewall", "privacy", "vault", "encrypt"]):
         return "Cybersecurity & Privacy"
-    elif any(k in combined for k in ["pay", "bank", "finance", "crypto", "coin", "billing", "fintech", "wealth", "tax"]):
+    elif _has_keyword(["bank", "finance", "crypto", "billing", "fintech", "wealth", "tax"]):
         return "Fintech & Financial Services"
-    elif any(k in combined for k in ["shop", "store", "commerce", "cart", "retail", "buy", "marketplace"]):
+    elif _has_keyword(["commerce", "cart", "retail", "marketplace", "ecommerce"]):
         return "E-Commerce & Retail Tech"
-    elif any(k in combined for k in ["health", "med", "bio", "clinical", "care", "pharma", "doctor"]):
+    elif _has_keyword(["health", "medical", "clinical", "pharma", "biotech", "healthcare"]):
         return "Healthcare & Life Sciences"
-    elif any(k in combined for k in ["data", "analytics", "metrics", "pipeline", "etl", "sql", "big data"]):
+    elif _has_keyword(["analytics", "pipeline", "etl", "big data", "business intelligence"]):
         return "Data Analytics & BI"
-    elif any(k in combined for k in ["marketing", "seo", "ad", "social", "campaign", "crm", "lead"]):
+    elif _has_keyword(["marketing", "campaign", "crm", "lead gen"]):
         return "Marketing Tech & CRM"
-    elif any(k in combined for k in ["edu", "learn", "academy", "course", "school", "university", "student"]):
+    elif _has_keyword(["academy", "course", "school", "university", "edtech"]):
         return "EdTech & Education"
-    elif any(k in combined for k in ["media", "news", "stream", "video", "audio", "music", "game", "gaming"]):
+    elif _has_keyword(["streaming", "video", "audio", "music", "gaming"]):
         return "Digital Media & Gaming"
     
-    return "Commercial Web"
+    return "Unknown"
 
 def _infer_tech_stack(domain: str, title: str = "", summary: str = "") -> List[str]:
     combined = f"{domain} {title} {summary}".lower()
@@ -154,29 +164,105 @@ def _infer_tech_stack(domain: str, title: str = "", summary: str = "") -> List[s
 def _infer_emails(domain: str, summary: str = "") -> List[str]:
     found = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", summary or "")
     if found:
-        return list(dict.fromkeys(found))[:3]
+        cleaned = [e for e in found if not any(bad in e.lower() for bad in ["example.com", "domain.com", "wixpress", "sentry"])]
+        return list(dict.fromkeys(cleaned))[:3]
     return []
 
 def _infer_revenue(domain: str, tier: str = "") -> str:
-    return "Not Specified"
+    return "Unknown"
 
 
 def determine_company_tier(linked=None, domain_data=None) -> str:
-    """Helper to derive company tier string based on record completeness or confidence."""
+    """Helper to derive company tier string strictly from evidence or return Unknown."""
     if isinstance(domain_data, dict):
         tier = domain_data.get("company_size") or domain_data.get("company_tier") or domain_data.get("employee_count")
-        if tier:
+        if tier and str(tier).lower() not in ["none", "null", "undefined", "unknown", ""]:
             return str(tier)
-    if not linked:
-        return "Growth SMBs (20-100)"
-    conf = float(getattr(linked, "confidence", 0.5) or 0.5)
-    if conf >= 0.85:
-        return "Global Enterprise (10,000+)"
-    elif conf >= 0.70:
-        return "Mid-Market (500-10,000)"
-    elif conf >= 0.50:
-        return "Growth SMBs (20-100)"
-    return "Early Stage (1-20)"
+    if linked:
+        tier = getattr(linked, "company_size", None) or getattr(linked, "employee_count", None)
+        if tier and str(tier).lower() not in ["none", "null", "undefined", "unknown", ""]:
+            return str(tier)
+    return "Unknown"
+
+
+def calculate_evidence_quality_score(
+    canonical_name: str = None,
+    domain: str = None,
+    industry: str = None,
+    business_overview: str = None,
+    products_services: Any = None,
+    headquarters: str = None,
+    company_size: str = None,
+    decision_makers: List = None,
+    verified_emails: List = None,
+) -> int:
+    """
+    100-point evidence-completeness model:
+    - Official domain / identity = 15 pts
+    - Industry evidence = 15 pts
+    - Business overview = 15 pts
+    - Products/services = 15 pts
+    - HQ/location = 10 pts
+    - Employee size = 10 pts
+    - Key decision makers = 10 pts
+    - Verified email = 10 pts
+    Total = 100 pts.
+    Represents DATA COMPLETENESS & QUALITY. HTTP 200 alone gives 0 pts.
+    """
+    score = 0
+
+    # 1. Official domain / identity (15 pts)
+    if canonical_name and canonical_name.strip() and canonical_name.lower() not in ["unknown", "home", "index"]:
+        if domain and "." in domain and domain.lower() not in canonical_name.lower():
+            score += 15
+        elif domain and "." in domain:
+            score += 10
+
+    # 2. Industry evidence (15 pts)
+    if industry and industry.strip() and industry.lower() not in ["unknown", "not specified", "commercial web", "commercial web & digital enterprise"]:
+        score += 15
+
+    # 3. Business overview (15 pts)
+    if business_overview and business_overview.strip() and business_overview.lower() not in ["unknown", "not specified"] and "indexed by opendb" not in business_overview.lower() and "indexed into opendb" not in business_overview.lower():
+        if len(business_overview.strip()) >= 40:
+            score += 15
+        elif len(business_overview.strip()) >= 15:
+            score += 8
+
+    # 4. Products / services (15 pts)
+    if products_services:
+        if isinstance(products_services, list) and len(products_services) > 0:
+            valid_prods = [p for p in products_services if str(p).lower() not in ["unknown", "none", "web infrastructure", "cloud hosting"]]
+            if len(valid_prods) >= 2:
+                score += 15
+            elif len(valid_prods) == 1:
+                score += 8
+        elif isinstance(products_services, str) and products_services.lower() not in ["unknown", "none", "web infrastructure"]:
+            score += 10
+
+    # 5. HQ / location (10 pts)
+    if headquarters and headquarters.strip() and headquarters.lower() not in ["unknown", "not specified", "global", "global hq"]:
+        score += 10
+
+    # 6. Employee size (10 pts)
+    if company_size and company_size.strip() and company_size.lower() not in ["unknown", "not specified"]:
+        score += 10
+
+    # 7. Key decision makers (10 pts)
+    if decision_makers and isinstance(decision_makers, list) and len(decision_makers) > 0:
+        valid_people = [p for p in decision_makers if isinstance(p, dict) and p.get("name") and str(p.get("name")).lower() not in ["unknown", "none", "executive", "leadership"]]
+        if len(valid_people) >= 2:
+            score += 10
+        elif len(valid_people) == 1:
+            score += 6
+
+    # 8. Verified email (10 pts)
+    if verified_emails and isinstance(verified_emails, list):
+        real_emails = [e for e in verified_emails if isinstance(e, str) and "@" in e and not any(bad in e.lower() for bad in ["example.com", "domain.com", "wixpress"])]
+        if real_emails:
+            score += 10
+
+    return min(100, max(0, score))
 
 
 @router.post("/run")
@@ -709,8 +795,10 @@ def get_crawled_documents(
         # Logo / Favicon
         logo_url = f"/api/agent/logo/{d.content_hash}.png" if (d.raw_path and "logo" in d.raw_path) else f"https://www.google.com/s2/favicons?domain={clean_dom}&sz=128"
 
-        # Business Overview
-        overview = (linked.description if linked else None) or dom_data.get("business_overview") or f"{name} core web portal indexed by OpenDB discovery system."
+        # Business Overview — synthesis from evidence, NEVER template text
+        overview = (linked.description if linked else None) or dom_data.get("business_overview") or ""
+        if "indexed by opendb" in overview.lower() or not overview.strip():
+            overview = "Unknown"
 
         # Tech Stack
         tech_stack = dom_data.get("technologies") or dom_data.get("tech_stack")
@@ -731,7 +819,21 @@ def get_crawled_documents(
         hq = (linked.location if (linked and linked.location) else None) or dom_data.get("headquarters") or dom_data.get("location") or _infer_location(clean_dom, d.title or name, overview)
         rev_val = dom_data.get("revenue_funding") or dom_data.get("funding_stage") or dom_data.get("revenue") or _infer_revenue(clean_dom, size_val)
         emails_val = dom_data.get("contact_emails") or dom_data.get("verified_emails") or _infer_emails(clean_dom, overview)
+        if not isinstance(emails_val, list):
+            emails_val = [str(emails_val)] if emails_val else []
         resolved_cname = (linked.canonical_name if (linked and linked.canonical_name) else (d.title or name))
+
+        initial_score = calculate_evidence_quality_score(
+            canonical_name=resolved_cname,
+            domain=clean_dom,
+            industry=industry_val,
+            business_overview=overview,
+            products_services=tech_stack,
+            headquarters=hq,
+            company_size=size_val,
+            decision_makers=leadership,
+            verified_emails=emails_val,
+        )
 
         filtered_doc_results.append({
             "id": d.id,
@@ -749,8 +851,10 @@ def get_crawled_documents(
             "company_size": size_val,
             "company_tier": size_val,
             "revenue_funding": rev_val,
-            "verified_emails": emails_val if isinstance(emails_val, list) else [str(emails_val)],
+            "verified_emails": emails_val,
             "country": doc_country,
+            "lead_quality_score": initial_score,
+            "quality_score": initial_score,
             "status": "Verified" if linked else "Raw Ingested",
             "verified_entity_id": linked.id if linked else None,
             "crawled_at": created_time.isoformat() if (created_time and hasattr(created_time, "isoformat")) else None,
@@ -843,6 +947,19 @@ def get_crawled_documents(
                         existing_names.add(glp.full_name.lower())
 
             item["decision_makers"] = leadership
+            new_score = calculate_evidence_quality_score(
+                canonical_name=item.get("canonical_name"),
+                domain=item.get("domain"),
+                industry=item.get("industry"),
+                business_overview=item.get("business_overview"),
+                products_services=item.get("technology_stack"),
+                headquarters=item.get("headquarters"),
+                company_size=item.get("company_size"),
+                decision_makers=leadership,
+                verified_emails=item.get("verified_emails"),
+            )
+            item["lead_quality_score"] = new_score
+            item["quality_score"] = new_score
             item.pop("clean_name_lower", None)
 
     return {
@@ -978,9 +1095,9 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         "retrieved_at": doc.retrieved_at.isoformat() if doc.retrieved_at else None,
         "status": "Verified" if linked else "Raw Ingested",
         "verified_entity_id": linked.id if linked else None,
-        "industry": linked.entity_type if linked else (dom_data.get("industry") or "Commercial Web & Digital Enterprise"),
-        "country": linked.country if linked else (dom_data.get("country") or "Global"),
-        "company_tier": determine_company_tier(linked, dom_data) if linked else "Growth SMBs (20-100)",
+        "industry": (linked.entity_type if linked else None) or dom_data.get("industry") or "Unknown",
+        "country": (linked.country if linked else None) or dom_data.get("country") or "Global",
+        "company_tier": determine_company_tier(linked, dom_data),
         "word_count": max(48, word_count),
         "text_preview": text_preview,
         "extracted_facts": extracted_facts,
@@ -988,33 +1105,36 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         "technology_stack": dom_data.get("technologies") or dom_data.get("tech_stack") or ["Web Infrastructure", "Cloud Hosting"],
         "decision_makers": decision_makers,
         "crawled_subpages": dom_data.get("crawled_subpages") or [{"title": f"/ • {clean_c_name}", "url": doc.url, "minio_raw_path": f"companies/{domain}/pages/homepage.md"}],
-        "verified_emails": dom_data.get("contact_emails") or dom_data.get("verified_emails") or ([f"contact@{domain}", f"support@{domain}"] if domain and "." in domain and "undefined" not in domain else []),
-        "revenue_funding": dom_data.get("funding_stage") or dom_data.get("revenue_funding") or "Bootstrapped / Private",
+        "verified_emails": dom_data.get("contact_emails") or dom_data.get("verified_emails") or [],
+        "revenue_funding": dom_data.get("funding_stage") or dom_data.get("revenue_funding") or "Unknown",
+        "lead_quality_score": calculate_evidence_quality_score(
+            canonical_name=clean_c_name,
+            domain=domain,
+            industry=dom_data.get("industry") or (linked.entity_type if linked else None),
+            business_overview=dom_data.get("business_overview") or (linked.description if linked else None),
+            products_services=dom_data.get("technologies") or dom_data.get("tech_stack"),
+            headquarters=dom_data.get("headquarters") or dom_data.get("location") or (linked.location if linked else None),
+            company_size=determine_company_tier(linked, dom_data),
+            decision_makers=decision_makers,
+            verified_emails=dom_data.get("contact_emails") or dom_data.get("verified_emails") or [],
+        ),
+        "quality_score": calculate_evidence_quality_score(
+            canonical_name=clean_c_name,
+            domain=domain,
+            industry=dom_data.get("industry") or (linked.entity_type if linked else None),
+            business_overview=dom_data.get("business_overview") or (linked.description if linked else None),
+            products_services=dom_data.get("technologies") or dom_data.get("tech_stack"),
+            headquarters=dom_data.get("headquarters") or dom_data.get("location") or (linked.location if linked else None),
+            company_size=determine_company_tier(linked, dom_data),
+            decision_makers=decision_makers,
+            verified_emails=dom_data.get("contact_emails") or dom_data.get("verified_emails") or [],
+        ),
     }
     try:
         cache_set("doc", document_id, doc_payload, ttl=300)
     except Exception:
         pass
     return doc_payload
-
-
-
-def determine_company_tier(record: UniversalRecord, domain_data: dict = None) -> str:
-    """Helper to assign company tier category matching exact extracted data."""
-    if domain_data is None:
-        domain_data = {}
-    size_str = str(domain_data.get("company_size") or domain_data.get("employee_count") or "").lower()
-    
-    if "1,000" in size_str or "1000" in size_str or "enterprise" in size_str or "5000" in size_str or "10,000" in size_str:
-        return "Enterprise Leaders (1,000+)"
-    elif "100" in size_str or "500" in size_str or "mid" in size_str:
-        return "Mid-Market Challengers (100-1,000)"
-    elif "20" in size_str or "50" in size_str or "growth" in size_str or "smb" in size_str:
-        return "Growth SMBs (20-100)"
-    elif "1-20" in size_str or "startup" in size_str or "early" in size_str:
-        return "Early-Stage Startups (1-20)"
-    
-    return "Growth SMBs (20-100)"
 
 
 def _build_tier_taxonomy(tier_data: dict) -> list:
@@ -1107,6 +1227,28 @@ def get_entities_list(
                     })
                     existing_names.add(kp.person_name.lower())
             
+            comp_li = getattr(g, "linkedin_url", None)
+            g_overview = g.summary or ""
+            if "enterprise lead" in g_overview.lower() or not g_overview.strip():
+                g_overview = "Unknown"
+            g_hq = g.headquarters or "Unknown"
+            g_ind = g.industry or "Unknown"
+            g_size = g.company_size or "Unknown"
+            g_rev = g.revenue_funding or "Unknown"
+            g_emails = g.verified_emails if isinstance(g.verified_emails, list) else []
+
+            g_score = calculate_evidence_quality_score(
+                canonical_name=g.company_name,
+                domain=g.domain,
+                industry=g_ind,
+                business_overview=g_overview,
+                products_services=g.technology_stack,
+                headquarters=g_hq,
+                company_size=g_size,
+                decision_makers=d_makers,
+                verified_emails=g_emails,
+            )
+
             g_results.append({
                 "id": g.id,
                 "canonical_name": g.company_name,
@@ -1115,24 +1257,26 @@ def get_entities_list(
                 "country": "Global",
                 "url": f"https://{g.domain}",
                 "logo_url": g.logo_url or f"https://www.google.com/s2/favicons?domain={g.domain}&sz=128",
-                "business_overview": g.summary or f"{g.company_name} enterprise lead profile.",
+                "business_overview": g_overview,
                 "technology_stack": g.technology_stack if isinstance(g.technology_stack, list) else ["Web Infrastructure"],
                 "decision_makers": d_makers,
                 "decision_makers_count": len(d_makers),
                 "crawled_subpages": [{"title": f"/ • {g.company_name}", "url": f"https://{g.domain}"}],
-                "headquarters": g.headquarters or "Global HQ",
-                "industry": g.industry or "Software & SaaS",
-                "company_size": g.company_size or "Growth SMBs (20-100)",
-                "company_tier": g.company_size or "Growth SMBs (20-100)",
-                "revenue_funding": g.revenue_funding or "Bootstrapped / Private",
-                "funding_stage": g.revenue_funding or "Bootstrapped / Private",
-                "warmth_score": round(float(g.quality_score or 8.5), 1),
-                "verified_emails": g.verified_emails if isinstance(g.verified_emails, list) else [f"contact@{g.domain}"],
+                "headquarters": g_hq,
+                "industry": g_ind,
+                "company_size": g_size,
+                "company_tier": g_size,
+                "revenue_funding": g_rev,
+                "funding_stage": g_rev,
+                "warmth_score": round(float(g_score / 10.0), 1),
+                "verified_emails": g_emails,
                 "status": "Verified",
-                "confidence": float(g.quality_score or 8.5) / 10.0,
-                "linkedin_url": getattr(g, "linkedin_url", None) or f"https://www.linkedin.com/company/{g.domain.split('.')[0]}",
-                "company_linkedin_url": getattr(g, "linkedin_url", None) or f"https://www.linkedin.com/company/{g.domain.split('.')[0]}",
-                "description": g.summary or f"{g.company_name} enterprise lead profile."
+                "confidence": float(g_score / 100.0),
+                "lead_quality_score": g_score,
+                "quality_score": g_score,
+                "linkedin_url": comp_li,
+                "company_linkedin_url": comp_li,
+                "description": g_overview
             })
         return {
             "total": len(g_results),
@@ -1214,12 +1358,26 @@ def get_entities_list(
         ]
         hq = r.location or dom_data.get("headquarters") or dom_data.get("location") or _infer_location(clean_domain, clean_c_name, r.description or "")
         ind = (r.domain.name if (r.domain and hasattr(r.domain, "name")) else None) or dom_data.get("industry") or _infer_industry(clean_domain, clean_c_name, r.description or "")
-        rev = dom_data.get("funding_stage") or dom_data.get("revenue_funding") or dom_data.get("revenue") or _infer_revenue(clean_domain, tier)
+        rev = dom_data.get("funding_stage") or dom_data.get("revenue_funding") or dom_data.get("revenue") or "Unknown"
         emails = dom_data.get("contact_emails") or dom_data.get("verified_emails") or _infer_emails(clean_domain, r.description or "")
-        overview = r.description or dom_data.get("business_overview") or f"{clean_c_name} web portal indexed into OpenDB vault."
+        overview = r.description or dom_data.get("business_overview") or ""
+        if "indexed" in overview.lower() or not overview.strip():
+            overview = "Unknown"
 
         conf = float(r.confidence or 0.85)
-        warmth = round(min(10.0, conf * 10.0), 1)
+        ev_score = calculate_evidence_quality_score(
+            canonical_name=clean_c_name,
+            domain=clean_domain,
+            industry=ind,
+            business_overview=overview,
+            products_services=tech_stack,
+            headquarters=hq,
+            company_size=tier,
+            decision_makers=leadership,
+            verified_emails=emails,
+        )
+        warmth = round(min(10.0, ev_score / 10.0), 1)
+        comp_linkedin = dom_data.get("company_linkedin_url") or (r.metadata_json or {}).get("company_linkedin_url")
 
         results.append({
             "id": r.id,
@@ -1241,11 +1399,13 @@ def get_entities_list(
             "revenue_funding": rev,
             "funding_stage": rev,
             "warmth_score": warmth,
+            "lead_quality_score": ev_score,
+            "quality_score": ev_score,
             "verified_emails": emails if isinstance(emails, list) else [str(emails)],
             "status": r.status or "Verified",
             "confidence": conf,
-            "linkedin_url": dom_data.get("company_linkedin_url") or (r.metadata_json or {}).get("company_linkedin_url") or f"https://www.linkedin.com/company/{clean_domain.split('.')[0]}",
-            "company_linkedin_url": dom_data.get("company_linkedin_url") or (r.metadata_json or {}).get("company_linkedin_url"),
+            "linkedin_url": comp_linkedin,
+            "company_linkedin_url": comp_linkedin,
             "description": overview,
             "created_at": r.created_at.isoformat() if r.created_at else None
         })
@@ -1377,21 +1537,42 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             if (not v_emails or not v_hq or not v_people) and vault_lead.get("domain"):
                 asyncio.create_task(_async_background_enrich(vault_lead["domain"], vault_lead["company_name"], entity_id))
 
+            v_li = vault_lead.get("linkedin_url")
+            v_overview = vault_lead.get("summary") or ""
+            if "enterprise lead" in v_overview.lower() or not v_overview.strip():
+                v_overview = "Unknown"
+            v_hq_clean = v_hq or "Unknown"
+            v_ind_clean = vault_lead.get("industry") or "Unknown"
+            v_size_clean = vault_lead.get("company_size") or "Unknown"
+            v_rev_clean = vault_lead.get("revenue_funding") or "Unknown"
+            
+            v_score = calculate_evidence_quality_score(
+                canonical_name=vault_lead["company_name"],
+                domain=vault_lead["domain"],
+                industry=v_ind_clean,
+                business_overview=v_overview,
+                products_services=vault_lead.get("technology_stack"),
+                headquarters=v_hq_clean,
+                company_size=v_size_clean,
+                decision_makers=v_people,
+                verified_emails=v_emails,
+            )
+
             vault_payload = {
                 "id": vault_lead["id"],
                 "canonical_name": vault_lead["company_name"],
                 "domain": vault_lead["domain"],
                 "official_website": f"https://{vault_lead['domain']}",
                 "logo_url": vault_lead.get("logo_url") or f"https://www.google.com/s2/favicons?domain={vault_lead['domain']}&sz=128",
-                "linkedin_url": vault_lead.get("linkedin_url") or f"https://www.linkedin.com/company/{vault_lead['domain'].split('.')[0]}",
-                "company_linkedin_url": vault_lead.get("linkedin_url") or f"https://www.linkedin.com/company/{vault_lead['domain'].split('.')[0]}",
-                "headquarters": v_hq or "Not Specified",
-                "industry": vault_lead.get("industry") or "Software & SaaS",
-                "company_size": vault_lead.get("company_size") or "Growth SMBs (20-100)",
-                "company_tier": vault_lead.get("company_size") or "Growth SMBs (20-100)",
-                "revenue_funding": vault_lead.get("revenue_funding") or "Bootstrapped / Private",
+                "linkedin_url": v_li,
+                "company_linkedin_url": v_li,
+                "headquarters": v_hq_clean,
+                "industry": v_ind_clean,
+                "company_size": v_size_clean,
+                "company_tier": v_size_clean,
+                "revenue_funding": v_rev_clean,
                 "verified_emails": v_emails,
-                "summary": vault_lead.get("summary") or f"{vault_lead['company_name']} enterprise lead record.",
+                "summary": v_overview,
                 "summary_generated_at": datetime.now().isoformat(),
                 "technology_stack": vault_lead.get("technology_stack") or ["Web Infrastructure"],
                 "decision_makers": [
@@ -1403,23 +1584,24 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                     for s in vault_lead.get("subpages", [])
                 ],
                 "firmographics": {
-                    "headquarters": v_hq or "Not Specified",
+                    "headquarters": v_hq_clean,
                     "country": "Global",
-                    "industry": vault_lead.get("industry") or "Software & SaaS",
+                    "industry": v_ind_clean,
                     "sub_industry": "General",
-                    "company_size": vault_lead.get("company_size") or "Growth SMBs (20-100)",
-                    "revenue_funding": vault_lead.get("revenue_funding") or "Bootstrapped / Private",
-                    "warmth_score": vault_lead.get("quality_score", 8.5),
+                    "company_size": v_size_clean,
+                    "revenue_funding": v_rev_clean,
+                    "warmth_score": round(v_score / 10.0, 1),
                     "verified_emails": v_emails
                 },
-                "lead_quality_score": round(float(vault_lead.get("quality_score", 8.5)) * 10, 1),
-                "warmth_score": float(vault_lead.get("quality_score", 8.5)),
-                "score_methodology": "Weighted metric: 40% Extraction Completeness + 40% Verification Confidence + 20% Data Recency",
+                "lead_quality_score": v_score,
+                "quality_score": v_score,
+                "warmth_score": round(v_score / 10.0, 1),
+                "score_methodology": "100-Point Evidence Model (Identity=15, Industry=15, Overview=15, Products=15, HQ=10, Size=10, People=10, Email=10)",
                 "provenance": {
                     "source_url": f"https://{vault_lead['domain']}",
                     "source_type": "⚡ MASTER_VAULT_HOT_CACHE",
                     "extracted_at": datetime.now().isoformat(),
-                    "confidence": float(vault_lead.get("quality_score", 8.5)) / 10.0,
+                    "confidence": float(v_score / 100.0),
                     "extracted_fields": [],
                     "evidence_snippets": [],
                     "fact_count": len(v_people),
@@ -1464,7 +1646,7 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 url=doc.url,
                 country="Global",
                 confidence=0.85,
-                description=f"{c_name} web portal ingested by OpenDB discovery pipeline."
+                description=""
             )
 
         doc_id_ref = doc.id if doc else getattr(record, "document_id", None)
@@ -1542,25 +1724,14 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             if re.search(r"[a-z0-9]{12,}", hq_s) or re.search(r"[a-z][A-Z][a-z][A-Z]", hq_s) or len(hq_s.split()) < 2:
                 hq_val = None
 
-        # Dispatch non-blocking asyncio background enrichment if data is incomplete
-        if (not decision_makers or not emails or not hq_val) and clean_domain:
-            asyncio.create_task(_async_background_enrich(clean_domain, clean_c_name, entity_id))
-
-        # Final clean HQ value - no guesses
         if not hq_val:
-            hq_val = "Not Specified"
-
-        # Calculate Lead Quality Score
-        conf = float(getattr(record, "confidence", 0.85) or 0.85)
-        completeness = min(1.0, (len(domain_data) + len(facts)) / 10.0)
-        lead_score = round(((conf * 0.4) + (completeness * 0.4) + 0.2) * 100, 1)
-        warmth_score = round(min(10.0, conf * 10.0), 1)
+            hq_val = "Unknown"
 
         # Business Overview Narrative
         rec_desc = getattr(record, "description", None)
-        summary = rec_desc or domain_data.get("business_overview") or (
-            f"{clean_c_name} provides specialized commercial solutions and has been indexed into the OpenDB vault."
-        )
+        summary = rec_desc or domain_data.get("business_overview") or ""
+        if "indexed" in summary.lower() or not summary.strip():
+            summary = "Unknown"
 
         # Crawled Subpages / MinIO source vault
         subpages = domain_data.get("crawled_subpages") or []
@@ -1575,15 +1746,28 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 }
             ]
 
-        ind_val = (record.domain.name if (record and hasattr(record, "domain") and record.domain and hasattr(record.domain, "name")) else None) or domain_data.get("industry") or "Software & SaaS"
+        ind_val = (record.domain.name if (record and hasattr(record, "domain") and record.domain and hasattr(record.domain, "name")) else None) or domain_data.get("industry") or "Unknown"
         tier_val = determine_company_tier(record, domain_data)
-        rev_val = domain_data.get("funding_stage") or domain_data.get("revenue_funding") or domain_data.get("revenue") or "Bootstrapped / Private"
+        rev_val = domain_data.get("funding_stage") or domain_data.get("revenue_funding") or domain_data.get("revenue") or "Unknown"
+
+        # Calculate Evidence-Based Quality Score
+        lead_score = calculate_evidence_quality_score(
+            canonical_name=clean_c_name,
+            domain=clean_domain,
+            industry=ind_val,
+            business_overview=summary,
+            products_services=tech_stack,
+            headquarters=hq_val,
+            company_size=tier_val,
+            decision_makers=decision_makers,
+            verified_emails=emails,
+        )
+        warmth_score = round(min(10.0, lead_score / 10.0), 1)
 
         # Provenance
         rec_created = getattr(record, "created_at", None)
         created_iso = rec_created.isoformat() if (rec_created and hasattr(rec_created, "isoformat")) else datetime.now().isoformat()
         
-        # Batch map evidence items to avoid N+1 queries in loop
         evidence_by_fact = {ev.fact_id: ev for ev in evidence_items if getattr(ev, "fact_id", None)}
         provenance_facts = []
         for f in facts[:12]:
@@ -1610,9 +1794,10 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             for e in evidence_items[:8]
         ]
 
+        conf = float(getattr(record, "confidence", 0.85) or 0.85)
         provenance = {
             "source_url": rec_url_str,
-            "source_type": "🚀 OPEN_DATASET:OPEN_PAGERANK_10M",
+            "source_type": "🚀 EVIDENCE_VAULT",
             "extracted_at": created_iso,
             "confidence": conf,
             "extracted_fields": provenance_facts,
@@ -1632,8 +1817,8 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             "domain": clean_domain,
             "official_website": rec_url_str,
             "logo_url": f"https://www.google.com/s2/favicons?domain={clean_domain}&sz=128",
-            "linkedin_url": comp_linkedin or f"https://www.linkedin.com/company/{clean_domain.split('.')[0]}",
-            "company_linkedin_url": comp_linkedin or f"https://www.linkedin.com/company/{clean_domain.split('.')[0]}",
+            "linkedin_url": comp_linkedin,
+            "company_linkedin_url": comp_linkedin,
             "headquarters": hq_val,
             "industry": ind_val,
             "company_size": tier_val,
@@ -1656,8 +1841,9 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 "verified_emails": emails if isinstance(emails, list) else []
             },
             "lead_quality_score": lead_score,
+            "quality_score": lead_score,
             "warmth_score": warmth_score,
-            "score_methodology": "Weighted metric: 40% Extraction Completeness + 40% Verification Confidence + 20% Data Recency",
+            "score_methodology": "100-Point Evidence Model (Identity=15, Industry=15, Overview=15, Products=15, HQ=10, Size=10, People=10, Email=10)",
             "provenance": provenance
         }
 

@@ -46,6 +46,15 @@ class UnifiedExtractorPipeline:
             page_url=url
         )
 
+        # Merge deterministic emails into domain_data if not already extracted
+        det_emails = det_meta.get("contact_emails") or []
+        if det_emails:
+            existing_emails = domain_data.get("contact_emails") or domain_data.get("emails") or []
+            if isinstance(existing_emails, str):
+                existing_emails = [existing_emails]
+            merged_emails = list(dict.fromkeys(existing_emails + det_emails))
+            domain_data["contact_emails"] = merged_emails
+
         # 5. Build Universal Data Schema Record
         canonical_name = (
             domain_data.get("company_name")

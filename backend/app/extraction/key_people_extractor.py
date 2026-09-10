@@ -347,11 +347,15 @@ class KeyPeopleExtractor:
 
                     # Direct LinkedIn profile URL strictly if genuine linkedin.com/in/<slug>
                     direct_match = re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', f"{url} {combined}")
+                    slug = None
                     if direct_match:
-                        real_profile_url = f"https://www.linkedin.com/in/{direct_match.group(1)}"
+                        slug = direct_match.group(1).lower()
                     elif "linkedin.com/in/" in url:
-                        clean_slug = url.rstrip("/").split("/in/")[-1].split("?")[0].split("/")[0]
-                        real_profile_url = f"https://www.linkedin.com/in/{clean_slug}"
+                        slug = url.rstrip("/").split("/in/")[-1].split("?")[0].split("/")[0].lower()
+
+                    bad_slugs = {"search", "jobs", "feed", "login", "signup", "home", "pub", "in", "sharing", "posts"}
+                    if slug and slug not in bad_slugs and len(slug) >= 2:
+                        real_profile_url = f"https://www.linkedin.com/in/{slug}"
                     else:
                         real_profile_url = None
 

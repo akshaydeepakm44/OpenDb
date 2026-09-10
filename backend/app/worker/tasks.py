@@ -233,9 +233,9 @@ def search_and_discover_task(
                 snippet=res.get("snippet", ""),
                 url=target_url
             )
-            if not qual["qualified"]:
+            if not qual["qualified"] or qual.get("priority") in ["REJECTED", "DEPRIORITIZED"]:
                 _log_activity(db, url=target_url, stage="FILTER", domain=domain,
-                              status="FILTERED", message=f"URL rejected: {qual['reason']}", batch_id=batch_id)
+                              status="FILTERED", message=f"Candidate filtered ({qual.get('priority')}): {qual['reason']}", batch_id=batch_id)
                 continue
 
             # Stage 2: Classify listing vs entity
@@ -374,8 +374,11 @@ def crawl_source_task(
 # WORKER B — Crawl Entity + Extract
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Subpages to crawl for maximum field extraction (§12)
-ENTITY_SUBPAGES = ["/about", "/about-us", "/contact", "/team", "/products", "/services"]
+# Targeted corporate subpages to crawl for company intelligence (§12, §13)
+ENTITY_SUBPAGES = [
+    "/about", "/about-us", "/company", "/products", "/services",
+    "/solutions", "/team", "/leadership", "/contact", "/careers"
+]
 MAX_ENTITY_PAGES = 6
 
 
@@ -383,7 +386,7 @@ MAX_ENTITY_PAGES = 6
     name="tasks.crawl_entity",
     bind=True,
     max_retries=3,
-    default_retry_delay=45,
+    default_retry_delay=30,
 )
 def crawl_entity_task(
     self,
@@ -393,42 +396,22 @@ def crawl_entity_task(
 ) -> Dict[str, Any]:
     """
     §12, §13 — Worker B: Deep entity crawl + extraction.
-    Crawls homepage + up to 5 subpages (/about, /contact, /team, /products, /services)
-    for maximum field extraction.
+    Crawls homepage + targeted subpages (/about, /company, /team, /leadership, etc.)
+    for maximum verified field extraction.
     """
     logger.info(f"[Worker B] Entity crawl: {url}")
 
-    # ── Stage 0: Immediately persist Document Record ──────────────────────────
+    # ── Stage 0: Look up existing source reference (DO NOT create document yet) ───
     db = SessionLocal()
+    existing_doc_id = None
+    source_id = None
+    base_host = urlparse(url).netloc or url
     try:
-        base_host = urlparse(url).netloc or url
         source = repo.get_or_create_source(db, name=base_host, base_url=url)
+        source_id = source.id
         doc = db.query(Document).filter(Document.url == url).first()
-        if not doc:
-            netloc = base_host.replace("www.", "")
-            derived_title = netloc.split(".")[0].replace("-", " ").title() if "." in netloc else netloc
-            if not derived_title or len(derived_title) < 2:
-                derived_title = "Enterprise Lead"
-            doc = repo.create_document(
-                db=db,
-                crawl_job_id=None,
-                source_id=source.id,
-                url=url,
-                canonical_url=url,
-                title=f"{derived_title} Official Portal",
-                content_type="text/html",
-                http_status=200,
-                content_hash=str(uuid.uuid4())[:16],
-                raw_path="",
-                markdown_path="",
-                text_path="",
-                word_count=0,
-                links_count=0,
-                images_count=0,
-            )
-            db.commit()
-            db.refresh(doc)
-        doc_id = doc.id
+        if doc:
+            existing_doc_id = doc.id
     except Exception as err:
         logger.error(f"[Worker B] Stage 0 error for {url}: {err}")
         return {"status": "error", "error": str(err)}
@@ -446,31 +429,88 @@ def crawl_entity_task(
         )
     except Exception as crawl_err:
         logger.error(f"[Worker B] Homepage crawl failed for {url}: {crawl_err}")
+        db = SessionLocal()
+        try:
+            _log_activity(db, url=url, stage="CRAWL", domain=domain,
+                          status="ERROR", message=f"Homepage crawl failed: {crawl_err}",
+                          batch_id=batch_id)
+        finally:
+            db.close()
         return {"status": "error", "error": str(crawl_err)}
 
     if not crawled_items:
         db = SessionLocal()
         try:
             _log_activity(db, url=url, stage="CRAWL", domain=domain,
-                          status="OK", message=f"Queued / Persisted Document ID={doc_id[:8]}",
+                          status="EMPTY", message=f"No crawled content retrieved for {url}",
                           batch_id=batch_id)
         finally:
             db.close()
-        return {"status": "persisted", "reason": "Basic document created", "url": url, "document_id": doc_id}
+        return {"status": "empty", "reason": "No crawled content retrieved", "url": url}
 
     item = crawled_items[0]
     word_count = item.metadata.get("word_count", 0) if item.metadata else 0
 
-    # ── Stage 2: Update Document Record ──────────────────────────────────────
+    # ── Stage 2: Content quality filter (MUST pass before persisting document) ──
+    keep, reason = quality_filter.filter_content(
+        url=url,
+        html_content=item.html_content or "",
+        text_content=item.text or "",
+        title=item.title or "",
+        word_count=word_count,
+    )
+    if not keep:
+        logger.info(f"[Worker B] Content filtered ({reason}): {url}")
+        db = SessionLocal()
+        try:
+            _log_activity(db, url=url, stage="FILTER", domain=domain,
+                          status="FILTERED", message=f"Content rejected: {reason}", batch_id=batch_id)
+        finally:
+            db.close()
+        return {"status": "filtered", "reason": reason, "url": url}
+
+    # ── Stage 3: Save to MinIO raw storage & persist Document Record ───────────
     html_hash, raw_rel = file_storage.save_raw_page(item.html_content or "")
     md_rel = file_storage.save_processed_markdown(item.markdown or "", html_hash)
     txt_rel = file_storage.save_processed_text(item.text or "", html_hash)
 
+    # Derive genuine title from evidence — NEVER append "Official Portal"
+    derived_title = (item.title or "").strip()
+    if not derived_title or len(derived_title) < 2 or derived_title.lower() in ["home", "index", "welcome", "default", "404", "error"]:
+        netloc = base_host.replace("www.", "")
+        derived_title = netloc.split(".")[0].replace("-", " ").title() if "." in netloc else netloc
+    if not derived_title:
+        derived_title = "Unknown"
+
     db = SessionLocal()
     try:
-        doc = db.query(Document).filter(Document.id == doc_id).first()
-        if doc:
-            doc.title = item.title or doc.title
+        if existing_doc_id:
+            doc = db.query(Document).filter(Document.id == existing_doc_id).first()
+        else:
+            doc = db.query(Document).filter(Document.url == url).first()
+
+        if not doc:
+            doc = repo.create_document(
+                db=db,
+                crawl_job_id=None,
+                source_id=source_id,
+                url=url,
+                canonical_url=url,
+                title=derived_title,
+                content_type="text/html",
+                http_status=item.http_status or 200,
+                content_hash=html_hash,
+                raw_path=raw_rel,
+                markdown_path=md_rel,
+                text_path=txt_rel,
+                word_count=word_count,
+                links_count=item.metadata.get("links_count", 0) if item.metadata else 0,
+                images_count=item.metadata.get("images_count", 0) if item.metadata else 0,
+            )
+            db.commit()
+            db.refresh(doc)
+        else:
+            doc.title = derived_title
             doc.http_status = item.http_status or 200
             doc.content_hash = html_hash
             doc.raw_path = raw_rel
@@ -481,23 +521,10 @@ def crawl_entity_task(
             doc.images_count = item.metadata.get("images_count", 0) if item.metadata else 0
             db.commit()
 
+        doc_id = doc.id
         _log_activity(db, url=url, stage="CRAWL", domain=domain,
-                      status="OK", message=f"Crawled OK — Updated Document ID={doc_id[:8]} ({word_count} words)",
+                      status="OK", message=f"Crawled OK — Persisted Document ID={doc_id[:8]} ({word_count} words)",
                       batch_id=batch_id)
-
-        # ── Stage 3: Content quality filter ──────────────────────────────────
-        keep, reason = quality_filter.filter_content(
-            url=url,
-            html_content=item.html_content or "",
-            text_content=item.text or "",
-            title=item.title or "",
-            word_count=word_count,
-        )
-        if not keep:
-            logger.info(f"[Worker B] Content filtered ({reason}): {url}")
-            _log_activity(db, url=url, stage="FILTER", domain=domain,
-                          status="FILTERED", message=f"Content rejected for verification: {reason}", batch_id=batch_id)
-            return {"status": "filtered", "reason": reason, "url": url}
     finally:
         db.close()
 
@@ -968,30 +995,34 @@ def search_company_people_task(
             ).first()
             
             p_profile = p.get("linkedin_url")
-            p_source = p.get("source_url") or p_profile
+            if p_profile and not _is_real_linkedin_profile(p_profile):
+                p_profile = None
+            
+            # Genuine profile URL only — never store a search or query URL
+            valid_profile_url = p_profile if p_profile else None
             
             if not existing:
                 cand = KeyPersonCandidate(
                     company_name=company_name,
                     person_name=p["name"],
                     role=p["title"],
-                    source_url=p_profile or p_source, # Never a search query!
+                    source_url=valid_profile_url, # Genuine profile URL or None, NEVER a search query!
                     source_domain=domain,
                     source_type=p.get("source_type", "search_discovery"),
                     discovery_query=last_query,
                     evidence_text=p.get("evidence", ""),
                     confidence_score=p.get("confidence_score", 0.85),
-                    verification_status="HIGH_CONFIDENCE" if p_profile else "DISCOVERED"
+                    verification_status="HIGH_CONFIDENCE" if valid_profile_url else "DISCOVERED"
                 )
                 db.add(cand)
                 saved_count += 1
                 
-                _log_activity(db, url=p_profile or f"PERSON:{p['name']}", stage="SEARCH", domain=domain,
+                _log_activity(db, url=valid_profile_url or f"PERSON:{p['name']}", stage="SEARCH", domain=domain,
                               status="OK", message=f"Discovered Key Person: {p['name']} ({p['title']}) [Evidence: {p.get('source_type')}]",
                               entity_name=clean_company, batch_id=batch_id)
             else:
-                if p_profile and not existing.source_url:
-                    existing.source_url = p_profile
+                if valid_profile_url and not existing.source_url:
+                    existing.source_url = valid_profile_url
                     existing.verification_status = "HIGH_CONFIDENCE"
                     saved_count += 1
         

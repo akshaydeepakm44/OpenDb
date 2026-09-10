@@ -15,8 +15,13 @@ const getCleanBrandName = (name) => {
   return words.length > 3 ? words.slice(0, 2).join(' ') : name.trim();
 };
 
+const isLinkedInProfile = (person) => {
+  const url = person?.linkedin_url || '';
+  return url.includes('linkedin.com/in/') && !url.includes('/search/') && !url.includes('/jobs/');
+};
+
 const getLinkedInProfileOrSearch = (person, companyName) => {
-  if (person?.linkedin_url && person.linkedin_url.includes('linkedin.com/in/')) {
+  if (isLinkedInProfile(person)) {
     return person.linkedin_url;
   }
   const cleanComp = getCleanBrandName(companyName);
@@ -25,11 +30,7 @@ const getLinkedInProfileOrSearch = (person, companyName) => {
 };
 
 const getLinkedInLabel = (person) => {
-  const url = person?.linkedin_url || '';
-  if (url.includes('linkedin.com/in/')) {
-    return 'View Profile ↗';
-  }
-  return 'Search on LinkedIn ↗';
+  return isLinkedInProfile(person) ? 'View Profile ↗' : 'Search LinkedIn ↗';
 };
 
 
@@ -785,11 +786,12 @@ export default function App() {
                 const initial = (doc.canonical_name || doc.domain || '?')[0].toUpperCase();
                 const isVerified = doc.status === 'Verified';
                 const isQueued = doc.status === 'Queued';
-                const score = isVerified ? 100 : isQueued ? 85 : 90;
-                const tierName = doc.company_tier || 'Startup (1)';
-                const locationStr = doc.headquarters || doc.country || 'Global';
-                const industryStr = doc.industry || doc.domain || 'Software & SaaS';
-                const revenueStr = doc.revenue_funding || 'Bootstrapped';
+                const rawScore = doc.lead_quality_score ?? doc.quality_score;
+                const score = rawScore !== undefined && rawScore !== null ? Math.round(rawScore) : (isQueued ? 0 : 15);
+                const tierName = doc.company_tier && doc.company_tier !== 'Startup (1)' ? doc.company_tier : (doc.company_size || 'Unknown');
+                const locationStr = doc.headquarters && doc.headquarters !== 'Not Specified' && doc.headquarters !== 'Global' ? doc.headquarters : (doc.country && doc.country !== 'Global' ? doc.country : 'Unknown');
+                const industryStr = doc.industry && doc.industry !== 'Commercial Web' && doc.industry !== 'Commercial Web & Digital Enterprise' ? doc.industry : 'Unknown';
+                const revenueStr = doc.revenue_funding && doc.revenue_funding !== 'Not Specified' && doc.revenue_funding !== 'Bootstrapped' ? doc.revenue_funding : 'Unknown';
                 const emailStr = Array.isArray(doc.verified_emails) && doc.verified_emails[0] ? doc.verified_emails[0] : null;
                 
                 return (
@@ -938,11 +940,12 @@ export default function App() {
                 let domain = '';
                 try { domain = new URL(ent.url.startsWith('http') ? ent.url : 'https://' + ent.url).hostname.replace('www.', ''); } catch {}
                 const initial = (ent.canonical_name || domain || '?')[0].toUpperCase();
-                const score = 100;
-                const tierName = ent.company_tier || 'Startup (2)';
-                const locationStr = ent.headquarters || ent.country || 'Global';
-                const industryStr = ent.industry || ent.domain || 'Software & SaaS';
-                const revenueStr = ent.revenue_funding || 'Bootstrapped';
+                const rawEntScore = ent.lead_quality_score ?? ent.quality_score;
+                const score = rawEntScore !== undefined && rawEntScore !== null ? Math.round(rawEntScore) : 25;
+                const tierName = ent.company_tier && ent.company_tier !== 'Startup (2)' ? ent.company_tier : (ent.company_size || 'Unknown');
+                const locationStr = ent.headquarters && ent.headquarters !== 'Not Specified' && ent.headquarters !== 'Global' ? ent.headquarters : (ent.country && ent.country !== 'Global' ? ent.country : 'Unknown');
+                const industryStr = ent.industry && ent.industry !== 'Commercial Web' && ent.industry !== 'Commercial Web & Digital Enterprise' ? ent.industry : 'Unknown';
+                const revenueStr = ent.revenue_funding && ent.revenue_funding !== 'Not Specified' && ent.revenue_funding !== 'Bootstrapped' ? ent.revenue_funding : 'Unknown';
                 const emailStr = Array.isArray(ent.verified_emails) && ent.verified_emails[0] ? ent.verified_emails[0] : null;
                 
                 return (
@@ -1068,9 +1071,9 @@ export default function App() {
                               onClick={(e) => e.stopPropagation()}
                               style={{
                                 fontSize: '0.64rem',
-                                color: '#38bdf8',
-                                background: 'rgba(56, 189, 248, 0.12)',
-                                border: '1px solid rgba(56, 189, 248, 0.3)',
+                                color: isLinkedInProfile(dm) ? '#38bdf8' : '#94a3b8',
+                                background: isLinkedInProfile(dm) ? 'rgba(56, 189, 248, 0.12)' : 'rgba(148, 163, 184, 0.08)',
+                                border: isLinkedInProfile(dm) ? '1px solid rgba(56, 189, 248, 0.35)' : '1px solid rgba(148, 163, 184, 0.2)',
                                 padding: '0.12rem 0.45rem',
                                 borderRadius: '0.25rem',
                                 textDecoration: 'none',
@@ -1424,7 +1427,16 @@ export default function App() {
                                 </div>
                               </div>
                               <a href={getLinkedInProfileOrSearch(p, entityDetail.canonical_name)} target="_blank" rel="noreferrer"
-                                style={{ padding: '0.35rem 0.75rem', background: '#1e293b', border: '1px solid #374151', color: '#9ca3af', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}>
+                                style={{
+                                  padding: '0.35rem 0.75rem',
+                                  background: isLinkedInProfile(p) ? 'rgba(56, 189, 248, 0.15)' : '#1e293b',
+                                  border: isLinkedInProfile(p) ? '1px solid #38bdf8' : '1px solid #374151',
+                                  color: isLinkedInProfile(p) ? '#38bdf8' : '#9ca3af',
+                                  borderRadius: '0.375rem',
+                                  fontSize: '0.75rem',
+                                  fontWeight: 600,
+                                  textDecoration: 'none'
+                                }}>
                                 {getLinkedInLabel(p)}
                               </a>
                             </div>

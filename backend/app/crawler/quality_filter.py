@@ -109,11 +109,13 @@ BLACKLISTED_DOMAINS = {
     "askubuntu.com", "unix.stackexchange.com", "community.atlassian.com",
     "support.apple.com", "discussions.apple.com",
 
-    # Domain/company data aggregators
+    # Domain/company data aggregators & directories
     "owler.com", "dnb.com", "zoominfo.com", "apollo.io",
     "similarweb.com", "semrush.com", "ahrefs.com",
     "manta.com", "yelp.com", "yellowpages.com", "bbb.org",
     "opencorporates.com", "bloomberg.com", "pitchbook.com",
+    "business.com", "piliapp.com", "blauarbeit.de", "slicelife.com",
+    "clutch.co", "goodfirms.co", "trustpilot.com",
 }
 
 # ─── Blacklisted URL path patterns ────────────────────────────────────────────
@@ -229,17 +231,24 @@ class QualityFilter:
             if domain == blacklisted or domain.endswith(f".{blacklisted}"):
                 return False, f"Blacklisted domain: {domain}"
 
-        # Reject documentation, developer, help, training, and application/portal subdomains
+        # Reject directory, magazine, advice, and guide portal domains (e.g. kuechenfibel.de, werkstatt-magazin.de)
+        if re.search(r"(magazin|magazine|fibel|ratgeber|vergleich)", domain):
+            return False, f"Directory/Magazine/Guide portal domain: {domain}"
+
+        # Reject documentation, developer, help, training, franchise location, and resource subdomains
+        # (Legitimate startup subdomains like app. or platform. are preserved and handled via root resolution)
         app_subdomains = [
             "developer.", "developers.", "docs.", "doc.", "support.", "help.",
-            "learn.", "skills.", "api.", "download.", "downloads.", "play.", "store.", "training.",
-            "app.", "apps.", "chat.", "login.", "signin.", "auth.", "portal.", "dashboard.",
+            "locations.", "location.", "stores.", "store.", "branches.", "branch.",
+            "order.", "delivery.", "menu.", "pizza.",
+            "api.", "download.", "downloads.", "play.", "training.",
+            "chat.", "login.", "signin.", "auth.", "portal.",
             "console.", "admin.", "mail.", "status.", "billing.", "account.", "accounts.",
             "kite.", "trade.", "web.", "my.", "tracking.", "service.", "services.",
             "forum.", "community.", "discussions.", "news.", "blog.", "blogs.", "shop.", "books."
         ]
         if any(domain.startswith(p) for p in app_subdomains):
-            return False, f"Developer/Doc/App subdomain: {domain}"
+            return False, f"Resource/Support/Location/Doc subdomain: {domain}"
 
         # Check blacklisted path patterns
         path = parsed.path.lower()
@@ -417,6 +426,73 @@ class QualityFilter:
         filled = sum(1 for f in important_fields if domain_data.get(f))
         return filled / len(important_fields)
 
+    def resolve_subdomain_and_root(self, url_or_domain: str) -> dict:
+        """
+        Classify whether a host is a root domain, a legitimate company app/platform subdomain,
+        or a resource/support/location subdomain that must not become an independent company.
+        """
+        two_part_tlds = {
+            "co.uk", "org.uk", "gov.uk", "ac.uk", "com.au", "net.au", "org.au",
+            "co.in", "net.in", "org.in", "gen.in", "ind.in", "co.nz", "com.br",
+            "co.za", "co.jp", "ne.jp", "com.mx", "com.sg", "co.kr"
+        }
+
+        if not url_or_domain:
+            return {"root_domain": "", "subdomain": "", "is_resource_subdomain": False, "resource_type": None}
+
+        if "://" in url_or_domain:
+            from urllib.parse import urlparse
+            host = urlparse(url_or_domain).netloc.lower()
+        else:
+            host = url_or_domain.lower()
+
+        host = host.split(":")[0].strip().lstrip("www.")
+        parts = host.split(".")
+
+        if len(parts) <= 2:
+            return {"root_domain": host, "subdomain": "", "is_resource_subdomain": False, "resource_type": None}
+
+        is_two_part_tld = len(parts) >= 3 and f"{parts[-2]}.{parts[-1]}" in two_part_tlds
+        num_tld_parts = 2 if is_two_part_tld else 1
+
+        if len(parts) == num_tld_parts + 1:
+            return {"root_domain": host, "subdomain": "", "is_resource_subdomain": False, "resource_type": None}
+
+        root_domain = ".".join(parts[-(num_tld_parts + 1):])
+        subdomain = ".".join(parts[:-(num_tld_parts + 1)])
+
+        is_resource = False
+        res_type = None
+        sub_lower = subdomain.lower()
+
+        # 1. Support / Helpdesk / Service / FAQ / Status
+        if re.search(r"(?:^|[.-])(support|help|service|services|faq|ticket|tickets|desk|servicedesk|status|kb|knowledgebase)(?:[.-]|$)", sub_lower):
+            is_resource = True
+            res_type = "SUPPORT"
+        # 2. Locations / Stores / Franchise / Ordering / Delivery
+        elif re.search(r"(?:^|[.-])(locations|location|stores|store|branches|branch|find|order|delivery|menu|pizza)(?:[.-]|$)", sub_lower):
+            is_resource = True
+            res_type = "LOCATION"
+        # 3. Content / Forum / Community / Guide / Magazine
+        elif re.search(r"(?:^|[.-])(ratgeber|magazin|magazine|forum|community|discussions|wiki|docs|doc|blog|blogs|news)(?:[.-]|$)", sub_lower):
+            is_resource = True
+            res_type = "CONTENT_RESOURCE"
+        # 4. Regional / Language tool subdomains on utility properties (e.g. tw.piliapp.com, cn.piliapp.com)
+        elif sub_lower in {"tw", "cn", "en", "de", "fr", "es", "jp", "hk", "us", "uk", "in", "ru", "pt", "it", "nl", "pl", "br", "kr", "ar", "mx"}:
+            is_resource = True
+            res_type = "LANGUAGE_TOOL"
+        # 5. Auth / Account / Internal Infrastructure
+        elif re.search(r"(?:^|[.-])(login|signin|auth|account|accounts|billing|signup|register|admin|console|mail|webmail|tracking)(?:[.-]|$)", sub_lower):
+            is_resource = True
+            res_type = "AUTH_INFRASTRUCTURE"
+
+        return {
+            "root_domain": root_domain,
+            "subdomain": subdomain,
+            "is_resource_subdomain": is_resource,
+            "resource_type": res_type
+        }
+
     def qualify_company_candidate(
         self,
         title: str,
@@ -425,52 +501,96 @@ class QualityFilter:
     ) -> dict:
         """
         Pre-crawl company qualification engine.
-        Filters out non-companies and mega-enterprises before expensive crawling.
+        Filters out non-companies, subdomain resources, directories, and mega-enterprises before expensive crawling.
         
         Rules:
+        - Subdomain resource (support, location, guide, etc.) -> REJECT (SUBDOMAIN_RESOURCE)
         - URL or domain blacklisted / directory / non-company -> REJECT
-        - Confirmed >200 employees or Fortune 500 / mega-enterprise -> REJECT / DEPRIORITIZE
+        - Confirmed >200 employees or Fortune 500 / mega-enterprise / franchise chain -> REJECT / DEPRIORITIZE
         - Confirmed 1-200 employees -> ALLOW (priority: HIGH)
         - UNKNOWN size -> ALLOW (priority: NORMAL) — Do NOT filter out unknown sizes!
         """
+        # 0. Subdomain and root domain resolution
+        sub_info = self.resolve_subdomain_and_root(url)
+        if sub_info["is_resource_subdomain"]:
+            return {
+                "qualified": False,
+                "reason": f"Subdomain resource ({sub_info['resource_type']}): '{sub_info['subdomain']}.{sub_info['root_domain']}' is not an independent company target",
+                "candidate_type": "SUBDOMAIN_RESOURCE",
+                "root_domain": sub_info["root_domain"],
+                "company_size": "UNKNOWN",
+                "priority": "REJECTED"
+            }
+
         # 1. URL-level quality check
         keep_url, reason_url = self.filter_url(url)
         if not keep_url:
             return {
                 "qualified": False,
                 "reason": reason_url,
+                "candidate_type": "INVALID_URL",
                 "company_size": "UNKNOWN",
                 "priority": "REJECTED"
             }
 
         combined = f"{title or ''} {snippet or ''}".lower()
 
-        # 2. Check for mega-enterprises / Fortune 500 / thousands of employees
+        # 2. Check for multi-location consumer retail/franchise chain indicators in snippet/title:
+        franchise_chain_patterns = [
+            r"\bhundreds of locations\b",
+            r"\bthousands of locations\b",
+            r"\b\d+[\+,]\d*\s*locations\b",
+            r"\bover \d+ locations\b",
+            r"\bglobal franchise\b",
+            r"\binternational franchise\b",
+            r"\brestaurant chain\b",
+            r"\bfast food chain\b",
+            r"\bsupermarket chain\b",
+            r"\bretail chain\b",
+            r"\bpizza chain\b",
+            r"\bfind a store near you\b",
+            r"\bfind a location near you\b",
+            r"\border delivery or carryout\b",
+            r"\bget food delivery\b",
+        ]
+        for f_pat in franchise_chain_patterns:
+            if re.search(f_pat, combined):
+                return {
+                    "qualified": False,
+                    "reason": f"Consumer franchise/retail chain outside B2B startup/SMB target (matched '{f_pat}')",
+                    "candidate_type": "FRANCHISE_CHAIN",
+                    "company_size": ">200",
+                    "priority": "DEPRIORITIZED"
+                }
+
+        # 3. Check for mega-enterprises / Fortune 500 / publicly traded corporations
         enterprise_indicators = [
-            "fortune 500", "fortune 100", "nasdaq:", "nyse:",
-            "multinational conglomerate", "10,000+ employees", "5,000+ employees",
-            "over 1,000 employees", "1,000+ employees", "over 500 employees",
-            "500+ employees", "20,000+ employees", "50,000+ employees",
-            "tens of thousands of employees", "publicly traded conglomerate"
+            "fortune 500", "fortune 100", "fortune 1000", "s&p 500",
+            "nasdaq:", "nyse:", "lse:", "euronext:",
+            "multinational conglomerate", "multinational corporation",
+            "publicly traded company", "publicly traded conglomerate",
+            "10,000+ employees", "5,000+ employees", "over 1,000 employees",
+            "1,000+ employees", "over 500 employees", "500+ employees",
+            "20,000+ employees", "50,000+ employees", "tens of thousands of employees"
         ]
         for ind in enterprise_indicators:
             if ind in combined:
                 return {
                     "qualified": False,
                     "reason": f"Enterprise outside target (>200 employees): matched '{ind}'",
+                    "candidate_type": "LARGE_ENTERPRISE",
                     "company_size": ">200",
                     "priority": "DEPRIORITIZED"
                 }
 
-        # 3. Check for specific employee range patterns in snippet
+        # 4. Check for specific employee range patterns in snippet
         company_size = "UNKNOWN"
         priority = "NORMAL"
 
-        # Pattern: e.g. "1-10 employees", "11-50 employees", "51-200 employees", "10 to 50 employees"
-        range_match = re.search(r"\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:employees|people|staff|team members)\b", combined)
+        range_match = re.search(r"\b(\d{1,3}(?:,\d{3})+|\d+)\s*(?:-|to)\s*(\d{1,3}(?:,\d{3})+|\d+)\s*(?:employees|people|staff|team members)\b", combined)
         if range_match:
-            low = int(range_match.group(1))
-            high = int(range_match.group(2))
+            low = int(range_match.group(1).replace(",", ""))
+            high = int(range_match.group(2).replace(",", ""))
             if high <= 200:
                 company_size = f"{low}-{high}"
                 priority = "HIGH"
@@ -478,17 +598,17 @@ class QualityFilter:
                 return {
                     "qualified": False,
                     "reason": f"Exceeds 200 employees ({low}-{high})",
+                    "candidate_type": "LARGE_ENTERPRISE",
                     "company_size": f"{low}-{high}",
                     "priority": "DEPRIORITIZED"
                 }
             else:
-                # e.g. 100-300
                 company_size = f"{low}-{high}"
                 priority = "NORMAL"
         else:
-            single_match = re.search(r"\b(\d{1,6})\+?\s*(?:employees|people|staff)\b", combined)
+            single_match = re.search(r"\b(\d{1,3}(?:,\d{3})+|\d+)\+?\s*(?:employees|people|staff)\b", combined)
             if single_match:
-                count = int(single_match.group(1))
+                count = int(single_match.group(1).replace(",", ""))
                 if count <= 200:
                     company_size = f"1-{count}" if count > 1 else "1"
                     priority = "HIGH"
@@ -496,11 +616,12 @@ class QualityFilter:
                     return {
                         "qualified": False,
                         "reason": f"Exceeds 200 employees ({count}+)",
+                        "candidate_type": "LARGE_ENTERPRISE",
                         "company_size": ">200",
                         "priority": "DEPRIORITIZED"
                     }
 
-        # 4. Positive startup / SMB signals boost priority
+        # 5. Positive startup / SMB signals boost priority to HIGH
         startup_signals = [
             "startup", "seed round", "series a", "series b", "early stage",
             "growth stage", "bootstrapped", "founded in 20", "incubated",
@@ -515,10 +636,12 @@ class QualityFilter:
         return {
             "qualified": True,
             "reason": "Passed pre-crawl qualification",
+            "candidate_type": "COMPANY",
             "company_size": company_size,
             "priority": priority
         }
 
 
 quality_filter = QualityFilter()
+resolve_subdomain_and_root = quality_filter.resolve_subdomain_and_root
 
