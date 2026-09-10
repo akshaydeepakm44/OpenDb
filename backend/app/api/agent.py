@@ -417,7 +417,17 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
 
     if queue_depth == 0:
         try:
-            db_queued = db.query(CrawlActivityLog).filter(CrawlActivityLog.status == "QUEUED").count()
+            from datetime import timedelta
+            recent_threshold = utc_now() - timedelta(seconds=60)
+            db_queued = db.query(CrawlActivityLog).filter(
+                or_(
+                    CrawlActivityLog.status == "QUEUED",
+                    and_(
+                        CrawlActivityLog.stage.in_(["CRAWL", "SEARCH"]),
+                        CrawlActivityLog.timestamp >= recent_threshold
+                    )
+                )
+            ).count()
             db_pending_jobs = db.query(CrawlJob).filter(CrawlJob.status.in_(["pending", "running"])).count()
             queue_depth = db_queued + db_pending_jobs
         except Exception:
@@ -855,7 +865,7 @@ def get_crawled_documents(
             "country": doc_country,
             "lead_quality_score": initial_score,
             "quality_score": initial_score,
-            "status": "Verified" if linked else "Raw Ingested",
+            "status": "Verified" if (linked and (linked.status in ["Verified", "Active"] or (getattr(linked, "confidence", None) and float(linked.confidence) >= 0.60))) else ("Discovered" if linked else "Raw Ingested"),
             "verified_entity_id": linked.id if linked else None,
             "crawled_at": created_time.isoformat() if (created_time and hasattr(created_time, "isoformat")) else None,
         })
@@ -1093,7 +1103,7 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         "content_type": doc.content_type or "text/html",
         "raw_path": doc.raw_path or f"local://raw/pages/{doc.content_hash or 'ingested'}.html",
         "retrieved_at": doc.retrieved_at.isoformat() if doc.retrieved_at else None,
-        "status": "Verified" if linked else "Raw Ingested",
+        "status": "Verified" if (linked and (linked.status in ["Verified", "Active"] or (getattr(linked, "confidence", None) and float(linked.confidence) >= 0.60))) else ("Discovered" if linked else "Raw Ingested"),
         "verified_entity_id": linked.id if linked else None,
         "industry": (linked.entity_type if linked else None) or dom_data.get("industry") or "Unknown",
         "country": (linked.country if linked else None) or dom_data.get("country") or "Global",

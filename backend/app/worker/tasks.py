@@ -94,19 +94,18 @@ def _has_active_celery_worker() -> bool:
 def _safe_dispatch(task_func, **kwargs):
     """
     Safely dispatch task.
-    Attempts Celery enqueueing if a worker process is active.
-    Otherwise dispatches to background daemon thread so discovery proceeds immediately without Redis delay.
+    Attempts direct Celery enqueueing to the Redis queue.
+    If Redis or Celery enqueueing fails, falls back to a background daemon thread.
     """
-    dispatched_to_celery = False
-    if _has_active_celery_worker():
-        try:
-            task_func.apply_async(kwargs=kwargs, queue="celery")
-            dispatched_to_celery = True
-            logger.info(f"[Safe Dispatch] Enqueued task '{task_func.name}' to Redis Celery queue.")
-        except Exception as e:
-            logger.debug(f"[Safe Dispatch] Celery queue push skipped: {e}")
+    dispatched = False
+    try:
+        task_func.apply_async(kwargs=kwargs, queue="celery")
+        dispatched = True
+        logger.info(f"[Safe Dispatch] Enqueued task '{task_func.name}' to Redis Celery queue.")
+    except Exception as e:
+        logger.debug(f"[Safe Dispatch] Celery queue push unavailable ({e}), falling back to background thread.")
 
-    if not dispatched_to_celery:
+    if not dispatched:
         def _run_bg():
             try:
                 task_func(**kwargs)
