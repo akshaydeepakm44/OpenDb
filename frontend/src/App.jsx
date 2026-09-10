@@ -239,9 +239,10 @@ export default function App() {
       return;
     }
 
-    // Instant optimistic pre-population from current cards state for 0ms modal opening
-    const preExisting = (entitiesList || []).find(e => e.id === selectedEntityId) ||
-                        (crawledDocs || []).find(d => (d.verified_entity_id === selectedEntityId || d.id === selectedEntityId));
+    // Instant optimistic pre-population from current state for 0ms modal opening
+    const preExisting = (documentDetail && (documentDetail.verified_entity_id === selectedEntityId || documentDetail.id === selectedEntityId)) ? documentDetail :
+                        ((entitiesList || []).find(e => e.id === selectedEntityId) ||
+                        (crawledDocs || []).find(d => (d.verified_entity_id === selectedEntityId || d.id === selectedEntityId)));
     if (preExisting) {
       setEntityDetail({
         id: selectedEntityId,
@@ -249,8 +250,8 @@ export default function App() {
         domain: preExisting.domain,
         official_website: preExisting.official_website || preExisting.url || `https://${preExisting.domain}`,
         logo_url: preExisting.logo_url || `https://www.google.com/s2/favicons?domain=${preExisting.domain}&sz=128`,
-        headquarters: preExisting.headquarters || 'Loading details...',
-        industry: preExisting.industry || 'Software & SaaS',
+        headquarters: preExisting.headquarters || 'Not Specified',
+        industry: preExisting.industry || 'Commercial Web',
         company_size: preExisting.company_tier || preExisting.company_size || 'Growth SMBs (20-100)',
         company_tier: preExisting.company_tier || 'Growth SMBs (20-100)',
         revenue_funding: preExisting.revenue_funding || 'Bootstrapped / Private',
@@ -270,9 +271,14 @@ export default function App() {
     }
 
     fetch(`${API_BASE}/agent/entities/${selectedEntityId}`)
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
       .then(data => {
-        setEntityDetail(data);
+        if (data && !data.detail) {
+          setEntityDetail(data);
+        }
         setLoadingDetail(false);
       })
       .catch(err => {
@@ -1510,7 +1516,7 @@ export default function App() {
                         <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#38bdf8', marginTop: '0.15rem' }}>
                           {Array.isArray(entityDetail.firmographics?.verified_emails) && entityDetail.firmographics.verified_emails[0]
                             ? entityDetail.firmographics.verified_emails[0]
-                            : `support@${entityDetail.domain}`}
+                            : (entityDetail.domain ? `contact@${entityDetail.domain}` : 'Not Specified')}
                         </div>
                       </div>
 

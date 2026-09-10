@@ -1639,6 +1639,23 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         if not record and not doc:
             # Secondary check by document ID on record
             record = db.query(UniversalRecord).filter(UniversalRecord.document_id == entity_id).first()
+            if record:
+                doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.id == record.document_id).first()
+
+        if not record and not doc:
+            # Domain or partial URL match lookup
+            clean_lookup = entity_id.replace("www.", "").strip()
+            doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.url.ilike(f"%{clean_lookup}%")).first()
+            if doc:
+                record = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+            if not record:
+                record = db.query(UniversalRecord).filter(UniversalRecord.url.ilike(f"%{clean_lookup}%")).first()
+                if record and not doc:
+                    doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.id == record.document_id).first()
+
+        if record and not doc and getattr(record, "document_id", None):
+            doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.id == record.document_id).first()
+
         t_db = time.time()
         logger.info(f"[PERF] Cache check: {(t_cache-t0)*1000:.1f}ms | DB lookup: {(t_db-t_cache)*1000:.1f}ms")
 
@@ -1661,6 +1678,12 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
 
         doc_id_ref = doc.id if doc else getattr(record, "document_id", None)
         dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == record.id).first() if (record and getattr(record, "id", None)) else None
+        if not dom_rec and doc and doc.url:
+            clean_net = urlparse(doc.url).netloc.replace("www.", "").lower()
+            sim_univ = db.query(UniversalRecord).filter(UniversalRecord.url.ilike(f"%{clean_net}%")).first()
+            if sim_univ:
+                dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == sim_univ.id).first()
+
         facts = db.query(ExtractedFact).filter(ExtractedFact.document_id == doc_id_ref).all() if doc_id_ref else []
         evidence_items = db.query(Evidence).filter(Evidence.document_id == doc_id_ref).all() if doc_id_ref else []
 
