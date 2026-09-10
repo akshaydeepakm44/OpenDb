@@ -663,6 +663,14 @@ def crawl_entity_task(
                 d_makers = key_people_extractor.extract_from_text_and_html(
                     enriched_text, item.html_content or "", entity_name, domain_key
                 )
+            if not d_makers:
+                _safe_dispatch(
+                    search_company_people_task,
+                    company_name=entity_name,
+                    domain=domain,
+                    official_domain=domain_key,
+                    batch_id=batch_id
+                )
             MasterVaultService.persist_master_lead(
                 db=db,
                 domain=domain_key,
@@ -892,6 +900,13 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
                     summary=record.description or f"{record.canonical_name} corporate profile.",
                     decision_makers=dom_data.get("key_people") or dom_data.get("leadership")
                 )
+                if not (dom_data.get("key_people") or dom_data.get("leadership")):
+                    _safe_dispatch(
+                        search_company_people_task,
+                        company_name=record.canonical_name,
+                        domain=record.domain.name if (record.domain and hasattr(record.domain, "name")) else "Technology",
+                        official_domain=domain_key
+                    )
             except Exception as vault_err:
                 logger.warning(f"[Worker C] Vault sync warning: {vault_err}")
 

@@ -104,6 +104,25 @@ class RealtimeEnricher:
         # 3. Real Decision Makers Extraction
         decision_makers = self.extract_real_decision_makers(combined_text, combined_html, c_name, clean_domain)
 
+        # 3b. When no decision makers found in HTML, search via SearXNG for real LinkedIn profiles
+        if not decision_makers:
+            try:
+                from app.agent.key_people_discovery_agent import key_people_agent
+                from app.crawler.searxng_service import searxng_service
+                from app.extraction.key_people_extractor import key_people_extractor
+                queries = key_people_agent.generate_queries(company_name=c_name, official_domain=clean_domain)
+                for q_obj in queries[:3]:
+                    res_items, _, _ = await searxng_service.search_with_meta(query=q_obj["query"], max_results=4)
+                    rel_items = key_people_agent.filter_relevant_results(res_items, official_domain=clean_domain, company_name=c_name)
+                    found_people = key_people_extractor.extract_from_linkedin_search_snippets(rel_items, c_name)
+                    for fp in found_people:
+                        if not any(d.get("name", "").lower() == fp["name"].lower() for d in decision_makers):
+                            decision_makers.append(fp)
+                    if len(decision_makers) >= 2:
+                        break
+            except Exception as se_err:
+                logger.debug(f"[RealtimeEnricher] SearXNG key people fallback notice: {se_err}")
+
         # 4. Real Company LinkedIn Profile Extraction
         from app.extraction.key_people_extractor import key_people_extractor
         company_linkedin_url = key_people_extractor.extract_company_linkedin_url(combined_html, combined_text, c_name, clean_domain)

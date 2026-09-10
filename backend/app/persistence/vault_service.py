@@ -281,7 +281,12 @@ class MasterVaultService:
             "verified_emails": lead.verified_emails,
             "summary": lead.summary,
             "people": [
-                {"name": p.full_name, "title": p.title, "linkedin_search_url": p.linkedin_search_url}
+                {
+                    "name": p.full_name,
+                    "title": p.title,
+                    "linkedin_url": getattr(p, "linkedin_url", None) or p.linkedin_search_url,
+                    "linkedin_search_url": getattr(p, "linkedin_url", None) or p.linkedin_search_url
+                }
                 for p in people
             ],
             "subpages": [

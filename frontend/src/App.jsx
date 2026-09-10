@@ -16,13 +16,14 @@ const getCleanBrandName = (name) => {
 };
 
 const isLinkedInProfile = (person) => {
-  const url = person?.linkedin_url || '';
+  const url = person?.linkedin_url || person?.linkedin_search_url || person?.source_url || '';
   return url.includes('linkedin.com/in/') && !url.includes('/search/') && !url.includes('/jobs/');
 };
 
 const getLinkedInProfileOrSearch = (person, companyName) => {
-  if (isLinkedInProfile(person)) {
-    return person.linkedin_url;
+  const url = person?.linkedin_url || person?.linkedin_search_url || person?.source_url || '';
+  if (url.includes('linkedin.com/in/') && !url.includes('/search/') && !url.includes('/jobs/')) {
+    return url;
   }
   const cleanComp = getCleanBrandName(companyName);
   const q = `${person?.name || ''} ${cleanComp}`.trim();
@@ -251,13 +252,13 @@ export default function App() {
         official_website: preExisting.official_website || preExisting.url || `https://${preExisting.domain}`,
         logo_url: preExisting.logo_url || `https://www.google.com/s2/favicons?domain=${preExisting.domain}&sz=128`,
         headquarters: preExisting.headquarters || 'Not Specified',
-        industry: preExisting.industry || 'Commercial Web',
-        company_size: preExisting.company_tier || preExisting.company_size || 'Growth SMBs (20-100)',
-        company_tier: preExisting.company_tier || 'Growth SMBs (20-100)',
-        revenue_funding: preExisting.revenue_funding || 'Bootstrapped / Private',
+        industry: (preExisting.industry && preExisting.industry !== 'Commercial Web' && preExisting.industry !== 'Commercial Web & Digital Enterprise') ? preExisting.industry : 'Unknown',
+        company_size: preExisting.company_tier || preExisting.company_size || 'Unknown',
+        company_tier: preExisting.company_tier || 'Unknown',
+        revenue_funding: preExisting.revenue_funding || 'Unknown',
         verified_emails: preExisting.verified_emails || [],
-        summary: preExisting.business_overview || preExisting.summary || 'Synthesizing comprehensive intelligence dossier...',
-        technology_stack: preExisting.technology_stack || ['Web Infrastructure'],
+        summary: preExisting.business_overview || preExisting.summary || 'Intelligence dossier synthesis pending.',
+        technology_stack: preExisting.technology_stack || [],
         decision_makers: preExisting.decision_makers || [],
         crawled_subpages: preExisting.crawled_subpages || [],
         firmographics: preExisting.firmographics || {},
@@ -1512,7 +1513,7 @@ export default function App() {
                       <div>
                         <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>INDUSTRY</div>
                         <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#ffffff', marginTop: '0.15rem' }}>
-                          {entityDetail.firmographics?.industry || 'Commercial Web'}
+                          {(entityDetail.firmographics?.industry && entityDetail.firmographics.industry !== 'Commercial Web' && entityDetail.firmographics.industry !== 'Commercial Web & Digital Enterprise') ? entityDetail.firmographics.industry : (entityDetail.industry && entityDetail.industry !== 'Commercial Web' ? entityDetail.industry : 'Unknown')}
                         </div>
                       </div>
 

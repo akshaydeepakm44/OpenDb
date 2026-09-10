@@ -1545,10 +1545,12 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             existing_names = {p.get("name", "").lower() for p in v_people}
             for kp in kp_cands:
                 if kp.person_name.lower() not in existing_names:
+                    p_link = kp.source_url if kp.source_url and "linkedin.com/in/" in kp.source_url else None
                     v_people.append({
                         "name": kp.person_name,
                         "title": kp.role,
-                        "linkedin_search_url": kp.source_url
+                        "linkedin_url": p_link or kp.source_url,
+                        "linkedin_search_url": p_link or kp.source_url
                     })
 
             # Sanitize v_hq if it contains base64/css hash noise
@@ -1600,7 +1602,12 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 "summary_generated_at": datetime.now().isoformat(),
                 "technology_stack": vault_lead.get("technology_stack") or ["Web Infrastructure"],
                 "decision_makers": [
-                    {"name": p.get("name", "Executive"), "title": p.get("title", "Leadership"), "linkedin_search_url": p.get("linkedin_search_url")}
+                    {
+                        "name": p.get("name", "Executive"),
+                        "title": p.get("title", "Leadership"),
+                        "linkedin_url": p.get("linkedin_url") or p.get("linkedin_search_url"),
+                        "linkedin_search_url": p.get("linkedin_url") or p.get("linkedin_search_url")
+                    }
                     for p in v_people
                 ],
                 "crawled_subpages": [
