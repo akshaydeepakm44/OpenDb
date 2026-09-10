@@ -3,6 +3,36 @@ import './index.css';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
+const getCleanBrandName = (name) => {
+  if (!name) return 'Company';
+  const parts = name.split(/[-–—|:•]/).map(s => s.trim()).filter(Boolean);
+  if (parts.length > 0) {
+    const first = parts[0];
+    if (first.split(/\s+/).length <= 4) return first;
+    return first.split(/\s+/).slice(0, 2).join(' ');
+  }
+  const words = name.trim().split(/\s+/);
+  return words.length > 3 ? words.slice(0, 2).join(' ') : name.trim();
+};
+
+const getLinkedInProfileOrSearch = (person, companyName) => {
+  if (person?.linkedin_url && person.linkedin_url.includes('linkedin.com/in/')) {
+    return person.linkedin_url;
+  }
+  const cleanComp = getCleanBrandName(companyName);
+  const q = `${person?.name || ''} ${cleanComp}`.trim();
+  return `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(q)}`;
+};
+
+const getLinkedInLabel = (person) => {
+  const url = person?.linkedin_url || '';
+  if (url.includes('linkedin.com/in/')) {
+    return 'View Profile ↗';
+  }
+  return 'Search on LinkedIn ↗';
+};
+
+
 export default function App() {
   // Agent & Operations State
   const [agentStatus, setAgentStatus] = useState(null);
@@ -919,10 +949,30 @@ export default function App() {
                         <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {ent.canonical_name}
                         </div>
-                        <a href={ent.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                          style={{ fontSize: '0.72rem', color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                          🌐 {domain} ↗
-                        </a>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.15rem' }}>
+                          <a href={ent.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                            style={{ fontSize: '0.72rem', color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                            🌐 {domain} ↗
+                          </a>
+                          {ent.linkedin_url && (
+                            <a href={ent.linkedin_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                              style={{
+                                fontSize: '0.66rem',
+                                color: '#60a5fa',
+                                background: 'rgba(37, 99, 235, 0.15)',
+                                border: '1px solid rgba(37, 99, 235, 0.4)',
+                                padding: '0.1rem 0.45rem',
+                                borderRadius: '0.25rem',
+                                textDecoration: 'none',
+                                fontWeight: 700,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.2rem'
+                              }}>
+                              👔 Company LinkedIn ↗
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -971,7 +1021,7 @@ export default function App() {
                               <span style={{ color: '#64748b', fontSize: '0.66rem' }}>• {dm.title || 'Leadership'}</span>
                             </div>
                             <a
-                              href={dm.linkedin_url || dm.linkedin_search_url || `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(dm.name + ' ' + (ent.canonical_name || ''))}`}
+                              href={getLinkedInProfileOrSearch(dm, ent.canonical_name)}
                               target="_blank"
                               rel="noreferrer"
                               onClick={(e) => e.stopPropagation()}
@@ -989,7 +1039,7 @@ export default function App() {
                                 gap: '0.2rem'
                               }}
                             >
-                              LinkedIn ↗
+                              {getLinkedInLabel(dm)}
                             </a>
                           </div>
                         ))}
@@ -1239,12 +1289,36 @@ export default function App() {
                       <h2 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 900, color: '#ffffff', letterSpacing: '-0.02em' }}>
                         {entityDetail.canonical_name}
                       </h2>
-                      <div style={{ fontSize: '0.85rem', color: '#38bdf8', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <div style={{ fontSize: '0.85rem', color: '#38bdf8', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                         <span>{entityDetail.domain}</span>
                         <span>•</span>
                         <a href={entityDetail.official_website} target="_blank" rel="noreferrer" style={{ color: '#38bdf8', textDecoration: 'none' }}>
                           {entityDetail.official_website} ↗
                         </a>
+                        {(entityDetail.linkedin_url || entityDetail.company_linkedin_url) && (
+                          <>
+                            <span>•</span>
+                            <a
+                              href={entityDetail.linkedin_url || entityDetail.company_linkedin_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                color: '#60a5fa',
+                                textDecoration: 'none',
+                                background: 'rgba(37, 99, 235, 0.18)',
+                                padding: '0.15rem 0.55rem',
+                                borderRadius: '0.35rem',
+                                border: '1px solid rgba(37, 99, 235, 0.4)',
+                                fontWeight: 700,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.25rem'
+                              }}
+                            >
+                              👔 Company LinkedIn ↗
+                            </a>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1308,27 +1382,24 @@ export default function App() {
                                   Contact Person • Economic Buyer
                                 </div>
                               </div>
-                              <a href={p.linkedin_url || p.linkedin_search_url || `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(p.name + ' ' + (entityDetail.canonical_name || ''))}`} target="_blank" rel="noreferrer"
+                              <a href={getLinkedInProfileOrSearch(p, entityDetail.canonical_name)} target="_blank" rel="noreferrer"
                                 style={{ padding: '0.35rem 0.75rem', background: '#1e293b', border: '1px solid #374151', color: '#9ca3af', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}>
-                                LinkedIn ↗
+                                {getLinkedInLabel(p)}
                               </a>
                             </div>
                           ))}
                         </div>
                       ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                          <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.85rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <div>
-                              <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.92rem' }}>
-                                Executive Director <span style={{ color: '#22d3ee', fontWeight: 600 }}>(Director)</span>
-                              </div>
-                              <div style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: '0.2rem' }}>Contact Person • Economic Buyer</div>
-                            </div>
-                            <a href={`https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(entityDetail.canonical_name || 'Company')}`} target="_blank" rel="noreferrer"
-                              style={{ padding: '0.35rem 0.75rem', background: '#1e293b', border: '1px solid #374151', color: '#9ca3af', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}>
-                              Search LinkedIn ↗
-                            </a>
-                          </div>
+                        <div style={{ background: '#111827', border: '1px dashed #374151', borderRadius: '0.65rem', padding: '1.25rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>
+                          <div style={{ fontWeight: 600, color: '#cbd5e1' }}>No verified decision makers discovered on public profile registries yet.</div>
+                          <a
+                            href={`https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(getCleanBrandName(entityDetail.canonical_name) + ' people')}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ display: 'inline-block', marginTop: '0.6rem', padding: '0.35rem 0.85rem', background: '#1e293b', border: '1px solid #374151', color: '#38bdf8', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}
+                          >
+                            Search Company Leadership on LinkedIn ↗
+                          </a>
                         </div>
                       )}
                     </div>

@@ -67,7 +67,8 @@ class MasterVaultService:
         verified_emails: List[str] = None,
         summary: str = None,
         decision_makers: List[Dict[str, Any]] = None,
-        crawled_subpages: List[Dict[str, Any]] = None
+        crawled_subpages: List[Dict[str, Any]] = None,
+        company_linkedin_url: str = None
     ) -> GlobalLead:
         """
         Store full brand kit, logo assets, subpage Markdown DOMs, and SQLite WAL master lead.
@@ -87,7 +88,8 @@ class MasterVaultService:
             "revenue_funding": revenue_funding,
             "technology_stack": technology_stack or [],
             "verified_emails": verified_emails or [],
-            "summary": summary
+            "summary": summary,
+            "company_linkedin_url": company_linkedin_url
         }
         minio_brand_path = file_storage.save_brand_kit(clean_domain, brand_kit_payload)
 
@@ -122,7 +124,8 @@ class MasterVaultService:
                 company_size=company_size,
                 revenue_funding=revenue_funding,
                 verified_emails=verified_emails or [],
-                summary=summary
+                summary=summary,
+                linkedin_url=company_linkedin_url
             )
             db.add(lead)
         else:
@@ -138,6 +141,8 @@ class MasterVaultService:
             lead.revenue_funding = revenue_funding
             lead.verified_emails = verified_emails or []
             lead.summary = summary
+            if company_linkedin_url:
+                lead.linkedin_url = company_linkedin_url
 
         db.commit()
 
@@ -149,6 +154,9 @@ class MasterVaultService:
                     continue
                 role = person.get("title") or person.get("role") or "Executive / Key Person" if isinstance(person, dict) else "Executive"
                 p_id = md5_hash(f"{clean_domain}:{name}")
+                clean_comp = re.split(r'[\-–—|:•]', company_name)[0].strip() if company_name else "Company"
+                p_url = person.get("linkedin_url") if isinstance(person, dict) else None
+                real_profile_url = p_url if (p_url and "linkedin.com/in/" in p_url) else None
                 p_rec = db.query(GlobalLeadPerson).filter(GlobalLeadPerson.id == p_id).first()
                 if not p_rec:
                     p_rec = GlobalLeadPerson(
@@ -157,11 +165,14 @@ class MasterVaultService:
                         domain=clean_domain,
                         full_name=name,
                         title=role,
-                        linkedin_search_url=f"https://www.linkedin.com/search/results/all/?keywords={name}%20{company_name}"
+                        linkedin_search_url=None, # Never store search query as profile
+                        linkedin_url=real_profile_url
                     )
                     db.add(p_rec)
                 else:
                     p_rec.title = role
+                    if real_profile_url:
+                        p_rec.linkedin_url = real_profile_url
             db.commit()
 
         # 5. Save Subpages (global_lead_subpages)
@@ -189,12 +200,13 @@ class MasterVaultService:
             "quality_score": lead.quality_score,
             "headquarters": lead.headquarters,
             "industry": lead.industry,
-            "company_size": lead.company_size,
+            "company_size": lead.company_size or "UNKNOWN",
             "revenue_funding": lead.revenue_funding,
             "verified_emails": lead.verified_emails,
             "summary": lead.summary,
+            "company_linkedin_url": company_linkedin_url,
             "people": [
-                {"name": p.full_name, "title": p.title, "linkedin_search_url": p.linkedin_search_url}
+                {"name": p.full_name, "title": p.title, "linkedin_url": p.linkedin_url}
                 for p in db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id == lead_id).all()
             ],
             "subpages": [
@@ -206,7 +218,20 @@ class MasterVaultService:
         add_verified_domain_set(clean_domain)
         release_crawl_lock(clean_domain)
 
-        # 7. Update PostgreSQL Open Lake Record Status
+        # 7. Two-Stage Storage: Transactional Outbox Sync to PostgreSQL
+        try:
+            from app.persistence.outbox_sync_service import outbox_sync_service
+            outbox_sync_service.queue_for_postgres_sync(
+                db=db,
+                domain=clean_domain,
+                company_name=company_name,
+                payload=lead_dict
+            )
+            outbox_sync_service.process_outbox_queue(db=db, limit=5)
+        except Exception as outbox_err:
+            logger.warning(f"[OutboxSync] Non-fatal outbox notice for {clean_domain}: {outbox_err}")
+
+        # Update PostgreSQL Open Lake Record Status if present
         lake_rec = db.query(OpenLakeRecord).filter(OpenLakeRecord.domain == clean_domain).first()
         if lake_rec:
             lake_rec.enrichment_status = "enriched"

@@ -24,7 +24,8 @@ class KeyPeopleDiscoveryAgent:
     person search queries for SearXNG secondary search execution.
     """
 
-    MAX_QUERY_BUDGET = 13
+    MAX_QUERY_BUDGET = 5
+    EARLY_STOP_PEOPLE_COUNT = 3
 
     def sanitize_query(self, query: str) -> Optional[str]:
         """Validates query against safety guardrails."""
@@ -43,10 +44,11 @@ class KeyPeopleDiscoveryAgent:
         official_domain: Optional[str] = None,
         industry: Optional[str] = None,
         country: Optional[str] = None
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         """
-        Generates grouped queries up to MAX_QUERY_BUDGET (13 queries max).
-        Returns a list of dicts with keys: 'query', 'group', 'priority'.
+        Generates strictly prioritized queries up to MAX_QUERY_BUDGET (5 queries max).
+        Order: Founder -> CEO -> CTO -> Official Team/Leadership -> LinkedIn In-Profile.
+        Execution stops early when EARLY_STOP_PEOPLE_COUNT (3) verified people are found.
         """
         clean_company = re.sub(r'[^\w\s\-\.]', '', company_name).strip()
         if not clean_company:
@@ -56,41 +58,49 @@ class KeyPeopleDiscoveryAgent:
 
         queries = []
 
-        # ── Group D: Official Website Discovery (Highest Trust) ────────────────
+        # 1. Founder Discovery (Highest priority)
+        queries.append({
+            "query": f'"{clean_company}" founder site:linkedin.com/in',
+            "group": "FOUNDER_LINKEDIN",
+            "priority": 1
+        })
+
+        # 2. CEO Discovery
+        queries.append({
+            "query": f'"{clean_company}" CEO site:linkedin.com/in',
+            "group": "CEO_LINKEDIN",
+            "priority": 2
+        })
+
+        # 3. CTO Discovery
+        queries.append({
+            "query": f'"{clean_company}" CTO site:linkedin.com/in',
+            "group": "CTO_LINKEDIN",
+            "priority": 3
+        })
+
+        # 4. Official Website Leadership / Team (if domain available)
         if domain_str:
-            queries.extend([
-                {"query": f"site:{domain_str} founder", "group": "D_OFFICIAL", "priority": 1},
-                {"query": f"site:{domain_str} CEO", "group": "D_OFFICIAL", "priority": 1},
-                {"query": f"site:{domain_str} leadership", "group": "D_OFFICIAL", "priority": 1},
-            ])
+            queries.append({
+                "query": f'site:{domain_str} (founder OR CEO OR leadership OR team)',
+                "group": "OFFICIAL_DOMAIN_TEAM",
+                "priority": 4
+            })
+        else:
+            queries.append({
+                "query": f'"{clean_company}" leadership team site:linkedin.com/in',
+                "group": "LEADERSHIP_LINKEDIN",
+                "priority": 4
+            })
 
-        # ── Group A: Founder Discovery ─────────────────────────────────────────
-        queries.extend([
-            {"query": f'"{clean_company}" founder', "group": "A_FOUNDER", "priority": 2},
-            {"query": f'"{clean_company}" founders', "group": "A_FOUNDER", "priority": 2},
-            {"query": f'"{clean_company}" co-founder', "group": "A_FOUNDER", "priority": 2},
-        ])
+        # 5. General Founder / Executive query
+        queries.append({
+            "query": f'"{clean_company}" founder OR co-founder',
+            "group": "GENERAL_FOUNDER",
+            "priority": 5
+        })
 
-        # ── Group B: Executive Discovery ───────────────────────────────────────
-        queries.extend([
-            {"query": f'"{clean_company}" CEO', "group": "B_EXECUTIVE", "priority": 2},
-            {"query": f'"{clean_company}" CTO', "group": "B_EXECUTIVE", "priority": 2},
-            {"query": f'"{clean_company}" executive team', "group": "B_EXECUTIVE", "priority": 3},
-            {"query": f'"{clean_company}" leadership team', "group": "B_EXECUTIVE", "priority": 3},
-        ])
-
-        # ── Group C: LinkedIn Reference Discovery ──────────────────────────────
-        queries.extend([
-            {"query": f'"{clean_company}" CEO site:linkedin.com/in', "group": "C_LINKEDIN", "priority": 3},
-            {"query": f'"{clean_company}" founder site:linkedin.com/in', "group": "C_LINKEDIN", "priority": 3},
-        ])
-
-        # ── Group E: External Evidence ─────────────────────────────────────────
-        queries.extend([
-            {"query": f'"{clean_company}" executive director', "group": "E_EXTERNAL", "priority": 4},
-        ])
-
-        # Sanitize and truncate to MAX_QUERY_BUDGET
+        # Sanitize and truncate to MAX_QUERY_BUDGET (5)
         validated_queries = []
         seen = set()
 
@@ -109,3 +119,4 @@ class KeyPeopleDiscoveryAgent:
         return validated_queries
 
 key_people_agent = KeyPeopleDiscoveryAgent()
+

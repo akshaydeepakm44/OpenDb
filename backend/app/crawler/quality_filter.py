@@ -18,12 +18,42 @@ BLACKLISTED_DOMAINS = {
     "tiktok.com", "youtube.com", "pinterest.com", "tumblr.com", "linkedin.com",
     "quora.com", "stackoverflow.com", "stackexchange.com", "lowyat.net",
 
-    # News & Media portals (Not corporate B2B lead targets)
+    # App Stores & Download Directories (Not corporate targets)
+    "play.google.com", "apps.apple.com", "apkpure.com", "apkcombo.com",
+    "apkmirror.com", "softonic.com", "download.cnet.com", "uptodown.com", "filehippo.com",
+
+    # Entertainment, Sports betting, Movie streaming, Math puzzles
+    "multimovies.org", "multimovies.com", "123movies.net", "projectreal.gg",
+    "mathsisfun.com", "unicourt.com", "dratings.com", "picksandparlays.net",
+
+    # Developer Portals & Course Subdomains
+    "developer.servicenow.com", "developers.meta.com", "developers.openai.com",
+    "cloud.google.com", "skills.google", "learn.microsoft.com", "roadmap.sh", "ml-ops.org",
+
+    # News, Media, Journalism & Financial Broadcast Portals (Not corporate B2B lead targets)
     "cnn.com", "businessinsider.com", "bloomberg.com", "reuters.com", "nytimes.com",
     "wsj.com", "forbes.com", "fortune.com", "techcrunch.com", "wired.com", "theverge.com",
     "cnet.com", "engadget.com", "news.ycombinator.com", "yahoo.com", "msn.com",
     "foxnews.com", "cnbc.com", "bbc.com", "indianexpress.com", "timesofindia.com",
+    "timesofindia.indiatimes.com", "thehindubusinessline.com", "indiatimes.com",
     "businesstoday.in", "business-standard.com", "builtin.com", "medium.com", "substack.com",
+    "financialexpress.com", "zeebiz.com", "moneycontrol.com", "ndtv.com", "livemint.com",
+    "thehindu.com", "news18.com", "indiatoday.in", "economictimes.indiatimes.com",
+    "dnaindia.com", "deccanherald.com", "tribuneindia.com", "hindustantimes.com",
+    "firstpost.com", "theprint.in", "thewire.in", "scroll.in", "dailymail.co.uk",
+    "theguardian.com", "telegraph.co.uk", "independent.co.uk", "aljazeera.com",
+    "usatoday.com", "npr.org", "politico.com", "axios.com", "huffpost.com",
+    "buzzfeed.com", "vox.com", "slate.com", "salon.com", "thedailybeast.com",
+    "rightnews.news", "inshorts.com", "newsweek.com", "time.com", "theatlantic.com",
+
+    # Sports clubs, leagues, streaming & betting
+    "realmadrid.com", "fcbarcelona.com", "fifa.com", "uefa.com", "nba.com",
+    "nfl.com", "mlb.com", "espn.com", "cricbuzz.com", "espncricinfo.com",
+    "goal.com", "livescore.com", "flashscore.com",
+
+    # Consumer retail, second-hand marketplaces, tutoring
+    "therealreal.com", "poshmark.com", "thredup.com", "pw.live", "allen.ac.in",
+    "unacademy.com", "vedantu.com", "byjus.com",
 
     # Educational / Academic / Knowledge Repositories
     "coursera.org", "udemy.com", "edx.org", "khanacademy.org", "wikipedia.org",
@@ -67,6 +97,10 @@ BLACKLISTED_PATH_PATTERNS = [
     r"/page/\d+", r"/search\?", r"\?q=", r"/feed/", r"/rss",
     r"/author/", r"/user/", r"#comment", r"/wp-content/",
     r"/articles/", r"/article/", r"/topic/", r"/topics/", r"/definition/",
+    r"/blog/", r"/blogs/", r"/post/", r"/posts/", r"/news/",
+    r"/course/", r"/courses/", r"/course_templates/",
+    r"/download/", r"/downloads/", r"/store/apps/", r"/apk/",
+    r"/tutorial/", r"/tutorials/", r"/lesson/", r"/lessons/",
     r"\.pdf$", r"\.xml$", r"\.json$", r"\.csv$",
 ]
 
@@ -125,9 +159,33 @@ class QualityFilter:
         parsed = urlparse(url)
         domain = parsed.netloc.lower().lstrip("www.")
 
+        # Reject private / link-local / metadata IP addresses (SSRF prevention)
+        import ipaddress
+        host = parsed.hostname or domain.split(":")[0]
+        try:
+            ip = ipaddress.ip_address(host)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or str(ip) == "169.254.169.254":
+                return False, f"Private / Link-local / Metadata IP blocked: {host}"
+        except ValueError:
+            pass
+        if host in ["localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254"]:
+            return False, f"Restricted host blocked: {host}"
+
         # Reject TLDs like .edu, .gov (Academic / Municipal, non-commercial B2B)
         if domain.endswith(".edu") or domain.endswith(".gov") or ".gov." in domain or ".edu." in domain:
             return False, f"Non-commercial domain TLD (.edu / .gov): {domain}"
+
+        # Reject non-commercial, blog, news, media, and broadcast TLDs
+        news_media_tlds = (
+            ".news", ".blog", ".press", ".media", ".report", ".review",
+            ".live", ".today", ".buzz", ".info", ".wiki", ".top", ".xyz", ".club"
+        )
+        if any(domain.endswith(tld) or f"{tld}." in domain for tld in news_media_tlds):
+            return False, f"News/Media/Blog TLD: {domain}"
+
+        # Reject domains containing explicit news, media, or broadcast indicators
+        if re.search(r"(?:^|[.\-])(news|daily|times|express|gazette|tribune|journal|herald|chronicle|sports|casino|lottery|recipe|recipes|cricket|football|betting)(?:[.\-]|$)", domain):
+            return False, f"News/Media/Sports domain pattern: {domain}"
 
         # Safety Guardrail Pre-Check 1: Database Blocklist Lookup
         if db:
@@ -146,9 +204,33 @@ class QualityFilter:
             if domain == blacklisted or domain.endswith(f".{blacklisted}"):
                 return False, f"Blacklisted domain: {domain}"
 
+        # Reject documentation, developer, help, training, and application/portal subdomains
+        app_subdomains = [
+            "developer.", "developers.", "docs.", "doc.", "support.", "help.",
+            "learn.", "skills.", "api.", "download.", "downloads.", "play.", "store.", "training.",
+            "app.", "apps.", "chat.", "login.", "signin.", "auth.", "portal.", "dashboard.",
+            "console.", "admin.", "mail.", "status.", "billing.", "account.", "accounts.",
+            "kite.", "trade.", "web.", "my.", "tracking.", "service.", "services.",
+            "forum.", "community.", "discussions.", "news.", "blog.", "blogs.", "shop.", "books."
+        ]
+        if any(domain.startswith(p) for p in app_subdomains):
+            return False, f"Developer/Doc/App subdomain: {domain}"
+
         # Check blacklisted path patterns
         path = parsed.path.lower()
-        for pattern in BLACKLISTED_PATH_PATTERNS:
+        app_paths = [
+            r"^/chat(?:/|$|\?)", r"^/login(?:/|$|\?)", r"^/signin(?:/|$|\?)",
+            r"^/signup(?:/|$|\?)", r"^/register(?:/|$|\?)", r"^/discussions(?:/|$|\?)",
+            r"/crime-news/", r"/tracking-support", r"/web/services",
+            r"/messerrecht", r"/rechtliche-", r"/frage-und-antwort/",
+            r"/continuous-", r"/our-brand/", r"/brand/", r"/brands/",
+            r"/latest-", r"/market/", r"/markets/", r"/stocks/", r"/stock/",
+            r"/opinion/", r"/editorial/", r"/read/", r"/insights/", r"/whitepaper/",
+            r"/whitepapers/", r"/case-study/", r"/case-studies/", r"/events/",
+            r"/webinar/", r"/webinars/", r"/press-release/", r"/press-releases/",
+            r"/media-room/", r"/episodes/", r"/podcast/", r"/podcasts/"
+        ]
+        for pattern in BLACKLISTED_PATH_PATTERNS + app_paths:
             if re.search(pattern, url.lower()):
                 return False, f"Blacklisted URL pattern: {pattern}"
 
@@ -222,12 +304,40 @@ class QualityFilter:
         if "?" in canonical_name or name_strip.endswith("?"):
             return False, f"Article/Question title rejected: '{canonical_name}'"
 
-        # Reject bot challenge / error / report pages / undefined
+        # Reject listicles (e.g. "20 Profitable SaaS & Micro-SaaS Ideas", "10 Best CRM Tools")
+        if re.search(r"\b\d+\s+(?:best|top|profitable|popular|free|ways|ideas|tools|apps|saas|plugins|alternatives)\b", name_lower):
+            return False, f"Listicle article rejected: '{canonical_name}'"
+
+        # Reject non-company app descriptions, tools, portals, legal statutes, and listicles
         if any(term in name_lower for term in [
-            "attention required!", "cloudflare", "verify you are human", "access denied",
-            "market size", "market report", "market research", "undefined", "support@undefined"
+            "apps on google play", "download apk", "apk for android", "watch free",
+            "predictions and futures", "college football", "getting started |",
+            "security checkpoint", "just a moment...", "checking your browser",
+            "human verification", "learning management system", "roadmap to",
+            "watch movies", "cartoons online", "login to", "sign in to", "wrongfully convicted",
+            "leaderboard", "rankings for", "download for", "where's my package", "where is my package",
+            "tracking support", "gesetzgebung", "waffengesetz", "vorabinformation",
+            "ai chat -", "ai chat |", "ai leaderboard", "iso download", "digital seva portal",
+            "books online", "google books", "paragraf", "messerrecht"
         ]):
-            return False, f"Non-entity / Challenge / Report / Undefined title rejected: '{canonical_name}'"
+            return False, f"Non-company application/article title rejected: '{canonical_name}'"
+
+        # Reject long phrase/sentence titles (> 50 chars or > 6 words)
+        words = name_strip.split()
+        if len(words) > 6 or len(name_strip) > 50:
+            return False, f"Entity name is a sentence/phrase ({len(words)} words, {len(name_strip)} chars): '{canonical_name}'"
+
+        # Reject news, broadcast, stock ticker, retail product titles
+        if any(term in name_lower for term in [
+            "business news", "stock market", "sensex", "nifty", "bse/nse",
+            "live updates", "latest updates", "breaking news", "live news",
+            "official website", "official site", "buy & sell", "designer clothes",
+            "healthy fruit", "fruit juices", "power juices", "continuous integration",
+            "continuous delivery", "real madrid", "fc barcelona", "right news",
+            "financial express", "zee business", "moneycontrol", "live score",
+            "test series", "real test", "news today", "latest news"
+        ]):
+            return False, f"News/Media/Non-company title rejected: '{canonical_name}'"
 
         # Reject informational article prefixes & action titles
         article_prefixes = (
@@ -282,5 +392,108 @@ class QualityFilter:
         filled = sum(1 for f in important_fields if domain_data.get(f))
         return filled / len(important_fields)
 
+    def qualify_company_candidate(
+        self,
+        title: str,
+        snippet: str,
+        url: str
+    ) -> dict:
+        """
+        Pre-crawl company qualification engine.
+        Filters out non-companies and mega-enterprises before expensive crawling.
+        
+        Rules:
+        - URL or domain blacklisted / directory / non-company -> REJECT
+        - Confirmed >200 employees or Fortune 500 / mega-enterprise -> REJECT / DEPRIORITIZE
+        - Confirmed 1-200 employees -> ALLOW (priority: HIGH)
+        - UNKNOWN size -> ALLOW (priority: NORMAL) — Do NOT filter out unknown sizes!
+        """
+        # 1. URL-level quality check
+        keep_url, reason_url = self.filter_url(url)
+        if not keep_url:
+            return {
+                "qualified": False,
+                "reason": reason_url,
+                "company_size": "UNKNOWN",
+                "priority": "REJECTED"
+            }
+
+        combined = f"{title or ''} {snippet or ''}".lower()
+
+        # 2. Check for mega-enterprises / Fortune 500 / thousands of employees
+        enterprise_indicators = [
+            "fortune 500", "fortune 100", "nasdaq:", "nyse:",
+            "multinational conglomerate", "10,000+ employees", "5,000+ employees",
+            "over 1,000 employees", "1,000+ employees", "over 500 employees",
+            "500+ employees", "20,000+ employees", "50,000+ employees",
+            "tens of thousands of employees", "publicly traded conglomerate"
+        ]
+        for ind in enterprise_indicators:
+            if ind in combined:
+                return {
+                    "qualified": False,
+                    "reason": f"Enterprise outside target (>200 employees): matched '{ind}'",
+                    "company_size": ">200",
+                    "priority": "DEPRIORITIZED"
+                }
+
+        # 3. Check for specific employee range patterns in snippet
+        company_size = "UNKNOWN"
+        priority = "NORMAL"
+
+        # Pattern: e.g. "1-10 employees", "11-50 employees", "51-200 employees", "10 to 50 employees"
+        range_match = re.search(r"\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:employees|people|staff|team members)\b", combined)
+        if range_match:
+            low = int(range_match.group(1))
+            high = int(range_match.group(2))
+            if high <= 200:
+                company_size = f"{low}-{high}"
+                priority = "HIGH"
+            elif low > 200:
+                return {
+                    "qualified": False,
+                    "reason": f"Exceeds 200 employees ({low}-{high})",
+                    "company_size": f"{low}-{high}",
+                    "priority": "DEPRIORITIZED"
+                }
+            else:
+                # e.g. 100-300
+                company_size = f"{low}-{high}"
+                priority = "NORMAL"
+        else:
+            single_match = re.search(r"\b(\d{1,6})\+?\s*(?:employees|people|staff)\b", combined)
+            if single_match:
+                count = int(single_match.group(1))
+                if count <= 200:
+                    company_size = f"1-{count}" if count > 1 else "1"
+                    priority = "HIGH"
+                elif count > 200:
+                    return {
+                        "qualified": False,
+                        "reason": f"Exceeds 200 employees ({count}+)",
+                        "company_size": ">200",
+                        "priority": "DEPRIORITIZED"
+                    }
+
+        # 4. Positive startup / SMB signals boost priority
+        startup_signals = [
+            "startup", "seed round", "series a", "series b", "early stage",
+            "growth stage", "bootstrapped", "founded in 20", "incubated",
+            "y combinator", "techstars", "smb", "small business"
+        ]
+        if any(s in combined for s in startup_signals):
+            if priority == "NORMAL":
+                priority = "HIGH"
+            if company_size == "UNKNOWN":
+                company_size = "UNKNOWN (Startup Indicator)"
+
+        return {
+            "qualified": True,
+            "reason": "Passed pre-crawl qualification",
+            "company_size": company_size,
+            "priority": priority
+        }
+
 
 quality_filter = QualityFilter()
+

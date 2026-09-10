@@ -104,9 +104,13 @@ class RealtimeEnricher:
         # 3. Real Decision Makers Extraction
         decision_makers = self.extract_real_decision_makers(combined_text, combined_html, c_name, clean_domain)
 
+        # 4. Real Company LinkedIn Profile Extraction
+        from app.extraction.key_people_extractor import key_people_extractor
+        company_linkedin_url = key_people_extractor.extract_company_linkedin_url(combined_html, combined_text, c_name, clean_domain)
+
         logger.info(
             f"✅ [Crawl4AI Realtime] {clean_domain} -> "
-            f"Emails: {len(emails)} | HQ: {headquarters or 'Not Found'} | Decision Makers: {len(decision_makers)}"
+            f"Emails: {len(emails)} | HQ: {headquarters or 'Not Found'} | Decision Makers: {len(decision_makers)} | Company LinkedIn: {company_linkedin_url or 'Not Found'}"
         )
 
         return {
@@ -114,7 +118,8 @@ class RealtimeEnricher:
             "verified_emails": emails,
             "headquarters": headquarters,
             "decision_makers": decision_makers,
-            "crawled_subpages": crawled_subpages
+            "crawled_subpages": crawled_subpages,
+            "company_linkedin_url": company_linkedin_url
         }
 
     @staticmethod
@@ -149,8 +154,19 @@ class RealtimeEnricher:
             if match:
                 loc = match.group(1).strip().rstrip(".,")
                 loc_lower = loc.lower()
-                if len(loc) >= 4 and not any(junk in loc_lower for junk in ["privacy", "terms", "copyright", "rights"] + MONTHS_AND_DATES):
-                    return loc
+                # Must be a real human city/state with spaces (not a continuous base64/hex token)
+                if len(loc.split()) < 2 or len(loc.split()) > 7:
+                    continue
+                # Reject base64 / CSS hashes / random mixed case tokens
+                if re.search(r"[a-z0-9]{12,}", loc) or re.search(r"[a-z][A-Z][a-z][A-Z]", loc) or re.search(r"[A-Z0-9]{8,}", loc):
+                    continue
+                # Must not contain junk words
+                if any(junk in loc_lower for junk in ["privacy", "terms", "copyright", "rights", "cookie", "policy"] + MONTHS_AND_DATES):
+                    continue
+                # Ensure all characters are letters, spaces, commas, periods, hyphens
+                if not re.match(r"^[A-Za-z0-9\s,\.\-]+$", loc):
+                    continue
+                return loc
 
         return None
 

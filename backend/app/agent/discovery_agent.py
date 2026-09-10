@@ -32,7 +32,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 LOOP_PACE_SECONDS = 4
-BATCH_SIZE = 100
+BATCH_SIZE = 50
 
 # ─── Agent Tools ─────────────────────────────────────────────────────────────
 
@@ -480,13 +480,98 @@ class AutonomousDiscoveryAgent:
 
     # ─── Batch Feedback & Learning ─────────────────────────────────────────────
 
+    # ─── Batch Feedback & Learning ─────────────────────────────────────────────
+
     def _generate_batch_feedback(self, db: Session, batch: BatchResult):
-        """§8 — Learn from batch results. Update keyword performance. Mark batch COMPLETED."""
+        """
+        Rolling 50-Lead Continuous Quality Evaluation (§3, §4, §5).
+        Evaluates overall lead quality across multiple dimensions:
+        - % target industry alignment
+        - % relevant B2B companies
+        - % 1–200 employees
+        - % unknown size (allowed and expected)
+        - % >200 employees (outside target)
+        - % official websites vs directories
+        - % duplicates
+        - % useful key-people discovered
+        
+        If batch quality is poor, adjusts search keywords/modifiers immediately
+        WITHOUT pausing or stopping the pipeline.
+        """
         bid = str(batch.id)
-        logger.info(f"[Agent] Generating feedback for Batch {bid[:8]}...")
+        logger.info(f"[Agent] Evaluating rolling quality for Batch {bid[:8]}...")
 
         searches = db.query(SearchHistory).filter(SearchHistory.batch_id == bid).all()
         total_sources = sum(s.sources_found or 0 for s in searches)
+
+        from app.persistence.models import CrawlActivityLog, KeyPersonCandidate, GlobalLead
+        
+        # Pull activities logged during this batch
+        activities = db.query(CrawlActivityLog).filter(CrawlActivityLog.batch_id == bid).all()
+        
+        crawled_urls = [a for a in activities if a.stage == "CRAWL" and a.status == "QUEUED"]
+        filtered_logs = [a for a in activities if a.stage == "FILTER"]
+        duplicates = [a for a in activities if a.status == "DUPLICATE"]
+        
+        total_candidates = max(1, len(crawled_urls) + len(filtered_logs))
+        
+        # Size distribution and quality signals
+        size_1_to_200 = 0
+        size_gt_200 = 0
+        size_unknown = 0
+        directories_caught = 0
+        
+        for act in activities:
+            msg = act.message or ""
+            if "Qualified" in msg or "Size:" in msg:
+                if "1-200" in msg or "1-10" in msg or "11-50" in msg or "51-200" in msg or "1-" in msg:
+                    size_1_to_200 += 1
+                elif ">200" in msg or "Exceeds 200" in msg:
+                    size_gt_200 += 1
+                else:
+                    size_unknown += 1
+            elif "LISTING" in msg or "directory" in msg.lower():
+                directories_caught += 1
+
+        # Count key people discovered during this batch
+        people_found_in_batch = db.query(KeyPersonCandidate).filter(
+            KeyPersonCandidate.discovered_at >= batch.started_at
+        ).count()
+
+        # Compute percentages
+        relevant_companies = len(crawled_urls)
+        irrelevant_companies = len(filtered_logs)
+        valid_official_websites = len(set(a.url for a in crawled_urls if a.url))
+        duplicates_count = len(duplicates)
+        
+        pct_relevant = round((relevant_companies / total_candidates) * 100, 1)
+        pct_1_to_200 = round((size_1_to_200 / total_candidates) * 100, 1)
+        pct_unknown = round((size_unknown / total_candidates) * 100, 1)
+        pct_gt_200 = round((size_gt_200 / total_candidates) * 100, 1)
+        
+        logger.info(
+            f"📊 [Rolling 50 Evaluation] Batch {bid[:8]}: "
+            f"Relevant: {pct_relevant}% | 1-200 Employees: {pct_1_to_200}% | "
+            f"Unknown Size: {pct_unknown}% | >200 Employees: {pct_gt_200}% | "
+            f"Key People Found: {people_found_in_batch} | Duplicates: {duplicates_count}"
+        )
+
+        # Batch Quality Assessment
+        # If too many large enterprises (>200) or low relevance, adapt strategy immediately!
+        active_domain = getattr(batch, "domain", None) or "Information Technology"
+        if pct_gt_200 >= 20.0 or (pct_relevant < 50.0 and pct_1_to_200 < 30.0):
+            logger.warning(f"⚠️ [Rolling Feedback] Batch {bid[:8]} was too enterprise-heavy ({pct_gt_200}% >200). Adapting search keywords toward startup/SMB qualifiers.")
+            keyword_expander.adapt_strategy(domain=active_domain, issue_type="enterprise_heavy")
+            batch_quality = "POOR"
+        elif directories_caught > 15:
+            logger.warning(f"⚠️ [Rolling Feedback] Batch {bid[:8]} hit too many directories ({directories_caught}). Adapting toward official website / founder queries.")
+            keyword_expander.adapt_strategy(domain=active_domain, issue_type="generic_directory")
+            batch_quality = "ACCEPTABLE"
+        elif pct_relevant >= 65.0 or (pct_1_to_200 + pct_unknown) >= 70.0:
+            logger.info(f"✅ [Rolling Feedback] Batch {bid[:8]} Quality is GOOD. Continuing discovery with current strategy.")
+            batch_quality = "GOOD"
+        else:
+            batch_quality = "ACCEPTABLE"
 
         batch.urls_discovered = total_sources
         batch.entities_discovered = db.query(UniversalRecord).count()
@@ -515,21 +600,25 @@ class AutonomousDiscoveryAgent:
 
             perf.usage_count = (perf.usage_count or 0) + 1
             sources = s.sources_found or 0
-            current_yield = min(1.0, sources / 15.0)
+            
+            # Boost success rate if batch found key people and qualified leads
+            yield_multiplier = 1.2 if (batch_quality == "GOOD" and people_found_in_batch > 0) else 0.8
+            current_yield = min(1.0, (sources / 15.0) * yield_multiplier)
             old_rate = float(perf.success_rate or 0.5)
             perf.success_rate = round(0.7 * old_rate + 0.3 * current_yield, 4)
 
-            if sources == 0 and (perf.usage_count or 0) >= 3:
+            if (sources == 0 and (perf.usage_count or 0) >= 3) or (batch_quality == "POOR" and perf.usage_count >= 2):
                 perf.is_deprecated = True
-                perf.feedback_notes = f"Deprecated after {perf.usage_count} consecutive zero-result searches."
+                perf.feedback_notes = f"Deprecated: Batch quality was {batch_quality} ({pct_gt_200}% >200 enterprise yield)."
                 logger.info(f"[Agent] Deprecated keyword: '{s.keyword}'")
 
         db.commit()
         logger.info(
             f"[Agent] Batch {bid[:8]} completed: "
-            f"{total_sources} URLs | {batch.entities_discovered} entities | "
-            f"{batch.entities_verified} verified"
+            f"{total_sources} URLs | Quality: {batch_quality} | "
+            f"People: {people_found_in_batch} | Verified: {batch.entities_verified}"
         )
+
 
     # ─── Metrics API ───────────────────────────────────────────────────────────
 

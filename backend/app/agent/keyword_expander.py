@@ -5,6 +5,7 @@ using a rich global taxonomy + geo/intent/entity-expansion modifiers.
 """
 import logging
 import random
+import re
 from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -185,48 +186,71 @@ GEO_MODIFIERS = [
 ]
 
 # ─── Intent Modifiers ─────────────────────────────────────────────────────────
+# ─── Intent Modifiers (Startup / SMB / Growth 1-200 Focus) ───────────────────
 INTENT_MODIFIERS = [
-    "companies list", "top companies", "leading firms", "directory",
-    "startups", "vendors", "providers", "solutions", "platforms",
-    "organizations site:linkedin.com/company",
-    "site:crunchbase.com",
-    "site:tracxn.com",
-    "site:g2.com categories",
-    "site:ycombinator.com",
-    "emerging companies", "notable companies 2024", "notable companies 2025",
-    "funded startups", "best companies", "enterprise solutions",
-    "B2B companies", "global companies",
+    "startups", "emerging startups", "early stage startups", "growth stage companies",
+    "startups 1-200 employees", "B2B startups", "startups official website",
+    "innovative startups", "funded startups", "fast growing startups",
+    "seed and series a startups", "tech startups", "startup founders",
+    "emerging companies 2024", "emerging companies 2025"
+]
+
+STARTUP_FOCUS_MODIFIERS = [
+    "startups 1-200 employees",
+    "early stage companies",
+    "emerging startups",
+    "growth stage startups",
+    "startups official website",
+    "startup founders",
+    "companies 10-200 employees"
 ]
 
 # ─── Source Discovery Queries (listing pages) ─────────────────────────────────
 LISTING_SOURCE_TEMPLATES = [
-    "list of {domain_kw} companies",
-    "top {domain_kw} startups directory",
-    "best {domain_kw} vendors comparison",
-    "{domain_kw} companies site:clutch.co",
-    "{domain_kw} companies site:g2.com",
-    "{domain_kw} companies site:capterra.com",
-    "{domain_kw} companies site:crunchbase.com",
-    "{domain_kw} companies site:angellist.com",
-    "category:{domain_kw} site:producthunt.com",
-    "{domain_kw} companies database",
-    "{domain_kw} industry leaders {geo}",
-    "{domain_kw} market map {geo}",
+    "list of emerging {domain_kw} startups",
+    "top {domain_kw} startups {geo}",
+    "early stage {domain_kw} companies {geo}",
+    "{domain_kw} startups official website",
+    "promising {domain_kw} startups 2024 2025",
+    "{domain_kw} innovation startups {geo}",
 ]
 
 
 class KeywordExpander:
     """
-    Generates diverse global discovery queries.
+    Generates diverse global discovery queries targeted at 1-200 employee startups & SMBs.
     - Round-robin through domains/subdomains
-    - Mixes base keywords, geo modifiers, intent modifiers
-    - Expands from discovered entity names to find related companies
+    - Adaptive feedback strategy based on rolling 50-lead quality batches
     """
 
     def __init__(self):
         self._domain_list = list(GLOBAL_TAXONOMY.keys())
         self._subdomain_ptr: Dict[str, int] = {}  # tracks rotation per domain
         self._keyword_ptr: Dict[str, int] = {}    # tracks rotation per subdomain
+        self._active_strategy_overrides: Dict[str, str] = {} # domain -> modifier override
+
+    def adapt_strategy(self, domain: str, issue_type: str = "enterprise_heavy"):
+        """
+        Dynamically adjusts keyword strategy when the 50-lead batch evaluation
+        detects too many large enterprises or low startup yield.
+        """
+        if issue_type == "enterprise_heavy":
+            override = random.choice([
+                "startups 1-200 employees",
+                "early stage startups",
+                "emerging startups",
+                "growth stage startups 10-200"
+            ])
+            self._active_strategy_overrides[domain] = override
+            logger.info(f"🔄 [KeywordExpander] Adapted strategy for '{domain}' -> targeting '{override}'")
+        elif issue_type == "generic_directory":
+            override = random.choice([
+                "startups official website",
+                "startup founders",
+                "B2B startups 1-200 employees"
+            ])
+            self._active_strategy_overrides[domain] = override
+            logger.info(f"🔄 [KeywordExpander] Adapted strategy for '{domain}' -> targeting '{override}'")
 
     def get_next_query(
         self,
@@ -251,25 +275,33 @@ class KeywordExpander:
 
         keywords = domain_data.get(selected_subdomain, [])
         if not keywords:
-            keywords = [f"{selected_subdomain} companies"]
+            keywords = [f"{selected_subdomain} startups"]
 
         # Select keyword (round-robin)
         kw_ptr = self._keyword_ptr.get(f"{domain}:{selected_subdomain}", 0)
         base_keyword = keywords[kw_ptr % len(keywords)]
         self._keyword_ptr[f"{domain}:{selected_subdomain}"] = kw_ptr + 1
 
-        # Randomly pick a geo modifier (weighted towards global)
+        # Check if an adapted strategy override is active for this domain
+        override = self._active_strategy_overrides.get(domain)
+
+        # Pick a geo modifier (weighted towards global)
         available_geos = [g for g in GEO_MODIFIERS if g not in (skip_geos or [])]
         geo = random.choice(available_geos)
 
-        # Randomly pick an intent modifier
-        intent = random.choice(INTENT_MODIFIERS)
+        # Pick intent modifier or use adapted override
+        intent = override if override else random.choice(INTENT_MODIFIERS)
+
+        # Ensure base keyword has startup focus if generic
+        clean_base = base_keyword
+        if "companies" in clean_base.lower() and override:
+            clean_base = re.sub(r"\bcompanies\b", "startups", clean_base, flags=re.IGNORECASE)
 
         # Build query
         if geo:
-            query = f"{base_keyword} {intent} {geo}".strip()
+            query = f"{clean_base} {intent} {geo}".strip()
         else:
-            query = f"{base_keyword} {intent}".strip()
+            query = f"{clean_base} {intent}".strip()
 
         return {
             "query": query,

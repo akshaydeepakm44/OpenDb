@@ -227,14 +227,15 @@ def search_and_discover_task(
         enqueued = 0
         for res in search_results:
             target_url = res.get("url")
-            if not target_url:
-                continue
-
-            # Stage 1: URL-level quality filter
-            keep, reason = quality_filter.filter_url(target_url)
-            if not keep:
+            # Stage 1: Pre-crawl qualification (focus on 1-200 employee startups/SMBs, allow UNKNOWN)
+            qual = quality_filter.qualify_company_candidate(
+                title=res.get("title", ""),
+                snippet=res.get("snippet", ""),
+                url=target_url
+            )
+            if not qual["qualified"]:
                 _log_activity(db, url=target_url, stage="FILTER", domain=domain,
-                              status="FILTERED", message=f"URL rejected: {reason}", batch_id=batch_id)
+                              status="FILTERED", message=f"URL rejected: {qual['reason']}", batch_id=batch_id)
                 continue
 
             # Stage 2: Classify listing vs entity
@@ -247,17 +248,26 @@ def search_and_discover_task(
                 _safe_dispatch(crawl_source_task, source_url=target_url, domain=domain, batch_id=batch_id)
                 enqueued += 1
             else:
-                _log_activity(db, url=target_url, stage="CRAWL", domain=domain,
-                              status="QUEUED", message="Classified as ENTITY page — queuing entity crawl",
+                parsed_u = urlparse(target_url)
+                entity_root_url = f"{parsed_u.scheme}://{parsed_u.netloc}/" if parsed_u.netloc else target_url
+                _log_activity(db, url=entity_root_url, stage="CRAWL", domain=domain,
+                              status="QUEUED", message=f"Qualified ({qual['company_size']}) — queuing root entity crawl ({parsed_u.netloc})",
                               batch_id=batch_id)
-                _safe_dispatch(crawl_entity_task, url=target_url, domain=domain, batch_id=batch_id)
+                _safe_dispatch(crawl_entity_task, url=entity_root_url, domain=domain, batch_id=batch_id)
                 enqueued += 1
 
+                # Immediate Parallel Key-People Search: Dispatched in parallel without blocking company crawler
                 company_title_for_people = res.get("title")
                 if company_title_for_people:
                     clean_cname = company_title_for_people.split("|")[0].split("-")[0].strip()
                     if len(clean_cname) > 2:
-                        _safe_dispatch(search_company_people_task, company_name=clean_cname, domain=domain, batch_id=batch_id)
+                        _safe_dispatch(
+                            search_company_people_task,
+                            company_name=clean_cname,
+                            domain=domain,
+                            official_domain=parsed_u.netloc,
+                            batch_id=batch_id
+                        )
 
         return {
             "query": query,
@@ -572,14 +582,39 @@ def crawl_entity_task(
                           entity_name=entity_name, batch_id=batch_id)
             return {"status": "duplicate_domain", "url": url, "existing_id": existing.id}
 
+        # Gatekeeper Rule: Make sure particular company has verified corporate LinkedIn
+        from app.extraction.key_people_extractor import key_people_extractor
+        company_linkedin = key_people_extractor.extract_company_linkedin_url(
+            item.html_content or "", enriched_text, entity_name, domain_key
+        )
+        if not company_linkedin:
+            company_linkedin = run_async(
+                key_people_extractor.find_company_linkedin_via_search(entity_name, domain_key)
+            )
+
+        if not company_linkedin:
+            logger.info(f"[Worker B] Company rejected (no verified corporate LinkedIn): {entity_name} ({domain_key})")
+            _log_activity(db, url=url, stage="FILTER", domain=domain,
+                          status="FILTERED", message=f"Rejected: No verified corporate LinkedIn page found for '{entity_name}'",
+                          entity_name=entity_name, batch_id=batch_id)
+            return {"status": "entity_filtered", "reason": "No corporate LinkedIn profile", "url": url}
+
+        # Attach company LinkedIn URL to payload
+        univ_data = payload.get("universal") or {}
+        if "metadata_json" not in univ_data or not isinstance(univ_data["metadata_json"], dict):
+            univ_data["metadata_json"] = {}
+        univ_data["metadata_json"]["company_linkedin_url"] = company_linkedin
+        payload["universal"] = univ_data
+
+        dom_data = payload.get("domain_data") or {}
+        dom_data["company_linkedin_url"] = company_linkedin
+        payload["domain_data"] = dom_data
+
         repo.save_extraction_results(db, payload)
 
         # Enterprise Master Vault Integration (Redis L1, SQLite WAL Vault, MinIO L3, Postgres Open Lake)
         try:
             from app.persistence.vault_service import MasterVaultService
-            from app.extraction.key_people_extractor import key_people_extractor
-            dom_data = payload.get("domain_data") or {}
-            univ_data = payload.get("universal") or {}
             subpages_list = [
                 {"url": url, "markdown": item.markdown or item.text or ""}
             ]
@@ -602,7 +637,8 @@ def crawl_entity_task(
                 verified_emails=dom_data.get("contact_emails") or dom_data.get("emails"),
                 summary=univ_data.get("description") or dom_data.get("business_overview"),
                 decision_makers=d_makers,
-                crawled_subpages=subpages_list
+                crawled_subpages=subpages_list,
+                company_linkedin_url=company_linkedin
             )
 
             # Also persist discovered key people to KeyPersonCandidate table
@@ -860,61 +896,88 @@ def search_company_people_task(
     self,
     company_name: str,
     domain: str,
+    official_domain: str = None,
     batch_id: str = None,
 ) -> Dict[str, Any]:
     """
-    Search SearXNG for key people belonging to the discovered company.
+    Parallel Search for key people belonging to the discovered company.
+    Executes prioritized queries with early stopping once 3 strong key people are found.
     """
-    logger.info(f"[Worker P] People search for: '{company_name}'")
+    logger.info(f"[Worker P] People search for: '{company_name}' (Domain: {official_domain})")
     db = SessionLocal()
     try:
+        from app.agent.key_people_discovery_agent import key_people_agent
         from app.extraction.key_people_extractor import key_people_extractor
         from app.persistence.models import KeyPersonCandidate
         
-        queries = [
-            f'"{company_name}" CEO site:linkedin.com/in',
-            f'"{company_name}" founder site:linkedin.com/in',
-            f'"{company_name}" CEO',
-            f'"{company_name}" founder',
-            f'"{company_name}" leadership LinkedIn'
-        ]
+        clean_company = key_people_extractor.clean_company_name(company_name)
+
+        # Generate prioritized queries (cap 5)
+        queries = key_people_agent.generate_queries(
+            company_name=clean_company,
+            official_domain=official_domain
+        )
         
-        all_snippets = []
-        for q in queries:
+        all_discovered = []
+        last_query = queries[0]["query"] if queries else ""
+        for q_obj in queries:
+            q = q_obj["query"]
+            last_query = q
             try:
                 results, is_fallback, log_msg = run_async(
-                    searxng_service.search_with_meta(query=q, max_results=5)
+                    searxng_service.search_with_meta(query=q, max_results=4)
                 )
-                all_snippets.extend(results)
+                if results:
+                    batch_people = key_people_extractor.extract_from_linkedin_search_snippets(results, clean_company)
+                    for bp in batch_people:
+                        if not any(dp["name"].lower() == bp["name"].lower() for dp in all_discovered):
+                            all_discovered.append(bp)
+                    
+                    # Early stopping rule: Stop additional people searches once 3 strong people found!
+                    if len(all_discovered) >= key_people_agent.EARLY_STOP_PEOPLE_COUNT:
+                        logger.info(f"[Worker P] Reached stopping target ({len(all_discovered)} people) for '{clean_company}' — stopping further queries.")
+                        break
             except Exception as e:
-                logger.warning(f"[Worker P] SearXNG error on query {q}: {e}")
+                logger.warning(f"[Worker P] SearXNG error on query '{q}': {e}")
 
-        if not all_snippets:
+        if not all_discovered:
             return {"status": "no_results", "company_name": company_name}
 
-        people = key_people_extractor.extract_from_linkedin_search_snippets(all_snippets, company_name)
-        
         saved_count = 0
-        for p in people:
+        for p in all_discovered:
+            target_names = [company_name, clean_company]
             existing = db.query(KeyPersonCandidate).filter(
-                KeyPersonCandidate.company_name == company_name,
+                KeyPersonCandidate.company_name.in_(target_names),
                 KeyPersonCandidate.person_name == p["name"]
             ).first()
+            
+            p_profile = p.get("linkedin_url")
+            p_source = p.get("source_url") or p_profile
+            
             if not existing:
                 cand = KeyPersonCandidate(
                     company_name=company_name,
                     person_name=p["name"],
                     role=p["title"],
-                    source_url=p["linkedin_search_url"],
-                    discovery_query=queries[0],
-                    confidence_score=0.85
+                    source_url=p_profile or p_source, # Never a search query!
+                    source_domain=domain,
+                    source_type=p.get("source_type", "search_discovery"),
+                    discovery_query=last_query,
+                    evidence_text=p.get("evidence", ""),
+                    confidence_score=p.get("confidence_score", 0.85),
+                    verification_status="HIGH_CONFIDENCE" if p_profile else "DISCOVERED"
                 )
                 db.add(cand)
                 saved_count += 1
                 
-                _log_activity(db, url=p["linkedin_search_url"], stage="SEARCH", domain=domain,
-                              status="OK", message=f"Discovered Key Person: {p['name']} ({p['title']})",
-                              entity_name=company_name, batch_id=batch_id)
+                _log_activity(db, url=p_profile or f"PERSON:{p['name']}", stage="SEARCH", domain=domain,
+                              status="OK", message=f"Discovered Key Person: {p['name']} ({p['title']}) [Evidence: {p.get('source_type')}]",
+                              entity_name=clean_company, batch_id=batch_id)
+            else:
+                if p_profile and not existing.source_url:
+                    existing.source_url = p_profile
+                    existing.verification_status = "HIGH_CONFIDENCE"
+                    saved_count += 1
         
         db.commit()
         return {"status": "success", "company_name": company_name, "people_found": saved_count}

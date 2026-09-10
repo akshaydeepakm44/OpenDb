@@ -235,15 +235,30 @@ TEXT TO EXTRACT FROM:
 
             # 6. Contact Information / Email
             elif prop_name in ["contact_information", "email", "phone"]:
-                match_email = re.search(r"[\w\.-]+@[\w\.-]+\.\w+", text)
-                if match_email:
+                match_email = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)
+                if match_email and not any(j in match_email.group(0).lower() for j in ["example.com", "wixpress", "sentry"]):
                     val = match_email.group(0)
                     evidence_snippet = f"Found contact email: {val}"
                 else:
-                    val = f"contact@{parsed_url}"
-                    evidence_snippet = f"Derived contact endpoint for {parsed_url}"
+                    val = None
+                    evidence_snippet = None
 
-            # 7. Key People / Leadership / Executives
+            # 7. Company Size (Evidence-based, UNKNOWN if not found)
+            elif prop_name in ["company_size", "employee_count", "team_size"]:
+                range_match = re.search(r"\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:employees|people|staff)\b", text, re.IGNORECASE)
+                if range_match:
+                    val = f"{range_match.group(1)}-{range_match.group(2)}"
+                    evidence_snippet = range_match.group(0)
+                else:
+                    single_match = re.search(r"\b(\d{1,6})\+?\s*(?:employees|people|staff)\b", text, re.IGNORECASE)
+                    if single_match:
+                        val = f"{single_match.group(1)}+"
+                        evidence_snippet = single_match.group(0)
+                    else:
+                        val = "UNKNOWN"
+                        evidence_snippet = "No explicit employee size in crawled text"
+
+            # 8. Key People / Leadership / Executives
             elif prop_name in ["key_people", "leadership", "decision_makers", "executives"]:
                 from app.extraction.key_people_extractor import key_people_extractor
                 c_name = domain_data.get("company_name") or parsed_url.capitalize()
@@ -270,4 +285,36 @@ TEXT TO EXTRACT FROM:
 
         return domain_data, evidence_list
 
+    @staticmethod
+    def synthesize_business_overview(text: str, company_name: str) -> str:
+        """
+        Synthesizes a concise structured business overview from actual crawled evidence.
+        Prevents raw page text dumps (1,000-2,000+ words).
+        """
+        if not text:
+            return f"{company_name} is an organization operating in the commercial technology sector."
+
+        # Filter out navigation, footer, cookie banners, policies
+        cleaned_paragraphs = []
+        for p in text.split("\n"):
+            p_strip = p.strip()
+            if len(p_strip.split()) >= 6:
+                p_lower = p_strip.lower()
+                if any(x in p_lower for x in ["cookie", "privacy policy", "all rights reserved", "terms of use", "copyright ©", "javascript", "login", "sign up"]):
+                    continue
+                cleaned_paragraphs.append(p_strip)
+                if len(cleaned_paragraphs) >= 3:
+                    break
+
+        if cleaned_paragraphs:
+            summary = " ".join(cleaned_paragraphs)
+            sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', summary) if len(s.strip()) > 10]
+            if sentences:
+                return " ".join(sentences[:3])
+            return summary[:350]
+
+        return f"{company_name} provides products and solutions based on its official public web presence."
+
+
 llm_extractor = LLMExtractor()
+

@@ -446,6 +446,7 @@ class GlobalLead(Base):
     revenue_funding = Column(Text, nullable=True)
     verified_emails = Column(JSONB_TYPE, default=list)
     summary = Column(Text, nullable=True)
+    linkedin_url = Column(Text, nullable=True) # Corporate LinkedIn company page
     created_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
@@ -467,9 +468,11 @@ class GlobalLeadPerson(Base):
     full_name = Column(String(255), nullable=False)
     title = Column(String(255), nullable=True)
     linkedin_search_url = Column(Text, nullable=True)
+    linkedin_url = Column(Text, nullable=True) # Authentic public profile URL (linkedin.com/in/<slug>)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     lead = relationship("GlobalLead", back_populates="people")
+
 
 
 class GlobalLeadSubpage(Base):
@@ -510,6 +513,27 @@ class KeyPersonCandidate(Base):
     crawl_status = Column(String(50), default="COMPLETED")
     discovered_at = Column(DateTime(timezone=True), default=utc_now)
     updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class PostgresSyncOutbox(Base):
+    """
+    Transactional Outbox Table for Two-Stage SQLite Staging -> PostgreSQL Sync.
+    Ensures that verified leads from operational SQLite staging are durably transferred
+    to PostgreSQL Lake without pretend-success or data loss.
+    """
+    __tablename__ = "postgres_sync_outbox"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    domain = Column(String(255), nullable=False, index=True)
+    company_name = Column(String(255), nullable=False)
+    payload_json = Column(JSON, nullable=False)
+    sync_status = Column(String(50), default="PENDING_SYNC", index=True) # PENDING_SYNC, SYNCED, SYNC_FAILED
+    retry_count = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    synced_at = Column(DateTime(timezone=True), nullable=True)
+
 
 
 

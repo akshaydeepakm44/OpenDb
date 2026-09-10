@@ -201,21 +201,26 @@ async def pause_discovery_agent(db: Session = Depends(get_db)):
 async def reset_database_data(db: Session = Depends(get_db)):
     """User Action: RESET - Deletes all past discovered records, logs, and storage cache."""
     try:
+        from app.agent.discovery_agent import discovery_agent
+        discovery_agent.is_running_loop = False
+
         from app.persistence.models import (
             GlobalLeadSubpage, GlobalLeadPerson, GlobalLead, OpenLakeRecord,
+            KeyPersonCandidate, ManualReviewQueue,
             ResourceLink, Resource, ExtractionRun, DocumentVersion,
             Evidence, ExtractedFact, VerificationRecord, DomainRecord,
             UniversalRecord, Document, CrawlJob, CrawlError,
             CrawlActivityLog, SearchHistory, BatchResult, AgentState
         )
+
         try:
-            from app.agent.discovery_agent import discovery_agent
-            discovery_agent.set_status("PAUSED")
+            db.execute(text("PRAGMA foreign_keys = OFF;"))
         except Exception:
             pass
 
         models_to_clear = [
             GlobalLeadSubpage, GlobalLeadPerson, GlobalLead, OpenLakeRecord,
+            KeyPersonCandidate, ManualReviewQueue,
             ResourceLink, Resource, ExtractionRun, DocumentVersion,
             Evidence, ExtractedFact, VerificationRecord, DomainRecord,
             UniversalRecord, Document, CrawlJob, CrawlError,
@@ -223,37 +228,50 @@ async def reset_database_data(db: Session = Depends(get_db)):
         ]
         for m in models_to_clear:
             try:
-                db.query(m).delete()
-                db.commit()
+                db.execute(text(f"DELETE FROM {m.__tablename__};"))
             except Exception as de:
-                db.rollback()
                 logger.warning(f"Reset: table clearing warning for {m.__tablename__}: {de}")
 
         try:
-            from app.agent.discovery_agent import discovery_agent
-            discovery_agent.set_status("PAUSED")
+            db.execute(text("DELETE FROM global_leads_fts;"))
         except Exception:
             pass
 
-        # Clean local storage directories
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
-        for sub in ["raw", "processed", "manifests", "markdown", "text", "extracted"]:
-            sub_path = os.path.join(data_dir, sub)
-            if os.path.exists(sub_path):
-                for f in os.listdir(sub_path):
-                    fp = os.path.join(sub_path, f)
+        try:
+            db.execute(text("PRAGMA foreign_keys = ON;"))
+        except Exception:
+            pass
+
+        db.commit()
+
+        # Clean all local storage directories across project
+        candidate_data_dirs = [
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
+            os.path.abspath("data"),
+            os.path.abspath("../data"),
+            os.path.abspath("./data")
+        ]
+        for d_dir in candidate_data_dirs:
+            if os.path.exists(d_dir):
+                import shutil
+                for item in os.listdir(d_dir):
+                    item_p = os.path.join(d_dir, item)
                     try:
-                        if os.path.isfile(fp):
-                            os.unlink(fp)
+                        if os.path.isdir(item_p):
+                            shutil.rmtree(item_p, ignore_errors=True)
+                        elif os.path.isfile(item_p):
+                            os.unlink(item_p)
                     except Exception:
                         pass
         
-        # Flush Redis Queue to clear stalled celery tasks
+        # Flush Redis Queue safely without blocking if Redis is down
         try:
-            r = redis.Redis.from_url(settings.REDIS_URL.replace("localhost", "127.0.0.1"), socket_connect_timeout=0.5, socket_timeout=0.5)
-            r.flushdb()
+            from app.api.health import _quick_port_check
+            if _quick_port_check(settings.REDIS_URL, 6379):
+                r = redis.Redis.from_url(settings.REDIS_URL.replace("localhost", "127.0.0.1"), socket_connect_timeout=0.2, socket_timeout=0.2)
+                r.flushdb()
         except Exception as e:
-            print(f"Warning: Failed to flush Redis queue during reset: {e}")
+            logger.debug(f"Redis queue reset notice: {e}")
             
         return {"message": "Database and disk storage completely reset and cleared of all records.", "status": "CLEAN"}
     except Exception as e:
@@ -526,16 +544,17 @@ def _determine_company_tier(linked: Optional[UniversalRecord]) -> str:
     return "Early-Stage Startups (1-20)"
 
 
-def _clean_name(canonical_name: str, url: str) -> str:
-    """Ensure company names are clean, concise English names without Japanese/Vietnamese sentence title pollution."""
+def _clean_name(canonical_name: str, url: str = "") -> str:
+    """Ensure company names are clean, concise brand names without taglines or slogans."""
     from urllib.parse import urlparse
+    import re
     if not canonical_name:
         try:
             netloc = urlparse(url if url.startswith("http") else "https://" + url).netloc
             return netloc.replace("www.", "").split(".")[0].replace("-", " ").title()
         except Exception:
             return "Organization"
-    
+
     # Check for CJK or non-Latin script sentence pollution
     has_non_latin = any(ord(char) > 127 for char in canonical_name)
     if has_non_latin and len(canonical_name) > 20:
@@ -544,14 +563,36 @@ def _clean_name(canonical_name: str, url: str) -> str:
             return netloc.replace("www.", "").split(".")[0].replace("-", " ").title()
         except Exception:
             return canonical_name[:25]
-    
-    # If title has '|' or '-', extract the brand portion
-    if "|" in canonical_name:
-        parts = canonical_name.split("|")
-        first = parts[0].strip()
-        if len(first) > 2:
+
+    # Split by standard separators: | , - , – (en-dash), — (em-dash), : , •
+    parts = [p.strip() for p in re.split(r'[\-–—|:•]', canonical_name) if p.strip()]
+    if len(parts) > 1:
+        dom_token = ""
+        if url:
+            try:
+                dom_token = urlparse(url if url.startswith("http") else "https://" + url).netloc.replace("www.", "").split(".")[0].lower()
+            except Exception:
+                pass
+
+        if dom_token and len(dom_token) >= 3:
+            for p in parts:
+                if dom_token in p.lower():
+                    return p
+
+        first = parts[0]
+        if len(first.split()) <= 4 and len(first) <= 30:
             return first
-    return canonical_name
+        for p in parts:
+            if len(p.split()) <= 3 and len(p) <= 25:
+                return p
+        return first
+
+    words = canonical_name.split()
+    if len(words) > 4:
+        return " ".join(words[:2])
+
+    return canonical_name.strip()
+
 
 
 
@@ -684,18 +725,20 @@ def get_crawled_documents(
         # Merge SearXNG Key People Candidates discovered for this company
         try:
             from app.persistence.models import KeyPersonCandidate
-            c_name_clean = (linked.canonical_name if (linked and linked.canonical_name) else name).strip()
+            from sqlalchemy import func
+            c_name_clean = _clean_name(linked.canonical_name if (linked and linked.canonical_name) else name, clean_dom)
+            c_low = c_name_clean.lower().strip()
             kp_cands = db.query(KeyPersonCandidate).filter(
                 or_(
-                    KeyPersonCandidate.company_name.ilike(f"%{c_name_clean}%"),
-                    KeyPersonCandidate.company_name.ilike(f"%{clean_dom.split('.')[0]}%")
+                    KeyPersonCandidate.source_domain == clean_dom,
+                    func.lower(KeyPersonCandidate.company_name) == c_low
                 )
             ).limit(6).all()
             if kp_cands:
                 existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
                 for kp in kp_cands:
                     if kp.person_name and kp.person_name.lower() not in existing_names:
-                        link_val = kp.source_url or f"https://www.linkedin.com/search/results/all/?keywords={quote(kp.person_name + ' ' + c_name_clean)}"
+                        link_val = kp.source_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(kp.person_name + ' ' + c_name_clean)}"
                         leadership.append({
                             "name": kp.person_name,
                             "title": kp.role or "Executive / Leadership",
@@ -716,7 +759,7 @@ def get_crawled_documents(
                 existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
                 for glp in gl_people:
                     if glp.full_name and glp.full_name.lower() not in existing_names:
-                        l_url = glp.linkedin_url or f"https://www.linkedin.com/search/results/all/?keywords={quote(glp.full_name + ' ' + c_name_clean)}"
+                        l_url = glp.linkedin_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(glp.full_name + ' ' + c_name_clean)}"
                         leadership.append({
                             "name": glp.full_name,
                             "title": glp.role_title or "Executive / Leadership",
@@ -778,7 +821,7 @@ def get_crawled_documents(
 
 
 @router.get("/documents/{document_id}")
-async def get_document_detail(document_id: str, db: Session = Depends(get_db)):
+def get_document_detail(document_id: str, db: Session = Depends(get_db)):
     """Drill-in Crawled Document Detail View Modal Data with fast caching."""
     try:
         cached_doc = cache_get("doc", document_id)
@@ -842,8 +885,52 @@ async def get_document_detail(document_id: str, db: Session = Depends(get_db)):
     # Extract firmographics if linked record exists
     dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == linked.id).first() if linked else None
     dom_data = dom_rec.data if dom_rec else {}
-    clean_c_name = linked.canonical_name if (linked and linked.canonical_name) else (doc.title or name)
+    clean_c_name = _clean_name(linked.canonical_name if (linked and linked.canonical_name) else (doc.title or name), domain)
     logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else ""
+
+    # Decision Makers
+    raw_people = dom_data.get("key_people") or dom_data.get("leadership") or dom_data.get("founders") or []
+    decision_makers = []
+    if isinstance(raw_people, list) and raw_people:
+        for p in raw_people:
+            if isinstance(p, str):
+                p_name = p
+                p_role = "Executive / Key Person"
+                p_link = None
+            elif isinstance(p, dict):
+                p_name = p.get("name", "Executive")
+                p_role = p.get("title", p.get("role", "Leadership"))
+                p_link = p.get("linkedin_url") or p.get("linkedin_search_url")
+            else:
+                continue
+            final_link = p_link or f"https://www.linkedin.com/search/results/people/?keywords={quote(p_name + ' ' + clean_c_name)}"
+            decision_makers.append({
+                "name": p_name,
+                "title": p_role,
+                "linkedin_url": final_link,
+                "linkedin_search_url": final_link
+            })
+
+    from app.persistence.models import KeyPersonCandidate
+    from sqlalchemy import func
+    c_low = clean_c_name.lower().strip()
+    kp_cands = db.query(KeyPersonCandidate).filter(
+        or_(
+            KeyPersonCandidate.source_domain == domain,
+            func.lower(KeyPersonCandidate.company_name) == c_low
+        )
+    ).all()
+    existing_names = {p["name"].lower() for p in decision_makers}
+    for kp in kp_cands:
+        if kp.person_name and kp.person_name.lower() not in existing_names:
+            kp_url = kp.source_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(kp.person_name + ' ' + clean_c_name)}"
+            decision_makers.append({
+                "name": kp.person_name,
+                "title": kp.role or "Executive / Leadership",
+                "linkedin_url": kp_url,
+                "linkedin_search_url": kp_url
+            })
+            existing_names.add(kp.person_name.lower())
 
     doc_payload = {
         "id": doc.id,
@@ -866,7 +953,7 @@ async def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         "extracted_facts": extracted_facts,
         "firmographics": dom_data,
         "technology_stack": dom_data.get("technologies") or dom_data.get("tech_stack") or ["Web Infrastructure", "Cloud Hosting"],
-        "decision_makers": dom_data.get("key_people") or dom_data.get("leadership") or [],
+        "decision_makers": decision_makers,
         "crawled_subpages": dom_data.get("crawled_subpages") or [{"title": f"/ • {clean_c_name}", "url": doc.url, "minio_raw_path": f"companies/{domain}/pages/homepage.md"}],
         "verified_emails": dom_data.get("contact_emails") or dom_data.get("verified_emails") or ([f"contact@{domain}", f"support@{domain}"] if domain and "." in domain and "undefined" not in domain else []),
         "revenue_funding": dom_data.get("funding_stage") or dom_data.get("revenue_funding") or "Bootstrapped / Private",
@@ -995,6 +1082,8 @@ def get_entities_list(
                 "verified_emails": g.verified_emails if isinstance(g.verified_emails, list) else [f"contact@{g.domain}"],
                 "status": "Verified",
                 "confidence": float(g.quality_score or 8.5) / 10.0,
+                "linkedin_url": getattr(g, "linkedin_url", None) or f"https://www.linkedin.com/company/{g.domain.split('.')[0]}",
+                "company_linkedin_url": getattr(g, "linkedin_url", None) or f"https://www.linkedin.com/company/{g.domain.split('.')[0]}",
                 "description": g.summary or f"{g.company_name} enterprise lead profile."
             })
         return {
@@ -1007,16 +1096,20 @@ def get_entities_list(
         d.universal_record_id: (d.data or {}) for d in db.query(DomainRecord).filter(DomainRecord.universal_record_id.in_(rec_ids)).all()
     } if rec_ids else {}
 
-    cnames = [r.canonical_name for r in records if r.canonical_name]
     from app.persistence.models import KeyPersonCandidate
-    kp_candidates = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name.in_(cnames)).all() if cnames else []
+    all_kps = db.query(KeyPersonCandidate).all()
     kp_map = {}
-    for kp in kp_candidates:
-        kp_map.setdefault(kp.company_name, []).append({
+    for kp in all_kps:
+        cleaned_kname = _clean_name(kp.company_name or "", kp.source_url or "")
+        kp_obj = {
             "name": kp.person_name,
             "title": kp.role,
-            "linkedin_search_url": kp.source_url
-        })
+            "linkedin_search_url": kp.source_url,
+            "linkedin_url": kp.source_url
+        }
+        for k_key in [kp.company_name, cleaned_kname, kp.company_name.lower() if kp.company_name else "", cleaned_kname.lower()]:
+            if k_key:
+                kp_map.setdefault(k_key, []).append(kp_obj)
 
     results = []
     for r in records:
@@ -1042,15 +1135,27 @@ def get_entities_list(
 
         logo_url = f"https://www.google.com/s2/favicons?domain={clean_domain}&sz=128" if clean_domain else ""
         
-        clean_c_name = _clean_name(r.canonical_name, r.url or "")
-        
         tech_stack = dom_data.get("technologies") or dom_data.get("tech_stack") or []
         if not tech_stack:
             tech_stack = ["Web Infrastructure", "Cloud Hosting"]
         
         leadership = dom_data.get("key_people") or dom_data.get("leadership") or dom_data.get("founders") or []
         if isinstance(leadership, list):
-            extra_people = kp_map.get(clean_c_name, [])
+            extra_people = (
+                kp_map.get(clean_c_name)
+                or kp_map.get(clean_c_name.lower())
+                or kp_map.get(r.canonical_name)
+                or kp_map.get(r.canonical_name.lower() if r.canonical_name else "")
+                or []
+            )
+            if not extra_people and clean_domain:
+                d_prefix = clean_domain.split('.')[0].lower()
+                if len(d_prefix) >= 3:
+                    for k_name, ppl in kp_map.items():
+                        if d_prefix in k_name.lower():
+                            extra_people = ppl
+                            break
+
             existing_names = { (p.get("name") if isinstance(p, dict) else str(p)).lower() for p in leadership }
             for ep in extra_people:
                 if ep["name"].lower() not in existing_names:
@@ -1091,6 +1196,8 @@ def get_entities_list(
             "verified_emails": emails if isinstance(emails, list) else [str(emails)],
             "status": r.status or "Verified",
             "confidence": conf,
+            "linkedin_url": dom_data.get("company_linkedin_url") or (r.metadata_json or {}).get("company_linkedin_url") or f"https://www.linkedin.com/company/{clean_domain.split('.')[0]}",
+            "company_linkedin_url": dom_data.get("company_linkedin_url") or (r.metadata_json or {}).get("company_linkedin_url"),
             "description": overview,
             "created_at": r.created_at.isoformat() if r.created_at else None
         })
@@ -1193,7 +1300,16 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             v_people = vault_lead.get("people") or []
 
             from app.persistence.models import KeyPersonCandidate
-            kp_cands = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name == vault_lead["company_name"]).all()
+            from sqlalchemy import func
+            v_cname = vault_lead.get("company_name", "")
+            v_dom = vault_lead.get("domain", "")
+            v_low = v_cname.lower().strip()
+            kp_cands = db.query(KeyPersonCandidate).filter(
+                or_(
+                    KeyPersonCandidate.source_domain == v_dom,
+                    func.lower(KeyPersonCandidate.company_name) == v_low
+                )
+            ).all()
             existing_names = {p.get("name", "").lower() for p in v_people}
             for kp in kp_cands:
                 if kp.person_name.lower() not in existing_names:
@@ -1202,6 +1318,12 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                         "title": kp.role,
                         "linkedin_search_url": kp.source_url
                     })
+
+            # Sanitize v_hq if it contains base64/css hash noise
+            if v_hq:
+                hq_s = str(v_hq).strip()
+                if re.search(r"[a-z0-9]{12,}", hq_s) or re.search(r"[a-z][A-Z][a-z][A-Z]", hq_s) or len(hq_s.split()) < 2:
+                    v_hq = None
 
             # Fire non-blocking asyncio background enrichment if key fields are missing
             if (not v_emails or not v_hq or not v_people) and vault_lead.get("domain"):
@@ -1213,6 +1335,8 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 "domain": vault_lead["domain"],
                 "official_website": f"https://{vault_lead['domain']}",
                 "logo_url": vault_lead.get("logo_url") or f"https://www.google.com/s2/favicons?domain={vault_lead['domain']}&sz=128",
+                "linkedin_url": vault_lead.get("linkedin_url") or f"https://www.linkedin.com/company/{vault_lead['domain'].split('.')[0]}",
+                "company_linkedin_url": vault_lead.get("linkedin_url") or f"https://www.linkedin.com/company/{vault_lead['domain'].split('.')[0]}",
                 "headquarters": v_hq or "Not Specified",
                 "industry": vault_lead.get("industry") or "Software & SaaS",
                 "company_size": vault_lead.get("company_size") or "Growth SMBs (20-100)",
@@ -1326,22 +1450,34 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 else:
                     continue
                 
+                p_direct = p.get("linkedin_url") if isinstance(p, dict) else None
                 search_query = quote(f"{name} {clean_c_name}")
+                link_url = p_direct or (p.get("linkedin_search_url") if isinstance(p, dict) else None) or f"https://www.linkedin.com/search/results/people/?keywords={search_query}"
                 decision_makers.append({
                     "name": name,
                     "title": role,
-                    "linkedin_search_url": f"https://www.linkedin.com/search/results/all/?keywords={search_query}"
+                    "linkedin_url": link_url,
+                    "linkedin_search_url": link_url
                 })
 
         from app.persistence.models import KeyPersonCandidate
-        kp_cands = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name == clean_c_name).all()
+        from sqlalchemy import func
+        c_low = clean_c_name.lower().strip()
+        kp_cands = db.query(KeyPersonCandidate).filter(
+            or_(
+                KeyPersonCandidate.source_domain == clean_domain,
+                func.lower(KeyPersonCandidate.company_name) == c_low
+            )
+        ).all()
         existing_names = {p["name"].lower() for p in decision_makers}
         for kp in kp_cands:
             if kp.person_name.lower() not in existing_names:
+                kp_url = kp.source_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(kp.person_name + ' ' + clean_c_name)}"
                 decision_makers.append({
                     "name": kp.person_name,
                     "title": kp.role,
-                    "linkedin_search_url": kp.source_url
+                    "linkedin_url": kp_url,
+                    "linkedin_search_url": kp_url
                 })
 
         # Extract Emails & HQ
@@ -1351,6 +1487,12 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
 
         rec_loc = getattr(record, "location", None)
         hq_val = rec_loc or domain_data.get("headquarters") or domain_data.get("location")
+
+        # Sanitize hq_val if it contains base64/css hash noise or missing spaces
+        if hq_val:
+            hq_s = str(hq_val).strip()
+            if re.search(r"[a-z0-9]{12,}", hq_s) or re.search(r"[a-z][A-Z][a-z][A-Z]", hq_s) or len(hq_s.split()) < 2:
+                hq_val = None
 
         # Dispatch non-blocking asyncio background enrichment if data is incomplete
         if (not decision_makers or not emails or not hq_val) and clean_domain:
@@ -1435,12 +1577,15 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         updated_iso = rec_updated.isoformat() if (rec_updated and hasattr(rec_updated, "isoformat")) else created_iso
         rec_country = getattr(record, "country", None) or "Global"
 
+        comp_linkedin = dom_data.get("company_linkedin_url") or (record.metadata_json or {}).get("company_linkedin_url") if record else None
         entity_payload = {
             "id": getattr(record, "id", None) or (doc.id if doc else entity_id),
             "canonical_name": clean_c_name,
             "domain": clean_domain,
             "official_website": rec_url_str,
             "logo_url": f"https://www.google.com/s2/favicons?domain={clean_domain}&sz=128",
+            "linkedin_url": comp_linkedin or f"https://www.linkedin.com/company/{clean_domain.split('.')[0]}",
+            "company_linkedin_url": comp_linkedin or f"https://www.linkedin.com/company/{clean_domain.split('.')[0]}",
             "headquarters": hq_val,
             "industry": ind_val,
             "company_size": tier_val,

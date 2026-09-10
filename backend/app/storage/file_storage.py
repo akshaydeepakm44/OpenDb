@@ -80,6 +80,7 @@ class StorageManager:
                         raise RuntimeError("MinIO connection timed out in PRODUCTION mode.")
                     logger.warning("MinIO initialization timed out (>0.3s). Falling back to local storage.")
                     self.use_local = True
+                    self.client = None
 
     def _ensure_bucket(self):
         try:
@@ -91,6 +92,7 @@ class StorageManager:
                 raise RuntimeError(f"MinIO bucket check failed in PRODUCTION mode: {e}")
             logger.info(f"MinIO storage unready ({e.__class__.__name__}) — using local disk storage (OPENDB_ENV={settings.OPENDB_ENV})")
             self.use_local = True
+            self.client = None
 
     @staticmethod
     def calculate_hash(content: bytes) -> str:
@@ -189,7 +191,9 @@ class StorageManager:
         try:
             response = self.client.get_object(self.bucket_name, clean_rel)
             return response.read().decode("utf-8", errors="ignore")
-        except Exception:
+        except Exception as e:
+            logger.info(f"MinIO get_object unavailable ({e.__class__.__name__}), latching to local storage.")
+            self.use_local = True
             return None
 
     def read_file_bytes(self, relative_path: str) -> Tuple[Optional[bytes], str]:

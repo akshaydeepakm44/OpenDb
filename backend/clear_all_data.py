@@ -9,6 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("clear_db")
 
 TABLES_TO_CLEAR = [
+    "postgres_sync_outbox",
     "global_lead_people",
     "global_lead_subpages",
     "global_leads",

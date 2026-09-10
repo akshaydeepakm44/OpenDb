@@ -125,6 +125,17 @@ def init_db():
                 conn.commit()
             except Exception:
                 pass
+            try:
+                conn.execute(text("ALTER TABLE global_leads ADD COLUMN linkedin_url TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+            try:
+                conn.execute(text("ALTER TABLE global_lead_people ADD COLUMN linkedin_url TEXT"))
+                conn.commit()
+            except Exception:
+                pass
+
 
             # Setup FTS5 Virtual Table for SQLite Master Vault as per architecture diagram
             if "sqlite" in str(engine.url):

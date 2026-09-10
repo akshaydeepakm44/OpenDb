@@ -87,18 +87,19 @@ class SearXNGService:
                             cache_set("search", query, clean_category, max_results, value=(cleaned, False, "SearXNG OK"), ttl=SEARCH_CACHE_TTL)
                             logger.info(f"🔎 [SearXNG] Retrieved {len(cleaned)} B2B candidate results for query: '{query}'")
                             return cleaned, False, f"SearXNG returned {len(cleaned)} results."
-                    except Exception:
-                        pass
+                        else:
+                            return [], False, "SearXNG returned 0 results for query."
+                    except Exception as json_err:
+                        logger.warning(f"[SearXNG] JSON parse error: {json_err}")
+                        return [], False, f"SearXNG JSON parse error: {json_err}"
 
-                # Fallback to web search if SearXNG JSON returns empty or 403
-                logger.info(f"🌐 SearXNG query dispatched for '{query}' — using clean web fallback.")
-                fallback_results = self._get_fallback_sources(query)
-                return fallback_results, True, f"SearXNG query logged — utilizing fallback discovery."
+                # Non-200 status: honestly report degraded without mock fallbacks
+                logger.warning(f"⚠️ [SearXNG] Service returned HTTP {response.status_code} for '{query}'")
+                return [], False, f"SearXNG HTTP {response.status_code} (DEGRADED)"
 
         except Exception as err:
-            logger.warning(f"SearXNG query exception for '{query}': {err}")
-            fallback_results = self._get_fallback_sources(query)
-            return fallback_results, True, f"SearXNG request notice: {err}"
+            logger.warning(f"⚠️ [SearXNG] Connection failed for '{query}': {err}")
+            return [], False, f"SearXNG connection failed: {err} (DEGRADED)"
 
     async def search(
         self, query: str, category: str = "general", max_results: int = 20
@@ -106,105 +107,6 @@ class SearXNGService:
         results, _, _ = await self.search_with_meta(query, category, max_results)
         return results
 
-    def _get_fallback_sources(self, query: str) -> List[Dict[str, Any]]:
-        """Fallback to LIVE Bing & DuckDuckGo search if SearXNG is down."""
-        logger.info(f"Using Live Search fallback (Bing/DDG) for: '{query}'")
-        results = []
-        
-        # 1. Try Live Bing Search
-        try:
-            import urllib.request
-            import base64
-            from bs4 import BeautifulSoup
-            from urllib.parse import quote, parse_qs, urlparse
-
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9"
-            }
-            bing_url = f"https://www.bing.com/search?q={quote(query)}"
-            req = urllib.request.Request(bing_url, headers=headers)
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                html = resp.read().decode("utf-8", errors="ignore")
-                soup = BeautifulSoup(html, "html.parser")
-            for item in soup.find_all(["li", "div"], class_=lambda c: c and "b_algo" in c):
-                h2 = item.find("h2")
-                if not h2:
-                    continue
-                a = h2.find("a")
-                if not a:
-                    continue
-                raw_href = a.get("href", "")
-                target_url = None
-                
-                if "/ck/a?!" in raw_href:
-                    try:
-                        parsed = urlparse(raw_href)
-                        qs = parse_qs(parsed.query)
-                        u_val = qs.get("u", [""])[0]
-                        if u_val.startswith("a1"):
-                            b64 = u_val[2:]
-                            b64 += "=" * ((4 - len(b64) % 4) % 4)
-                            target_url = base64.b64decode(b64).decode("utf-8", errors="ignore")
-                    except Exception:
-                        pass
-                elif raw_href.startswith("http"):
-                    target_url = raw_href
-                    
-                if target_url and target_url.startswith("http"):
-                    title = a.text.strip() if a.text else "Discovered Enterprise"
-                    p_elem = item.find("p") or item.find("div", class_=lambda c: c and "caption" in c)
-                    snippet_text = p_elem.text.strip() if p_elem else ""
-                    results.append({
-                        "title": title,
-                        "url": target_url,
-                        "snippet": snippet_text or f"Search result for '{query}'",
-                        "engine": "bing_live_fallback",
-                        "score": 1.0
-                    })
-        except Exception as e:
-            logger.warning(f"Bing live search fallback failed: {e}")
-
-        # 2. Filter out non-company directory sites & duplicate URLs
-        filtered = []
-        seen = set()
-        for r in results:
-            u_lower = r["url"].lower()
-            if u_lower in seen:
-                continue
-            if any(x in u_lower for x in ["wikipedia.org", "facebook.com", "twitter.com", "youtube.com", "reddit.com", "bing.com"]):
-                continue
-            seen.add(u_lower)
-            filtered.append(r)
-
-        if filtered:
-            logger.info(f"[Live Search Fallback] Discovered {len(filtered)} genuine live target URLs for '{query}'")
-            return filtered[:15]
-
-        logger.info(f"[Live Search Fallback] Supplementing with seed enterprise targets for query: '{query}'")
-        preset_seeds = [
-            {"title": "Stripe — Financial Infrastructure", "url": "https://stripe.com", "snippet": "Financial infrastructure for the internet.", "engine": "preset_seed"},
-            {"title": "Vercel — Frontend Cloud", "url": "https://vercel.com", "snippet": "Build & deploy modern web apps.", "engine": "preset_seed"},
-            {"title": "Datadog — Cloud Monitoring", "url": "https://datadoghq.com", "snippet": "Cloud monitoring and observability platform.", "engine": "preset_seed"},
-            {"title": "Snowflake — Data Cloud", "url": "https://snowflake.com", "snippet": "Data cloud and analytics platform.", "engine": "preset_seed"},
-            {"title": "Figma — Design Platform", "url": "https://figma.com", "snippet": "Collaborative design platform.", "engine": "preset_seed"},
-            {"title": "Notion — Connected Workspace", "url": "https://notion.so", "snippet": "Docs, wikis, and project management.", "engine": "preset_seed"},
-            {"title": "Retool — Internal App Development", "url": "https://retool.com", "snippet": "Build internal tools fast.", "engine": "preset_seed"},
-            {"title": "Supabase — Open Source Firebase", "url": "https://supabase.com", "snippet": "Open source Postgres database & backend.", "engine": "preset_seed"},
-            {"title": "Linear — Issue Tracking", "url": "https://linear.app", "snippet": "Product planning and issue tracker.", "engine": "preset_seed"},
-            {"title": "Postman — API Platform", "url": "https://postman.com", "snippet": "Build and test APIs.", "engine": "preset_seed"},
-            {"title": "MongoDB — Developer Data Platform", "url": "https://mongodb.com", "snippet": "Multi-cloud developer data platform.", "engine": "preset_seed"},
-            {"title": "Elastic — Search & Observability", "url": "https://elastic.co", "snippet": "Search AI and log analysis.", "engine": "preset_seed"},
-            {"title": "HashiCorp — Cloud Automation", "url": "https://hashicorp.com", "snippet": "Cloud infrastructure automation.", "engine": "preset_seed"},
-            {"title": "GitLab — DevSecOps Platform", "url": "https://gitlab.com", "snippet": "AI-powered DevSecOps platform.", "engine": "preset_seed"},
-            {"title": "Docker — App Containerization", "url": "https://docker.com", "snippet": "Application containerization platform.", "engine": "preset_seed"},
-            {"title": "Sentry — Application Monitoring", "url": "https://sentry.io", "snippet": "Code-level application monitoring.", "engine": "preset_seed"},
-            {"title": "Pinecone — Vector Database", "url": "https://pinecone.io", "snippet": "Vector database for AI apps.", "engine": "preset_seed"},
-            {"title": "Anthropic — AI Research", "url": "https://anthropic.com", "snippet": "AI research and safety company.", "engine": "preset_seed"},
-        ]
-        import random
-        selected = random.sample(preset_seeds, k=min(8, len(preset_seeds)))
-        return selected
-
 
 searxng_service = SearXNGService()
+
