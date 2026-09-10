@@ -582,33 +582,36 @@ def crawl_entity_task(
                           entity_name=entity_name, batch_id=batch_id)
             return {"status": "duplicate_domain", "url": url, "existing_id": existing.id}
 
-        # Gatekeeper Rule: Make sure particular company has verified corporate LinkedIn
+        # Optional: Attempt to discover company LinkedIn URL — attach if found, skip gracefully if not
         from app.extraction.key_people_extractor import key_people_extractor
         company_linkedin = key_people_extractor.extract_company_linkedin_url(
             item.html_content or "", enriched_text, entity_name, domain_key
         )
         if not company_linkedin:
-            company_linkedin = run_async(
-                key_people_extractor.find_company_linkedin_via_search(entity_name, domain_key)
-            )
+            try:
+                company_linkedin = run_async(
+                    key_people_extractor.find_company_linkedin_via_search(entity_name, domain_key)
+                )
+            except Exception as li_err:
+                logger.debug(f"[Worker B] LinkedIn search skipped for {entity_name}: {li_err}")
 
-        if not company_linkedin:
-            logger.info(f"[Worker B] Company rejected (no verified corporate LinkedIn): {entity_name} ({domain_key})")
-            _log_activity(db, url=url, stage="FILTER", domain=domain,
-                          status="FILTERED", message=f"Rejected: No verified corporate LinkedIn page found for '{entity_name}'",
-                          entity_name=entity_name, batch_id=batch_id)
-            return {"status": "entity_filtered", "reason": "No corporate LinkedIn profile", "url": url}
-
-        # Attach company LinkedIn URL to payload
+        # Attach company LinkedIn URL to payload if found (not a hard requirement)
         univ_data = payload.get("universal") or {}
         if "metadata_json" not in univ_data or not isinstance(univ_data["metadata_json"], dict):
             univ_data["metadata_json"] = {}
-        univ_data["metadata_json"]["company_linkedin_url"] = company_linkedin
+        if company_linkedin:
+            univ_data["metadata_json"]["company_linkedin_url"] = company_linkedin
         payload["universal"] = univ_data
 
         dom_data = payload.get("domain_data") or {}
-        dom_data["company_linkedin_url"] = company_linkedin
+        if company_linkedin:
+            dom_data["company_linkedin_url"] = company_linkedin
         payload["domain_data"] = dom_data
+
+        if company_linkedin:
+            logger.info(f"[Worker B] LinkedIn found for {entity_name}: {company_linkedin}")
+        else:
+            logger.debug(f"[Worker B] No LinkedIn found for {entity_name} — continuing without it")
 
         repo.save_extraction_results(db, payload)
 

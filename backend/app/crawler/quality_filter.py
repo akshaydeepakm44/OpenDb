@@ -89,6 +89,31 @@ BLACKLISTED_DOMAINS = {
 
     # Parking / Ad networks
     "parking.godaddy.com", "sedo.com", "afternic.com",
+
+    # Chinese web portals, Q&A sites, and aggregators (not company homepages)
+    "baidu.com", "zhidao.baidu.com", "wenku.baidu.com", "tieba.baidu.com",
+    "baike.baidu.com", "map.baidu.com", "sohu.com", "sina.com", "sina.com.cn",
+    "163.com", "qq.com", "weibo.com", "bilibili.com", "douyin.com",
+    "taobao.com", "jd.com", "tmall.com", "alipay.com", "wechat.com",
+    "zhihu.com", "csdn.net", "cnblogs.com", "jianshu.com",
+    "ifeng.com", "toutiao.com", "36kr.com", "ithome.com",
+    "oschina.net", "segmentfault.com", "lagou.com", "51job.com",
+
+    # Software review / comparison aggregators (listing pages, not companies)
+    "g2.com", "capterra.com", "getapp.com", "softwareadvice.com",
+    "trustradius.com", "sourceforge.net", "alternativeto.net",
+    "producthunt.com", "slashdot.org", "crozdesk.com",
+
+    # Generic Q&A, forums, wiki aggregators
+    "answers.microsoft.com", "superuser.com", "serverfault.com",
+    "askubuntu.com", "unix.stackexchange.com", "community.atlassian.com",
+    "support.apple.com", "discussions.apple.com",
+
+    # Domain/company data aggregators
+    "owler.com", "dnb.com", "zoominfo.com", "apollo.io",
+    "similarweb.com", "semrush.com", "ahrefs.com",
+    "manta.com", "yelp.com", "yellowpages.com", "bbb.org",
+    "opencorporates.com", "bloomberg.com", "pitchbook.com",
 }
 
 # ─── Blacklisted URL path patterns ────────────────────────────────────────────
