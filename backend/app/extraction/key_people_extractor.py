@@ -306,9 +306,10 @@ class KeyPeopleExtractor:
                 m2 = re.search(r"^([A-Za-z\.\-]+(?:\s+[A-Za-z\.\-]+){1,2})\s*[\-–—\|:]\s*LinkedIn", title_text, re.IGNORECASE)
                 if m2:
                     cand_name = m2.group(1).strip().title()
-                    if KeyPeopleExtractor._is_valid_person_name(cand_name, clean_cname):
+                    norm_title = KeyPeopleExtractor._normalize_executive_title(combined)
+                    if norm_title and KeyPeopleExtractor._is_valid_person_name(cand_name, clean_cname):
                         extracted_name = cand_name
-                        extracted_title = KeyPeopleExtractor._normalize_executive_title(combined) or "Founder / Executive"
+                        extracted_title = norm_title
 
             # 3. URL slug extraction for linkedin.com/in/*
             if not extracted_name and "linkedin.com/in/" in url:
@@ -316,9 +317,10 @@ class KeyPeopleExtractor:
                 slug_words = [w.capitalize() for w in slug.split("-") if not w.isdigit() and len(w) > 1 and not re.match(r"^[0-9a-f]{5,}$", w)]
                 if 2 <= len(slug_words) <= 3:
                     cand_name = " ".join(slug_words).title()
-                    if KeyPeopleExtractor._is_valid_person_name(cand_name, clean_cname):
+                    norm_title = KeyPeopleExtractor._normalize_executive_title(combined)
+                    if norm_title and KeyPeopleExtractor._is_valid_person_name(cand_name, clean_cname):
                         extracted_name = cand_name
-                        extracted_title = KeyPeopleExtractor._normalize_executive_title(combined) or "Key Decision Maker"
+                        extracted_title = norm_title
 
             # 4. Fallback search across combined snippet text
             if not extracted_name:

@@ -881,6 +881,7 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
 
         record.confidence = confidence
         record.status = "Verified" if is_verified else "Discovered"
+        record.updated_at = utc_now()
         db.commit()
 
         # Sync to Master Vault if verified

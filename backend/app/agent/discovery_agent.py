@@ -309,7 +309,7 @@ class AutonomousDiscoveryAgent:
                     from sqlalchemy import or_
                     unverified_recs = db.query(UniversalRecord).filter(
                         or_(UniversalRecord.status == "Discovered", UniversalRecord.status == "Raw Ingested", UniversalRecord.status == None)
-                    ).limit(10).all()
+                    ).order_by(UniversalRecord.updated_at.asc().nullsfirst()).limit(10).all()
                     if unverified_recs:
                         from app.worker.tasks import _safe_dispatch, enrich_and_verify_task
                         for u_rec in unverified_recs:
