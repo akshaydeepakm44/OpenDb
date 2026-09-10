@@ -180,7 +180,7 @@ def determine_company_tier(linked=None, domain_data=None) -> str:
 
 
 @router.post("/run")
-async def start_discovery_agent(db: Session = Depends(get_db)):
+def start_discovery_agent(db: Session = Depends(get_db)):
     """User Action: RUN - Starts/resumes the 24/7 global discovery agent."""
     result = discovery_agent.set_status("RUNNING")
     return {
@@ -189,7 +189,7 @@ async def start_discovery_agent(db: Session = Depends(get_db)):
     }
 
 @router.post("/pause")
-async def pause_discovery_agent(db: Session = Depends(get_db)):
+def pause_discovery_agent(db: Session = Depends(get_db)):
     """User Action: PAUSE - Safely pauses new discovery search operations."""
     result = discovery_agent.set_status("PAUSED")
     return {
@@ -198,7 +198,7 @@ async def pause_discovery_agent(db: Session = Depends(get_db)):
     }
 
 @router.post("/reset")
-async def reset_database_data(db: Session = Depends(get_db)):
+def reset_database_data(db: Session = Depends(get_db)):
     """User Action: RESET - Deletes all past discovered records, logs, and storage cache."""
     try:
         from app.agent.discovery_agent import discovery_agent
@@ -283,7 +283,7 @@ async def reset_database_data(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Failed to reset database: {e}")
 
 @router.get("/status")
-async def get_agent_status(db: Session = Depends(get_db)):
+def get_agent_status(db: Session = Depends(get_db)):
     """Get live agent status, discovery metrics, and recently discovered entities."""
     return discovery_agent.get_metrics(db)
 
@@ -717,77 +717,10 @@ def get_crawled_documents(
         if not tech_stack or not isinstance(tech_stack, list):
             tech_stack = _infer_tech_stack(clean_dom, d.title or name, overview)
 
-        # Decision Makers
+        # Decision Makers from dom_data
         leadership = dom_data.get("key_people") or dom_data.get("leadership") or dom_data.get("founders")
         if not leadership or not isinstance(leadership, list):
             leadership = []
-
-        # Merge SearXNG Key People Candidates discovered for this company
-        try:
-            from app.persistence.models import KeyPersonCandidate
-            from sqlalchemy import func
-            c_name_clean = _clean_name(linked.canonical_name if (linked and linked.canonical_name) else name, clean_dom)
-            c_low = c_name_clean.lower().strip()
-            kp_cands = db.query(KeyPersonCandidate).filter(
-                or_(
-                    KeyPersonCandidate.source_domain == clean_dom,
-                    func.lower(KeyPersonCandidate.company_name) == c_low
-                )
-            ).limit(6).all()
-            if kp_cands:
-                existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
-                for kp in kp_cands:
-                    if kp.person_name and kp.person_name.lower() not in existing_names:
-                        # STRICT: only store a real linkedin.com/in/<slug> URL.
-                        # Never fabricate a search URL as a profile URL.
-                        raw_src = kp.source_url or ""
-                        import re as _re
-                        real_profile = None
-                        m_in = _re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_src)
-                        if m_in:
-                            real_profile = f"https://www.linkedin.com/in/{m_in.group(1)}"
-                        person_entry = {
-                            "name": kp.person_name,
-                            "title": kp.role or "Executive / Leadership",
-                            "linkedin_url": real_profile,  # None if no real profile found
-                            "source_url": raw_src or None,
-                            "source_type": kp.source_type or "search_discovery",
-                            "evidence": kp.evidence_text or None,
-                        }
-                        leadership.append(person_entry)
-                        existing_names.add(kp.person_name.lower())
-
-            # Also check GlobalLeadPerson from Master Vault
-            from app.persistence.models import GlobalLeadPerson
-            gl_people = db.query(GlobalLeadPerson).filter(
-                or_(
-                    GlobalLeadPerson.lead_id == (linked.id if linked else ""),
-                    GlobalLeadPerson.full_name.isnot(None)
-                )
-            ).limit(4).all()
-            if gl_people:
-                existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
-                for glp in gl_people:
-                    if glp.full_name and glp.full_name.lower() not in existing_names:
-                        # STRICT: only use a real /in/ profile URL from GlobalLeadPerson.
-                        raw_li = glp.linkedin_url or ""
-                        import re as _re2
-                        real_li = None
-                        m_gli = _re2.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_li)
-                        if m_gli:
-                            real_li = f"https://www.linkedin.com/in/{m_gli.group(1)}"
-                        leadership.append({
-                            "name": glp.full_name,
-                            "title": glp.role_title or "Executive / Leadership",
-                            "linkedin_url": real_li,  # None if no real /in/ profile
-                            "source_type": "vault_person",
-                        })
-                        existing_names.add(glp.full_name.lower())
-        except Exception:
-            pass
-
-        # No fake fallback person — if no real people found, return empty list.
-        # The dashboard will show "No key people discovered yet" instead of a fabricated entry.
 
         # Crawled Subpages
         subpages = dom_data.get("crawled_subpages") or [
@@ -798,12 +731,14 @@ def get_crawled_documents(
         hq = (linked.location if (linked and linked.location) else None) or dom_data.get("headquarters") or dom_data.get("location") or _infer_location(clean_dom, d.title or name, overview)
         rev_val = dom_data.get("revenue_funding") or dom_data.get("funding_stage") or dom_data.get("revenue") or _infer_revenue(clean_dom, size_val)
         emails_val = dom_data.get("contact_emails") or dom_data.get("verified_emails") or _infer_emails(clean_dom, overview)
+        resolved_cname = (linked.canonical_name if (linked and linked.canonical_name) else (d.title or name))
 
         filtered_doc_results.append({
             "id": d.id,
             "url": d.url,
             "domain": clean_dom,
-            "canonical_name": (linked.canonical_name if (linked and linked.canonical_name) else (d.title or name)),
+            "canonical_name": resolved_cname,
+            "clean_name_lower": _clean_name(resolved_cname, clean_dom).lower().strip(),
             "logo_url": logo_url,
             "business_overview": overview,
             "technology_stack": tech_stack if isinstance(tech_stack, list) else [str(tech_stack)],
@@ -825,6 +760,90 @@ def get_crawled_documents(
     start_idx = (page - 1) * limit
     end_idx = start_idx + limit
     paginated_results = filtered_doc_results[start_idx:end_idx]
+
+    # Batch enrich Key People ONLY for the items displayed on current page (avoids N+1 DB bottleneck)
+    if paginated_results:
+        import re as _re
+        from app.persistence.models import KeyPersonCandidate, GlobalLeadPerson
+        from sqlalchemy import func
+
+        page_domains = {r["domain"].lower() for r in paginated_results if r.get("domain")}
+        page_names = {r["clean_name_lower"] for r in paginated_results if r.get("clean_name_lower")}
+        page_lead_ids = [r["verified_entity_id"] for r in paginated_results if r.get("verified_entity_id")]
+
+        kp_cands_map = {}
+        if page_domains or page_names:
+            try:
+                kp_cands = db.query(KeyPersonCandidate).filter(
+                    or_(
+                        KeyPersonCandidate.source_domain.in_(page_domains),
+                        func.lower(KeyPersonCandidate.company_name).in_(page_names)
+                    )
+                ).all()
+                for kp in kp_cands:
+                    if kp.source_domain:
+                        kp_cands_map.setdefault(kp.source_domain.lower(), []).append(kp)
+                    if kp.company_name:
+                        kp_cands_map.setdefault(kp.company_name.lower().strip(), []).append(kp)
+            except Exception:
+                db.rollback()
+
+        gl_people_map = {}
+        if page_lead_ids:
+            try:
+                gl_people = db.query(GlobalLeadPerson).filter(
+                    GlobalLeadPerson.lead_id.in_(page_lead_ids)
+                ).all()
+                for glp in gl_people:
+                    gl_people_map.setdefault(glp.lead_id, []).append(glp)
+            except Exception:
+                db.rollback()
+
+        for item in paginated_results:
+            clean_dom = item["domain"].lower()
+            c_low = item.get("clean_name_lower", "")
+            leadership = list(item.get("decision_makers") or [])
+            existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
+
+            # Add from KeyPersonCandidate
+            matched_kps = kp_cands_map.get(clean_dom, []) + kp_cands_map.get(c_low, [])
+            for kp in matched_kps:
+                if kp.person_name and kp.person_name.lower() not in existing_names:
+                    raw_src = kp.source_url or ""
+                    real_profile = None
+                    m_in = _re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_src)
+                    if m_in:
+                        real_profile = f"https://www.linkedin.com/in/{m_in.group(1)}"
+                    leadership.append({
+                        "name": kp.person_name,
+                        "title": kp.role or "Executive / Leadership",
+                        "linkedin_url": real_profile,
+                        "source_url": raw_src or None,
+                        "source_type": kp.source_type or "search_discovery",
+                        "evidence": kp.evidence_text or None,
+                    })
+                    existing_names.add(kp.person_name.lower())
+
+            # Add from GlobalLeadPerson
+            lead_id = item.get("verified_entity_id")
+            if lead_id and lead_id in gl_people_map:
+                for glp in gl_people_map[lead_id]:
+                    if glp.full_name and glp.full_name.lower() not in existing_names:
+                        raw_li = glp.linkedin_url or ""
+                        real_li = None
+                        m_gli = _re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_li)
+                        if m_gli:
+                            real_li = f"https://www.linkedin.com/in/{m_gli.group(1)}"
+                        leadership.append({
+                            "name": glp.full_name,
+                            "title": glp.role_title or "Executive / Leadership",
+                            "linkedin_url": real_li,
+                            "source_type": "vault_person",
+                        })
+                        existing_names.add(glp.full_name.lower())
+
+            item["decision_makers"] = leadership
+            item.pop("clean_name_lower", None)
 
     return {
         "total": total_filtered,
@@ -1055,23 +1074,38 @@ def get_entities_list(
     records = q.order_by(UniversalRecord.created_at.desc()).limit(100).all()
 
     if not records:
-        from app.persistence.models import GlobalLead, GlobalLeadPerson
+        from app.persistence.models import GlobalLead, GlobalLeadPerson, KeyPersonCandidate
         g_leads = db.query(GlobalLead).limit(100).all()
+        if not g_leads:
+            return {"total": 0, "results": []}
+
+        g_ids = [g.id for g in g_leads]
+        g_comp_names = [g.company_name for g in g_leads if g.company_name]
+
+        all_people = db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id.in_(g_ids)).all() if g_ids else []
+        people_map = {}
+        for p in all_people:
+            people_map.setdefault(p.global_lead_id, []).append(p)
+
+        all_kps = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name.in_(g_comp_names)).all() if g_comp_names else []
+        kps_map = {}
+        for kp in all_kps:
+            kps_map.setdefault(kp.company_name, []).append(kp)
+
         g_results = []
         for g in g_leads:
-            people_recs = db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id == g.id).all()
+            people_recs = people_map.get(g.id, [])
             d_makers = [{"name": p.full_name, "title": p.title, "linkedin_search_url": p.linkedin_search_url} for p in people_recs]
-            
-            from app.persistence.models import KeyPersonCandidate
-            kp_cands = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name == g.company_name).all()
+            kp_cands = kps_map.get(g.company_name, [])
             existing_names = {p["name"].lower() for p in d_makers}
             for kp in kp_cands:
-                if kp.person_name.lower() not in existing_names:
+                if kp.person_name and kp.person_name.lower() not in existing_names:
                     d_makers.append({
                         "name": kp.person_name,
                         "title": kp.role,
                         "linkedin_search_url": kp.source_url
                     })
+                    existing_names.add(kp.person_name.lower())
             
             g_results.append({
                 "id": g.id,

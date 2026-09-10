@@ -96,17 +96,26 @@ export default function App() {
     (selectedCompanyTier && selectedCompanyTier !== 'All')
   );
 
-  // Poll Services Health and Operations Dashboard Data
-  const fetchOperations = async () => {
-    const results = await Promise.allSettled([
-      fetch(`${API_BASE}/agent/status`).then(r => r.ok ? r.json() : null),
-      fetch(`${API_BASE}/health/services`).then(r => r.ok ? r.json() : null),
-      fetch(`${API_BASE}/agent/operations`).then(r => r.ok ? r.json() : null)
-    ]);
+  const isOpsPollingRef = React.useRef(false);
+  const isCardsPollingRef = React.useRef(false);
 
-    if (results[0].status === 'fulfilled' && results[0].value) setAgentStatus(results[0].value);
-    if (results[1].status === 'fulfilled' && results[1].value) setServicesHealth(results[1].value);
-    if (results[2].status === 'fulfilled' && results[2].value) setOperationsData(results[2].value);
+  // Poll Services Health and Operations Dashboard Data (non-overlapping)
+  const fetchOperations = async () => {
+    if (isOpsPollingRef.current) return;
+    isOpsPollingRef.current = true;
+    try {
+      const results = await Promise.allSettled([
+        fetch(`${API_BASE}/agent/status`).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/health/services`).then(r => r.ok ? r.json() : null),
+        fetch(`${API_BASE}/agent/operations`).then(r => r.ok ? r.json() : null)
+      ]);
+
+      if (results[0].status === 'fulfilled' && results[0].value) setAgentStatus(results[0].value);
+      if (results[1].status === 'fulfilled' && results[1].value) setServicesHealth(results[1].value);
+      if (results[2].status === 'fulfilled' && results[2].value) setOperationsData(results[2].value);
+    } finally {
+      isOpsPollingRef.current = false;
+    }
   };
 
   const fetchFilteredEntities = async () => {
@@ -157,6 +166,20 @@ export default function App() {
     }
   };
 
+  const fetchActiveCards = async () => {
+    if (isCardsPollingRef.current) return;
+    isCardsPollingRef.current = true;
+    try {
+      if (leadView === 'verified') {
+        await fetchFilteredEntities();
+      } else {
+        await fetchCrawledDocuments();
+      }
+    } finally {
+      isCardsPollingRef.current = false;
+    }
+  };
+
   const handleResetData = async () => {
     if (!window.confirm("Are you sure you want to clean all stored records from the database?")) return;
     try {
@@ -182,20 +205,31 @@ export default function App() {
     }
   };
 
-  // Poll every 3 seconds for live dashboard updates
+  // Immediate fetch on filter or view changes
   useEffect(() => {
     fetchOperations();
-    fetchFilteredEntities();
-    fetchCrawledDocuments();
-
-    const interval = setInterval(() => {
-      fetchOperations();
+    if (leadView === 'verified') {
       fetchFilteredEntities();
+    } else {
       fetchCrawledDocuments();
-    }, 3000);
-
-    return () => clearInterval(interval);
+    }
   }, [searchQuery, selectedDomain, selectedCountry, selectedCompanyTier, leadView, crawledPage]);
+
+  // Periodic polling: telemetry stream every 4s, card data every 7s (staggered, non-overlapping)
+  useEffect(() => {
+    const opsInterval = setInterval(() => {
+      fetchOperations();
+    }, 4000);
+
+    const cardsInterval = setInterval(() => {
+      fetchActiveCards();
+    }, 7000);
+
+    return () => {
+      clearInterval(opsInterval);
+      clearInterval(cardsInterval);
+    };
+  }, [leadView, crawledPage, searchQuery, selectedDomain, selectedCountry, selectedCompanyTier]);
 
   // Fetch detail view data when an entity is selected
   useEffect(() => {
@@ -289,18 +323,25 @@ export default function App() {
   }, [selectedDocumentId]);
 
   const toggleRunPause = async () => {
-    setLoading(true);
-    setError(null);
     const isCurrentlyRunning = agentStatus?.status === 'RUNNING';
+    const nextStatus = isCurrentlyRunning ? 'PAUSED' : 'RUNNING';
     const targetAction = isCurrentlyRunning ? 'pause' : 'run';
+
+    // Instant optimistic toggle: button and status badge update with 0ms delay!
+    setAgentStatus(prev => ({ ...prev, status: nextStatus }));
+    setError(null);
+
     try {
       const res = await fetch(`${API_BASE}/agent/${targetAction}`, { method: 'POST' });
-      if (!res.ok) throw new Error(`Failed to ${targetAction} agent.`);
-      await fetchOperations();
+      if (!res.ok) {
+        // Rollback state if server returned error
+        setAgentStatus(prev => ({ ...prev, status: isCurrentlyRunning ? 'RUNNING' : 'PAUSED' }));
+        throw new Error(`Failed to ${targetAction} agent.`);
+      }
+      // Re-fetch telemetry in background
+      fetchOperations();
     } catch (err) {
       setError(err.message);
-    } finally {
-      setLoading(false);
     }
   };
 

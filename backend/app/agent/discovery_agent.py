@@ -625,11 +625,10 @@ class AutonomousDiscoveryAgent:
     def get_metrics(self, db: Session) -> Dict[str, Any]:
         state = self._get_or_create_state(db)
 
+        from sqlalchemy import func, or_
         total_searches = db.query(SearchHistory).count()
-        sources_rows = db.query(SearchHistory.sources_found).all()
-        total_sources = sum((r[0] or 0) for r in sources_rows)
-
-        from sqlalchemy import or_
+        total_sources_val = db.query(func.coalesce(func.sum(SearchHistory.sources_found), 0)).scalar()
+        total_sources = int(total_sources_val or 0)
         from app.persistence.models import GlobalLead
         total_entities = db.query(GlobalLead).count() or db.query(UniversalRecord).count()
         verified_entities = db.query(GlobalLead).count() or db.query(UniversalRecord).filter(
