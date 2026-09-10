@@ -335,11 +335,15 @@ class KeyPeopleExtractor:
                 n_lower = extracted_name.lower()
                 if n_lower not in seen:
                     # Enforce Person-Company Association:
-                    # Require that snippet or title contains reference to company brand
-                    clean_c_words = [w.lower() for w in clean_cname.split() if len(w) >= 3 and w.lower() not in {"the", "and", "inc", "ltd", "corp", "llc"}]
+                    # Require that snippet or title contains reference to company brand or domain
+                    base_brand = re.sub(r'\.(com|co|io|ai|net|org|de|uk|fr|app|dev|tech)$', '', clean_cname.lower()).strip()
+                    clean_c_words = [w.lower() for w in re.split(r'[\s\.\-]+', clean_cname) if len(w) >= 3 and w.lower() not in {"the", "and", "inc", "ltd", "corp", "llc", "com", "co", "io", "ai", "net", "org"}]
+                    if base_brand and len(base_brand) >= 3 and base_brand not in clean_c_words:
+                        clean_c_words.append(base_brand)
+                    
                     has_company_evidence = any(cw in combined.lower() for cw in clean_c_words) if clean_c_words else True
                     
-                    if not has_company_evidence and clean_cname.lower() not in combined.lower():
+                    if not has_company_evidence and clean_cname.lower() not in combined.lower() and (not base_brand or base_brand not in combined.lower()):
                         logger.debug(f"[KeyPeopleExtractor] Skipping candidate {extracted_name}: no company association with '{clean_cname}'")
                         continue
 

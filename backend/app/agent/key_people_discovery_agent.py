@@ -56,49 +56,49 @@ class KeyPeopleDiscoveryAgent:
 
         domain_str = extract_domain(official_domain) if official_domain else None
 
+        clean_brand = re.sub(r'\.(com|co|io|ai|net|org|de|uk|fr|app|dev|tech)$', '', clean_company.lower()).strip()
+        brand_name = clean_brand.replace("-", " ").title() if clean_brand else clean_company
+
         queries = []
 
-        # 1. Founder Discovery (Highest priority)
-        queries.append({
-            "query": f'"{clean_company}" founder site:linkedin.com/in',
-            "group": "FOUNDER_LINKEDIN",
-            "priority": 1
-        })
-
-        # 2. CEO Discovery
-        queries.append({
-            "query": f'"{clean_company}" CEO site:linkedin.com/in',
-            "group": "CEO_LINKEDIN",
-            "priority": 2
-        })
-
-        # 3. CTO Discovery
-        queries.append({
-            "query": f'"{clean_company}" CTO site:linkedin.com/in',
-            "group": "CTO_LINKEDIN",
-            "priority": 3
-        })
-
-        # 4. Official Website Leadership / Team (if domain available)
+        # 1. Natural Domain + Founder / CEO + LinkedIn (Highest hit rate across search engines)
         if domain_str:
             queries.append({
-                "query": f'site:{domain_str} (founder OR CEO OR leadership OR team)',
-                "group": "OFFICIAL_DOMAIN_TEAM",
-                "priority": 4
+                "query": f"{domain_str} founder linkedin",
+                "group": "DOMAIN_FOUNDER_LINKEDIN",
+                "priority": 1
+            })
+            queries.append({
+                "query": f"{domain_str} CEO linkedin",
+                "group": "DOMAIN_CEO_LINKEDIN",
+                "priority": 2
+            })
+
+        # 2. Natural Brand Name + Founder / CEO + LinkedIn
+        queries.append({
+            "query": f"{brand_name} founder linkedin",
+            "group": "BRAND_FOUNDER_LINKEDIN",
+            "priority": 3
+        })
+        queries.append({
+            "query": f"{brand_name} CEO linkedin",
+            "group": "BRAND_CEO_LINKEDIN",
+            "priority": 4
+        })
+
+        # 3. Leadership / Team Discovery
+        if domain_str:
+            queries.append({
+                "query": f"{domain_str} leadership team linkedin",
+                "group": "DOMAIN_LEADERSHIP_LINKEDIN",
+                "priority": 5
             })
         else:
             queries.append({
-                "query": f'"{clean_company}" leadership team site:linkedin.com/in',
-                "group": "LEADERSHIP_LINKEDIN",
-                "priority": 4
+                "query": f"{brand_name} leadership linkedin",
+                "group": "BRAND_LEADERSHIP_LINKEDIN",
+                "priority": 5
             })
-
-        # 5. General Founder / Executive query
-        queries.append({
-            "query": f'"{clean_company}" founder OR co-founder',
-            "group": "GENERAL_FOUNDER",
-            "priority": 5
-        })
 
         # Sanitize and truncate to MAX_QUERY_BUDGET (5)
         validated_queries = []

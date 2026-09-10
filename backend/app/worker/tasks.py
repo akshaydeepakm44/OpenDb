@@ -985,11 +985,14 @@ def search_company_people_task(
         if not all_discovered:
             return {"status": "no_results", "company_name": company_name}
 
+        clean_dom = (official_domain or "").replace("www.", "").lower().strip()
+        site_domain = clean_dom if clean_dom else domain
+
         saved_count = 0
         for p in all_discovered:
             target_names = [company_name, clean_company]
             existing = db.query(KeyPersonCandidate).filter(
-                KeyPersonCandidate.company_name.in_(target_names),
+                (KeyPersonCandidate.company_name.in_(target_names)) | (KeyPersonCandidate.source_domain == site_domain),
                 KeyPersonCandidate.person_name == p["name"]
             ).first()
             
@@ -1006,7 +1009,7 @@ def search_company_people_task(
                     person_name=p["name"],
                     role=p["title"],
                     source_url=valid_profile_url, # Genuine profile URL or None, NEVER a search query!
-                    source_domain=domain,
+                    source_domain=site_domain,
                     source_type=p.get("source_type", "search_discovery"),
                     discovery_query=last_query,
                     evidence_text=p.get("evidence", ""),
@@ -1024,6 +1027,47 @@ def search_company_people_task(
                     existing.source_url = valid_profile_url
                     existing.verification_status = "HIGH_CONFIDENCE"
                     saved_count += 1
+
+        # Backfill discovered key people into DomainRecord and GlobalLead for immediate dashboard display
+        if all_discovered and site_domain:
+            try:
+                univs = db.query(UniversalRecord).filter(UniversalRecord.url.ilike(f"%{site_domain}%")).all()
+                for u in univs:
+                    dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == u.id).first()
+                    if dom_rec:
+                        d_data = dict(dom_rec.data or {})
+                        kp_list = list(d_data.get("key_people") or [])
+                        existing_k_names = {kp.get("name", "").lower() for kp in kp_list if isinstance(kp, dict)}
+                        for p in all_discovered:
+                            p_url = p.get("linkedin_url")
+                            if p["name"].lower() not in existing_k_names:
+                                kp_list.append({
+                                    "name": p["name"],
+                                    "title": p["title"],
+                                    "linkedin_url": p_url,
+                                    "linkedin_search_url": p_url
+                                })
+                                existing_k_names.add(p["name"].lower())
+                        d_data["key_people"] = kp_list
+                        dom_rec.data = d_data
+                
+                glead = db.query(GlobalLead).filter(GlobalLead.domain == site_domain).first()
+                if glead:
+                    from app.persistence.models import GlobalLeadPerson
+                    existing_gl_people = {glp.full_name.lower() for glp in db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id == glead.id).all()}
+                    for p in all_discovered:
+                        if p["name"].lower() not in existing_gl_people:
+                            p_url = p.get("linkedin_url")
+                            db.add(GlobalLeadPerson(
+                                global_lead_id=glead.id,
+                                full_name=p["name"],
+                                title=p["title"],
+                                linkedin_url=p_url,
+                                linkedin_search_url=p_url
+                            ))
+                            existing_gl_people.add(p["name"].lower())
+            except Exception as sync_err:
+                logger.debug(f"[Worker P] Key people backfill sync notice: {sync_err}")
         
         db.commit()
         return {"status": "success", "company_name": company_name, "people_found": saved_count}

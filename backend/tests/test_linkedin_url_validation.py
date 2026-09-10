@@ -1,4 +1,4 @@
-﻿"""
+"""
 Regression tests - LinkedIn URL strict validation.
 All 8 cases from the bug report.
 """
@@ -64,3 +64,35 @@ def test_dashboard_label_for_search_url():
     assert get_label({"linkedin_url": "https://www.linkedin.com/in/john-doe"}) == "View Profile"
     assert get_label({"linkedin_url": "https://www.linkedin.com/search/results/people/?keywords=Spotalike"}) == "Search on LinkedIn"
     assert get_label({"linkedin_url": None}) == "Search on LinkedIn"
+
+def test_natural_people_search_queries_for_domain():
+    from app.agent.key_people_discovery_agent import key_people_agent
+    queries = key_people_agent.generate_queries(
+        company_name="foundersday.co",
+        official_domain="foundersday.co"
+    )
+    query_texts = [q["query"] for q in queries]
+    # Verify natural queries matching manual Google search syntax
+    assert any("foundersday.co founder linkedin" in q for q in query_texts)
+    assert any("foundersday.co CEO linkedin" in q for q in query_texts)
+    assert any("Foundersday founder linkedin" in q for q in query_texts)
+    # Ensure restrictive quotes were not forced
+    assert not any('"' in q for q in query_texts)
+
+def test_tld_brand_association_matching():
+    from app.extraction.key_people_extractor import key_people_extractor
+    snippets = [
+        {
+            "title": "Alex Rivera - Founder & CEO - Foundersday | LinkedIn",
+            "snippet": "Alex Rivera is the Founder & CEO of Foundersday, an exclusive community...",
+            "url": "https://www.linkedin.com/in/alex-rivera-foundersday"
+        }
+    ]
+    # Even if company name is passed as foundersday.co, it should match Foundersday snippet
+    discovered = key_people_extractor.extract_from_linkedin_search_snippets(
+        snippets=snippets,
+        company_name="foundersday.co"
+    )
+    assert len(discovered) == 1
+    assert discovered[0]["name"] == "Alex Rivera"
+    assert "linkedin.com/in/alex-rivera-foundersday" in discovered[0]["linkedin_url"]
