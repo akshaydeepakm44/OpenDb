@@ -21,6 +21,26 @@ from app.storage.file_storage import file_storage
 
 logger = logging.getLogger(__name__)
 
+PRIORITY_PATH_HINTS = (
+    "about", "team", "leadership", "management", "who-we-are",
+    "contact", "company", "our-story", "founders", "board",
+    "management-team", "our-people", "meet-the-team"
+)
+
+NOISE_PATH_HINTS = (
+    "/cart", "/checkout", "/wishlist", "/login", "/register",
+    "/product/", "/category/", "/boutique/", "/shop/", "compare"
+)
+
+def _score_link(url: str, link_text: str) -> int:
+    """Lower score = crawled first. 0 = high-value info page, 2 = likely noise."""
+    combined = f"{url} {link_text}".lower()
+    if any(h in combined for h in PRIORITY_PATH_HINTS):
+        return 0
+    if any(h in combined for h in NOISE_PATH_HINTS):
+        return 2
+    return 1
+
 class CrawlResultItem:
     def __init__(
         self,
@@ -64,7 +84,7 @@ class CrawlerService:
 
         base_host = url_discovery.get_domain_host(norm_start_url)
         visited_urls: Set[str] = set()
-        queue: List[Dict[str, Any]] = [{"url": norm_start_url, "depth": 0}]
+        queue: List[Dict[str, Any]] = [{"url": norm_start_url, "depth": 0, "priority": 0}]
         results: List[CrawlResultItem] = []
 
         # Try using Crawl4AI / Playwright or fallback to httpx AsyncClient
@@ -232,9 +252,26 @@ class CrawlerService:
                                 visited_urls=visited_urls,
                                 allowed_host=base_host
                             )
+                            link_text_map = {}
+                            for l in raw_links:
+                                norm = normalizer.normalize_url(l["href"], base_url=curr_url)
+                                if norm and norm not in link_text_map:
+                                    link_text_map[norm] = l.get("text", "")
+
+                            noise_queued_this_page = 0
+                            new_items = []
                             for n_url in next_links:
-                                if n_url not in visited_urls and not any(q["url"] == n_url for q in queue):
-                                    queue.append({"url": n_url, "depth": curr_depth + 1})
+                                if n_url not in visited_urls and not any(q["url"] == n_url for q in queue) and not any(item["url"] == n_url for item in new_items):
+                                    link_text = link_text_map.get(n_url, "")
+                                    score = _score_link(n_url, link_text)
+                                    if score == 2:
+                                        if noise_queued_this_page >= 5:
+                                            continue
+                                        noise_queued_this_page += 1
+                                    new_items.append({"url": n_url, "depth": curr_depth + 1, "priority": score})
+
+                            queue.extend(new_items)
+                            queue.sort(key=lambda x: (x.get("priority", 1), x.get("depth", 0)))
 
                     except Exception as e:
                         logger.error(f"Error crawling {curr_url}: {e}")
@@ -245,6 +282,7 @@ class CrawlerService:
                 while queue and len(visited_urls) < max_pages:
                     current_item = queue.pop(0)
                     curr_url = current_item["url"]
+                    curr_depth = current_item.get("depth", 0)
                     if curr_url in visited_urls:
                         continue
                     visited_urls.add(curr_url)
@@ -254,6 +292,14 @@ class CrawlerService:
                         soup = BeautifulSoup(html_raw, "html.parser")
                         title = soup.title.string if soup.title else curr_url
                         text_clean = soup.get_text()
+
+                        raw_links = []
+                        for a in soup.find_all("a", href=True):
+                            raw_links.append({
+                                "href": a["href"],
+                                "text": normalizer.normalize_string(a.text) or ""
+                            })
+
                         results.append(CrawlResultItem(
                             url=curr_url,
                             title=normalizer.normalize_string(title),
@@ -262,10 +308,39 @@ class CrawlerService:
                             text=normalizer.normalize_string(text_clean),
                             http_status=resp.status_code,
                             content_type="text/html",
-                            links=[],
+                            links=raw_links,
                             media=[],
                             metadata={"word_count": len(text_clean.split())}
                         ))
+
+                        if curr_depth < max_depth and len(visited_urls) + len(queue) < max_pages:
+                            extracted_hrefs = [l["href"] for l in raw_links]
+                            next_links = url_discovery.filter_and_normalize_links(
+                                links=extracted_hrefs,
+                                base_url=curr_url,
+                                visited_urls=visited_urls,
+                                allowed_host=base_host
+                            )
+                            link_text_map = {}
+                            for l in raw_links:
+                                norm = normalizer.normalize_url(l["href"], base_url=curr_url)
+                                if norm and norm not in link_text_map:
+                                    link_text_map[norm] = l.get("text", "")
+
+                            noise_queued_this_page = 0
+                            new_items = []
+                            for n_url in next_links:
+                                if n_url not in visited_urls and not any(q["url"] == n_url for q in queue) and not any(item["url"] == n_url for item in new_items):
+                                    link_text = link_text_map.get(n_url, "")
+                                    score = _score_link(n_url, link_text)
+                                    if score == 2:
+                                        if noise_queued_this_page >= 5:
+                                            continue
+                                        noise_queued_this_page += 1
+                                    new_items.append({"url": n_url, "depth": curr_depth + 1, "priority": score})
+
+                            queue.extend(new_items)
+                            queue.sort(key=lambda x: (x.get("priority", 1), x.get("depth", 0)))
                     except Exception as fe:
                         logger.error(f"HTTPX fetch failed for {curr_url}: {fe}")
 

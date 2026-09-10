@@ -970,7 +970,12 @@ def search_company_people_task(
                     searxng_service.search_with_meta(query=q, max_results=4)
                 )
                 if results:
-                    batch_people = key_people_extractor.extract_from_linkedin_search_snippets(results, clean_company)
+                    relevant_results = key_people_agent.filter_relevant_results(
+                        results,
+                        official_domain=official_domain,
+                        company_name=clean_company
+                    )
+                    batch_people = key_people_extractor.extract_from_linkedin_search_snippets(relevant_results, clean_company)
                     for bp in batch_people:
                         if not any(dp["name"].lower() == bp["name"].lower() for dp in all_discovered):
                             all_discovered.append(bp)

@@ -68,16 +68,42 @@ def test_dashboard_label_for_search_url():
 def test_natural_people_search_queries_for_domain():
     from app.agent.key_people_discovery_agent import key_people_agent
     queries = key_people_agent.generate_queries(
-        company_name="foundersday.co",
-        official_domain="foundersday.co"
+        company_name="winners.mu",
+        official_domain="winners.mu"
     )
     query_texts = [q["query"] for q in queries]
-    # Verify natural queries matching manual Google search syntax
-    assert any("foundersday.co founder linkedin" in q for q in query_texts)
-    assert any("foundersday.co CEO linkedin" in q for q in query_texts)
-    assert any("Foundersday founder linkedin" in q for q in query_texts)
-    # Ensure restrictive quotes were not forced
-    assert not any('"' in q for q in query_texts)
+    # Verify domain-anchored queries including "{domain} linkedin key people"
+    assert queries[0]["query"] == "winners.mu linkedin key people"
+    assert any("winners.mu founder linkedin" in q for q in query_texts)
+    assert any("winners.mu CEO linkedin" in q for q in query_texts)
+    assert any("site:linkedin.com/in winners.mu" in q for q in query_texts)
+
+def test_filter_relevant_results_attribution():
+    from app.agent.key_people_discovery_agent import key_people_agent
+    results = [
+        {
+            "title": "Jean Li - Chief Financial Officer - Winners | LinkedIn",
+            "snippet": "Experienced CFO at winners.mu, leading financial strategy in Mauritius...",
+            "url": "https://www.linkedin.com/in/jean-li-cfo",
+            "score": 1.0,
+            "engine": "google"
+        },
+        {
+            "title": "Random Unrelated Page",
+            "snippet": "Some unrelated text here without domain or linkedin",
+            "url": "https://example.com/random",
+            "score": 0.5,
+            "engine": "bing"
+        }
+    ]
+    filtered = key_people_agent.filter_relevant_results(
+        results,
+        official_domain="winners.mu",
+        company_name="Winners"
+    )
+    assert len(filtered) == 1
+    assert filtered[0]["match_confidence"] == "high"
+    assert "jean-li-cfo" in filtered[0]["url"]
 
 def test_tld_brand_association_matching():
     from app.extraction.key_people_extractor import key_people_extractor
