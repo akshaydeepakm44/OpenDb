@@ -130,9 +130,12 @@ You are an expert OpenDB data extraction system. Extract structured data for dom
 
 RULES:
 1. Extract ONLY information explicitly present in the text below.
-2. NEVER hallucinate or assume details.
-3. If a field is not present, use null (or [] for arrays).
-4. Return a JSON object with two keys:
+2. For "industry", extract the specific industry sector (e.g., "Retail, Supermarkets & E-Commerce", "Software, SaaS & Cloud Computing", "Financial Services & Banking", "Healthcare & Medical", "Food & Hospitality", etc.).
+3. For "headquarters" or "location", extract City, State/Region, and Country.
+4. For "company_size", extract explicit employee headcount or ranges (e.g., "50-200", "1000+").
+5. NEVER hallucinate or assume details.
+6. If a field is not present, use null (or [] for arrays).
+7. Return a JSON object with two keys:
    - "domain_data": object containing the extracted fields
    - "evidence": array of objects with keys: "field", "value", "evidence_text", "confidence" (0.5 to 1.0)
 
@@ -196,14 +199,21 @@ TEXT TO EXTRACT FROM:
                     val = parsed_url.capitalize()
                     evidence_snippet = f"Derived from domain name: '{val}'"
 
-            # 2. Industry
+            # 2. Industry Sector
             elif prop_name == "industry":
-                if domain.lower() == "technology":
-                    val = "Software & Information Technology"
-                    evidence_snippet = "Classified as Technology domain industry"
-                else:
-                    val = f"{domain} Industry"
-                    evidence_snippet = f"Classified domain: {domain}"
+                from app.classification.domain_classifier import domain_classifier
+                c_dom, _, conf = domain_classifier.classify(text, title=parsed_url, url=page_url)
+                val = c_dom
+                evidence_snippet = f"Classified industry sector: {val} (confidence {conf:.0%})"
+
+            # 2b. Headquarters / Location
+            elif prop_name in ["headquarters", "location", "locations"]:
+                from app.extraction.firmographics import extract_firmographic_location
+                loc_res = extract_firmographic_location(text, page_url=page_url)
+                val = loc_res.get("formatted") or loc_res.get("country")
+                if prop_type == "array":
+                    val = [val] if val else []
+                evidence_snippet = f"Extracted location: {val}" if val else None
 
             # 3. Founded Year
             elif prop_name == "founded_year":
@@ -243,20 +253,16 @@ TEXT TO EXTRACT FROM:
                     val = None
                     evidence_snippet = None
 
-            # 7. Company Size (Evidence-based, UNKNOWN if not found)
-            elif prop_name in ["company_size", "employee_count", "team_size"]:
-                range_match = re.search(r"\b(\d+)\s*(?:-|to)\s*(\d+)\s*(?:employees|people|staff)\b", text, re.IGNORECASE)
-                if range_match:
-                    val = f"{range_match.group(1)}-{range_match.group(2)}"
-                    evidence_snippet = range_match.group(0)
+            # 7. Company Size & Size Tier
+            elif prop_name in ["company_size", "employee_count", "team_size", "company_tier"]:
+                from app.extraction.firmographics import extract_firmographic_size, standardize_company_tier
+                c_size, c_tier = extract_firmographic_size(text)
+                if prop_name == "company_tier":
+                    val = c_tier if c_tier != "Unknown" else "Unknown"
+                    evidence_snippet = f"Derived company size tier: {val}"
                 else:
-                    single_match = re.search(r"\b(\d{1,6})\+?\s*(?:employees|people|staff)\b", text, re.IGNORECASE)
-                    if single_match:
-                        val = f"{single_match.group(1)}+"
-                        evidence_snippet = single_match.group(0)
-                    else:
-                        val = "UNKNOWN"
-                        evidence_snippet = "No explicit employee size in crawled text"
+                    val = c_size if c_size != "Unknown" else "UNKNOWN"
+                    evidence_snippet = f"Employee size: {val} (Tier: {c_tier})" if val != "UNKNOWN" else "No explicit employee size in crawled text"
 
             # 8. Key People / Leadership / Executives
             elif prop_name in ["key_people", "leadership", "decision_makers", "executives"]:

@@ -43,29 +43,13 @@ def _clean_name(raw_name: str, url: str = "") -> str:
     return clean if clean else raw_name
 
 def _infer_location(domain: str, title: str = "", summary: str = "") -> str:
-    combined = f"{domain} {title} {summary}".lower()
-    if domain.endswith(".uk") or ".co.uk" in domain:
-        return "United Kingdom"
-    elif domain.endswith(".de"):
-        return "Germany"
-    elif domain.endswith(".fr"):
-        return "France"
-    elif domain.endswith(".ca"):
-        return "Canada"
-    elif domain.endswith(".au") or ".com.au" in domain:
-        return "Australia"
-    elif domain.endswith(".jp") or ".co.jp" in domain:
-        return "Japan"
-    elif domain.endswith(".in") or ".co.in" in domain:
-        return "India"
-    elif domain.endswith(".sg"):
-        return "Singapore"
-    elif domain.endswith(".se"):
-        return "Sweden"
-    elif domain.endswith(".nl"):
-        return "Netherlands"
-    elif domain.endswith(".ch"):
-        return "Switzerland"
+    from app.extraction.firmographics import extract_firmographic_location
+    combined = f"{domain} {title} {summary}"
+    loc_res = extract_firmographic_location(combined, page_url=f"https://{domain}")
+    if loc_res.get("formatted"):
+        return loc_res["formatted"]
+    if loc_res.get("country"):
+        return loc_res["country"]
 
     cities = [
         ("seattle", "Seattle, WA, USA"),
@@ -86,14 +70,21 @@ def _infer_location(domain: str, title: str = "", summary: str = "") -> str:
         ("tokyo", "Tokyo, Japan"),
         ("bengaluru", "Bengaluru, KA, India"),
         ("singapore", "Singapore"),
+        ("port louis", "Port Louis, Mauritius"),
     ]
+    comb_lower = combined.lower()
     for keyword, location_str in cities:
-        if keyword in combined:
+        if keyword in comb_lower:
             return location_str
 
     return "Unknown"
 
 def _infer_industry(domain: str, title: str = "", summary: str = "") -> str:
+    from app.classification.domain_classifier import domain_classifier
+    c_dom, _, conf = domain_classifier.classify(summary, title=title, url=domain)
+    if conf >= 0.60:
+        return c_dom
+
     combined = f"{domain} {title} {summary}".lower()
 
     def _has_keyword(words):
@@ -106,7 +97,11 @@ def _infer_industry(domain: str, title: str = "", summary: str = "") -> str:
                     return True
         return False
     
-    if _has_keyword(["ai", "artificial intelligence", "llm", "gpt", "neural", "deep learning"]):
+    if _has_keyword(["supermarket", "grocery", "groceries", "hypermarket", "retail", "store", "ecommerce", "cart"]):
+        return "Retail, Supermarkets & E-Commerce"
+    elif _has_keyword(["restaurant", "hotel", "resort", "dining", "hospitality", "food", "cafe"]):
+        return "Food, Beverage & Hospitality"
+    elif _has_keyword(["ai", "artificial intelligence", "llm", "gpt", "neural", "deep learning"]):
         return "Artificial Intelligence & ML"
     elif _has_keyword(["dev", "api", "code", "github", "developer", "sdk", "library"]):
         return "Developer Tools & Software"
@@ -116,10 +111,14 @@ def _infer_industry(domain: str, title: str = "", summary: str = "") -> str:
         return "Cybersecurity & Privacy"
     elif _has_keyword(["bank", "finance", "crypto", "billing", "fintech", "wealth", "tax"]):
         return "Fintech & Financial Services"
-    elif _has_keyword(["commerce", "cart", "retail", "marketplace", "ecommerce"]):
-        return "E-Commerce & Retail Tech"
     elif _has_keyword(["health", "medical", "clinical", "pharma", "biotech", "healthcare"]):
         return "Healthcare & Life Sciences"
+    elif _has_keyword(["logistics", "shipping", "freight", "cargo", "warehouse", "delivery", "trucking"]):
+        return "Logistics, Transport & Supply Chain"
+    elif _has_keyword(["property", "real estate", "construction", "architecture", "building"]):
+        return "Real Estate, Architecture & Construction"
+    elif _has_keyword(["manufacturing", "industrial", "factory", "machinery", "automotive"]):
+        return "Manufacturing, Industrial & Hardware"
     elif _has_keyword(["analytics", "pipeline", "etl", "big data", "business intelligence"]):
         return "Data Analytics & BI"
     elif _has_keyword(["marketing", "campaign", "crm", "lead gen"]):
@@ -180,14 +179,20 @@ def _infer_revenue(domain: str, tier: str = "") -> str:
 
 def determine_company_tier(linked=None, domain_data=None) -> str:
     """Helper to derive company tier string strictly from evidence or return Unknown."""
+    from app.extraction.firmographics import standardize_company_tier
     if isinstance(domain_data, dict):
-        tier = domain_data.get("company_size") or domain_data.get("company_tier") or domain_data.get("employee_count")
+        tier = domain_data.get("company_tier") or domain_data.get("company_size") or domain_data.get("employee_count")
         if tier and str(tier).lower() not in ["none", "null", "undefined", "unknown", ""]:
-            return str(tier)
+            return standardize_company_tier(tier)
     if linked:
+        meta = getattr(linked, "metadata_json", {})
+        if isinstance(meta, dict):
+            tier = meta.get("company_tier") or meta.get("company_size")
+            if tier and str(tier).lower() not in ["none", "null", "undefined", "unknown", ""]:
+                return standardize_company_tier(tier)
         tier = getattr(linked, "company_size", None) or getattr(linked, "employee_count", None)
         if tier and str(tier).lower() not in ["none", "null", "undefined", "unknown", ""]:
-            return str(tier)
+            return standardize_company_tier(tier)
     return "Unknown"
 
 
@@ -647,61 +652,10 @@ def _determine_company_tier(linked: Optional[UniversalRecord]) -> str:
 
 
 def _clean_name(canonical_name: str, url: str = "") -> str:
-    """Ensure company names are clean, concise brand names without taglines or slogans."""
-    from urllib.parse import urlparse
-    import re
-    if not canonical_name:
-        try:
-            netloc = urlparse(url if url.startswith("http") else "https://" + url).netloc
-            return netloc.replace("www.", "").split(".")[0].replace("-", " ").title()
-        except Exception:
-            return "Organization"
-
-    # Strip generic suffixes such as "Official Portal", "Official Website", "Home Page"
-    for suffix in [
-        "Official Portal", "official portal", "Official Website", "official website",
-        "Official Web Portal", "official web portal", "Home Page", "Homepage", "Official Site", "Official"
-    ]:
-        if canonical_name.endswith(suffix):
-            canonical_name = canonical_name[:-len(suffix)].strip()
-
-    # Check for CJK or non-Latin script sentence pollution
-    has_non_latin = any(ord(char) > 127 for char in canonical_name)
-    if has_non_latin and len(canonical_name) > 20:
-        try:
-            netloc = urlparse(url if url.startswith("http") else "https://" + url).netloc
-            return netloc.replace("www.", "").split(".")[0].replace("-", " ").title()
-        except Exception:
-            return canonical_name[:25]
-
-    # Split by standard separators: | , - , – (en-dash), — (em-dash), : , •
-    parts = [p.strip() for p in re.split(r'[\-–—|:•]', canonical_name) if p.strip()]
-    if len(parts) > 1:
-        dom_token = ""
-        if url:
-            try:
-                dom_token = urlparse(url if url.startswith("http") else "https://" + url).netloc.replace("www.", "").split(".")[0].lower()
-            except Exception:
-                pass
-
-        if dom_token and len(dom_token) >= 3:
-            for p in parts:
-                if dom_token in p.lower():
-                    return p
-
-        first = parts[0]
-        if len(first.split()) <= 4 and len(first) <= 30:
-            return first
-        for p in parts:
-            if len(p.split()) <= 3 and len(p) <= 25:
-                return p
-        return first
-
-    words = canonical_name.split()
-    if len(words) > 4:
-        return " ".join(words[:2])
-
-    return canonical_name.strip()
+    """Ensure company names are clean, concise brand names without taglines, generic titles ('Home', 'Index'), or slogans."""
+    from app.extraction.person_verifier import person_verifier
+    ident = person_verifier.canonicalize_company_identity(url=url, title=canonical_name, raw_name=canonical_name)
+    return ident["company_name"]
 
 
 
@@ -734,10 +688,12 @@ def get_crawled_documents(
     db: Session = Depends(get_db)
 ):
     """
-    Return the 'Crawled Leads' view.
-    Renders persisted Document cards with page pagination, filtering, and extracted fields.
+    Return the 'Crawled Leads' view — strictly the output of AGENT 1.
+    Renders persisted Document cards with raw crawled evidence and status CRAWLED_PENDING_AGENT_2.
+    NO synthesized dossiers, NO mock tech stacks, NO fake quality scores, NO key people.
     """
     from urllib.parse import urlparse
+    from sqlalchemy.orm import defer
 
     def _parse_url(url: str):
         try:
@@ -749,9 +705,6 @@ def get_crawled_documents(
         except Exception:
             return url, url
 
-    from sqlalchemy.orm import defer
-
-    # ── DB Documents Query ──
     q = db.query(Document).options(defer(Document.content_embedding))
     if query:
         search_pat = f"%{query}%"
@@ -761,230 +714,80 @@ def get_crawled_documents(
     if not all_matching_docs:
         return {"total": 0, "page": page, "pages": 1, "results": []}
 
-    doc_ids = [d.id for d in all_matching_docs]
-    linked_map = {
-        r.document_id: r for r in db.query(UniversalRecord).filter(UniversalRecord.document_id.in_(doc_ids)).all()
-    } if doc_ids else {}
-
-    linked_ids = [r.id for r in linked_map.values() if r and getattr(r, "id", None)]
-    dom_rec_map = {
-        dr.universal_record_id: dr for dr in db.query(DomainRecord).filter(DomainRecord.universal_record_id.in_(linked_ids)).all()
-    } if linked_ids else {}
-
     filtered_doc_results = []
     for d in all_matching_docs:
-        linked = linked_map.get(d.id)
         name, clean_dom = _parse_url(d.url or "")
 
-        # Quality Filter Stage: Block non-B2B domains (news, docs, edu, gov) & article titles
+        # Quality Filter Stage: Block non-B2B domains (news, docs, edu, gov)
         keep_url, _ = quality_filter.filter_url(d.url or "")
         if not keep_url:
             continue
 
-        c_name = (linked.canonical_name if (linked and linked.canonical_name) else (d.title or name))
+        c_name = _clean_name(d.title or name, clean_dom)
         keep_ent, _ = quality_filter.filter_entity(c_name, d.url or "", 0.8)
         if not keep_ent:
             continue
 
         created_time = d.created_at or getattr(d, 'retrieved_at', None)
-        
-        dom_rec = dom_rec_map.get(linked.id) if linked else None
-        dom_data = dom_rec.data if (dom_rec and isinstance(dom_rec.data, dict)) else {}
+        raw_meta = getattr(d, 'raw_metadata', None) or {}
+        raw_artifacts = getattr(d, 'raw_artifacts', None) or []
+        lifecycle = getattr(d, 'lifecycle_state', None) or "CRAWLED_PENDING_AGENT_2"
 
-        # Location / Country
-        doc_country = (linked.country if (linked and linked.country) else None) or dom_data.get("country") or "Global"
-        if country and country != "All":
-            if country.lower() not in doc_country.lower() and doc_country.lower() not in country.lower():
-                continue
+        # Evidence-based raw fields only
+        page_title = raw_meta.get("raw_page_title") or d.title or name
+        meta_desc = raw_meta.get("meta_description") or ""
+        detected_emails = raw_meta.get("detected_emails") or []
+        detected_phones = raw_meta.get("detected_phones") or []
+        subpages_list = raw_meta.get("subpages_crawled") or []
+        pages_count = raw_meta.get("pages_crawled_count") or (1 + len(subpages_list))
 
-        # Industry / Domain
-        linked_domain_name = None
-        if linked:
-            try:
-                if hasattr(linked, "domain") and linked.domain:
-                    linked_domain_name = getattr(linked.domain, "name", None)
-            except Exception:
-                pass
-        industry_val = linked_domain_name or (linked.entity_type if linked else None) or dom_data.get("industry") or _infer_industry(clean_dom, d.title or name, "")
+        logo_url = f"https://www.google.com/s2/favicons?domain={clean_dom}&sz=128"
+
+        # Filter by domain query if requested
         if domain and domain != "All":
-            if domain.lower() not in industry_val.lower() and industry_val.lower() not in domain.lower():
+            if domain.lower() not in clean_dom.lower():
                 continue
-
-        # Company Size / Tier
-        size_val = determine_company_tier(linked, dom_data)
-        if company_tier and company_tier != "All" and "All Company Tiers" not in company_tier:
-            if company_tier not in size_val and size_val not in company_tier:
-                continue
-
-        # Logo / Favicon
-        logo_url = f"/api/agent/logo/{d.content_hash}.png" if (d.raw_path and "logo" in d.raw_path) else f"https://www.google.com/s2/favicons?domain={clean_dom}&sz=128"
-
-        # Business Overview — synthesis from evidence, NEVER template text
-        overview = (linked.description if linked else None) or dom_data.get("business_overview") or ""
-        if "indexed by opendb" in overview.lower() or "web portal indexed" in overview.lower() or not overview.strip():
-            overview = ""
-
-        # Tech Stack
-        tech_stack = dom_data.get("technologies") or dom_data.get("tech_stack")
-        if not tech_stack or not isinstance(tech_stack, list):
-            tech_stack = _infer_tech_stack(clean_dom, d.title or name, overview)
-
-        # Decision Makers from dom_data
-        leadership = dom_data.get("key_people") or dom_data.get("leadership") or dom_data.get("founders")
-        if not leadership or not isinstance(leadership, list):
-            leadership = []
-
-        # Crawled Subpages
-        subpages = dom_data.get("crawled_subpages") or [
-            {"title": "Home Portal", "url": d.url, "minio_raw_path": d.raw_path or f"raw/pages/{d.content_hash}.html"},
-            {"title": "About Us", "url": f"{d.url.rstrip('/')}/about", "minio_raw_path": f"processed/markdown/{d.content_hash}_about.md"}
-        ]
-
-        hq = (linked.location if (linked and linked.location) else None) or dom_data.get("headquarters") or dom_data.get("location") or _infer_location(clean_dom, d.title or name, overview)
-        rev_val = dom_data.get("revenue_funding") or dom_data.get("funding_stage") or dom_data.get("revenue") or _infer_revenue(clean_dom, size_val)
-        emails_val = dom_data.get("contact_emails") or dom_data.get("verified_emails") or _infer_emails(clean_dom, overview)
-        if not isinstance(emails_val, list):
-            emails_val = [str(emails_val)] if emails_val else []
-        resolved_cname = (linked.canonical_name if (linked and linked.canonical_name) else (d.title or name))
-
-        initial_score = calculate_evidence_quality_score(
-            canonical_name=resolved_cname,
-            domain=clean_dom,
-            industry=industry_val,
-            business_overview=overview,
-            products_services=tech_stack,
-            headquarters=hq,
-            company_size=size_val,
-            decision_makers=leadership,
-            verified_emails=emails_val,
-        )
 
         filtered_doc_results.append({
             "id": d.id,
             "url": d.url,
             "domain": clean_dom,
-            "canonical_name": resolved_cname,
-            "clean_name_lower": _clean_name(resolved_cname, clean_dom).lower().strip(),
+            "canonical_name": c_name,
             "logo_url": logo_url,
-            "business_overview": overview,
-            "technology_stack": tech_stack if isinstance(tech_stack, list) else [str(tech_stack)],
-            "decision_makers": leadership if isinstance(leadership, list) else [],
-            "crawled_subpages": subpages if isinstance(subpages, list) else [],
-            "headquarters": hq,
-            "industry": industry_val,
-            "company_size": size_val,
-            "company_tier": size_val,
-            "revenue_funding": rev_val,
-            "verified_emails": emails_val,
-            "country": doc_country,
-            "lead_quality_score": initial_score,
-            "quality_score": initial_score,
-            "status": "Verified" if (linked and (linked.status in ["Verified", "Active"] or (getattr(linked, "confidence", None) and float(linked.confidence) >= 0.60))) else ("Discovered" if linked else "Raw Ingested"),
-            "verified_entity_id": linked.id if linked else None,
+            "http_status": d.http_status or 200,
+            "lifecycle_state": lifecycle,
+            "status": "CRAWLED_PENDING_AGENT_2",
+            "crawl_status": "COMPLETED",
+            "pages_crawled": pages_count,
+            "word_count": d.word_count or 0,
+            "links_count": d.links_count or 0,
+            "images_count": d.images_count or 0,
+            "minio_artifacts": raw_artifacts,
+            "raw_page_title": page_title,
+            "meta_description": meta_desc if meta_desc else "Not Found",
+            "detected_emails": detected_emails,
+            "detected_phones": detected_phones,
+            "subpages_crawled": subpages_list,
+            # Explicit placeholders for unexecuted Agent 2 stages
+            "business_overview": meta_desc if meta_desc else "Raw crawl completed. Business overview pending Agent 2 extraction.",
+            "technology_stack": [],
+            "decision_makers": [],
+            "headquarters": "Pending Agent 2",
+            "industry": "Pending Agent 2",
+            "company_size": "Pending Agent 2",
+            "revenue_funding": "Pending Agent 2",
+            "verified_emails": detected_emails,
+            "country": "Global",
+            "lead_quality_score": None,
+            "quality_score": None,
             "crawled_at": created_time.isoformat() if (created_time and hasattr(created_time, "isoformat")) else None,
+            "agent_boundary": "AGENT_1_COMPLETED_PENDING_AGENT_2",
         })
 
     total_filtered = len(filtered_doc_results)
     start_idx = (page - 1) * limit
     end_idx = start_idx + limit
     paginated_results = filtered_doc_results[start_idx:end_idx]
-
-    # Batch enrich Key People ONLY for the items displayed on current page (avoids N+1 DB bottleneck)
-    if paginated_results:
-        import re as _re
-        from app.persistence.models import KeyPersonCandidate, GlobalLeadPerson
-        from sqlalchemy import func
-
-        page_domains = {r["domain"].lower() for r in paginated_results if r.get("domain")}
-        page_names = {r["clean_name_lower"] for r in paginated_results if r.get("clean_name_lower")}
-        page_lead_ids = [r["verified_entity_id"] for r in paginated_results if r.get("verified_entity_id")]
-
-        kp_cands_map = {}
-        if page_domains or page_names:
-            try:
-                kp_cands = db.query(KeyPersonCandidate).filter(
-                    or_(
-                        KeyPersonCandidate.source_domain.in_(page_domains),
-                        func.lower(KeyPersonCandidate.company_name).in_(page_names)
-                    )
-                ).all()
-                for kp in kp_cands:
-                    if kp.source_domain:
-                        kp_cands_map.setdefault(kp.source_domain.lower(), []).append(kp)
-                    if kp.company_name:
-                        kp_cands_map.setdefault(kp.company_name.lower().strip(), []).append(kp)
-            except Exception:
-                db.rollback()
-
-        gl_people_map = {}
-        if page_lead_ids:
-            try:
-                gl_people = db.query(GlobalLeadPerson).filter(
-                    GlobalLeadPerson.lead_id.in_(page_lead_ids)
-                ).all()
-                for glp in gl_people:
-                    gl_people_map.setdefault(glp.lead_id, []).append(glp)
-            except Exception:
-                db.rollback()
-
-        for item in paginated_results:
-            clean_dom = item["domain"].lower()
-            c_low = item.get("clean_name_lower", "")
-            leadership = list(item.get("decision_makers") or [])
-            existing_names = {l.get("name", "").lower() for l in leadership if isinstance(l, dict)}
-
-            # Add from KeyPersonCandidate
-            matched_kps = kp_cands_map.get(clean_dom, []) + kp_cands_map.get(c_low, [])
-            for kp in matched_kps:
-                if kp.person_name and kp.person_name.lower() not in existing_names:
-                    raw_src = kp.source_url or ""
-                    real_profile = None
-                    m_in = _re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_src)
-                    if m_in:
-                        real_profile = f"https://www.linkedin.com/in/{m_in.group(1)}"
-                    leadership.append({
-                        "name": kp.person_name,
-                        "title": kp.role or "Executive / Leadership",
-                        "linkedin_url": real_profile,
-                        "source_url": raw_src or None,
-                        "source_type": kp.source_type or "search_discovery",
-                        "evidence": kp.evidence_text or None,
-                    })
-                    existing_names.add(kp.person_name.lower())
-
-            # Add from GlobalLeadPerson
-            lead_id = item.get("verified_entity_id")
-            if lead_id and lead_id in gl_people_map:
-                for glp in gl_people_map[lead_id]:
-                    if glp.full_name and glp.full_name.lower() not in existing_names:
-                        raw_li = glp.linkedin_url or ""
-                        real_li = None
-                        m_gli = _re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', raw_li)
-                        if m_gli:
-                            real_li = f"https://www.linkedin.com/in/{m_gli.group(1)}"
-                        leadership.append({
-                            "name": glp.full_name,
-                            "title": glp.role_title or "Executive / Leadership",
-                            "linkedin_url": real_li,
-                            "source_type": "vault_person",
-                        })
-                        existing_names.add(glp.full_name.lower())
-
-            item["decision_makers"] = leadership
-            new_score = calculate_evidence_quality_score(
-                canonical_name=item.get("canonical_name"),
-                domain=item.get("domain"),
-                industry=item.get("industry"),
-                business_overview=item.get("business_overview"),
-                products_services=item.get("technology_stack"),
-                headquarters=item.get("headquarters"),
-                company_size=item.get("company_size"),
-                decision_makers=leadership,
-                verified_emails=item.get("verified_emails"),
-            )
-            item["lead_quality_score"] = new_score
-            item["quality_score"] = new_score
-            item.pop("clean_name_lower", None)
 
     return {
         "total": total_filtered,
@@ -1041,70 +844,19 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         except Exception as e:
             logger.warning(f"Error extracting clean text for doc {doc.id}: {e}")
 
-    facts = db.query(ExtractedFact).filter(ExtractedFact.document_id == doc.id).all()
-    extracted_facts = [
-        {
-            "field": f.field_name,
-            "value": f.field_value,
-            "confidence": float(f.confidence or 1.0),
-            "extractor": f.extractor or "rule"
-        }
-        for f in facts
-    ]
+    raw_meta = getattr(doc, 'raw_metadata', None) or {}
+    raw_artifacts = getattr(doc, 'raw_artifacts', None) or []
+    lifecycle = getattr(doc, 'lifecycle_state', None) or "CRAWLED_PENDING_AGENT_2"
+    subpages_list = raw_meta.get("subpages_crawled") or []
+    detected_emails = raw_meta.get("detected_emails") or []
+    detected_phones = raw_meta.get("detected_phones") or []
+    meta_desc = raw_meta.get("meta_description") or ""
 
-    clean_c_name = _clean_name(linked.canonical_name if (linked and linked.canonical_name) else (doc.title or name), domain)
+    clean_c_name = _clean_name(doc.title or name, domain)
     word_count = len(clean_text.split()) if clean_text else (doc.word_count or 0)
-    fallback_text = f"Official web document ingested for {clean_c_name} ({domain})."
-    text_preview = clean_text[:2500] if clean_text else (raw_content[:2500] if raw_content else fallback_text)
-
-    # Extract firmographics if linked record exists
-    dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == linked.id).first() if linked else None
-    dom_data = dom_rec.data if dom_rec else {}
+    fallback_text = f"Raw web document ingested for {clean_c_name} ({domain})."
+    text_preview = clean_text[:3500] if clean_text else (raw_content[:3500] if raw_content else fallback_text)
     logo_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=128" if domain else ""
-
-    # Decision Makers
-    raw_people = dom_data.get("key_people") or dom_data.get("leadership") or dom_data.get("founders") or []
-    decision_makers = []
-    if isinstance(raw_people, list) and raw_people:
-        for p in raw_people:
-            if isinstance(p, str):
-                p_name = p
-                p_role = "Executive / Key Person"
-                p_link = None
-            elif isinstance(p, dict):
-                p_name = p.get("name", "Executive")
-                p_role = p.get("title", p.get("role", "Leadership"))
-                p_link = p.get("linkedin_url") or p.get("linkedin_search_url")
-            else:
-                continue
-            final_link = p_link or f"https://www.linkedin.com/search/results/people/?keywords={quote(p_name + ' ' + clean_c_name)}"
-            decision_makers.append({
-                "name": p_name,
-                "title": p_role,
-                "linkedin_url": final_link,
-                "linkedin_search_url": final_link
-            })
-
-    from app.persistence.models import KeyPersonCandidate
-    from sqlalchemy import func
-    c_low = clean_c_name.lower().strip()
-    kp_cands = db.query(KeyPersonCandidate).filter(
-        or_(
-            KeyPersonCandidate.source_domain == domain,
-            func.lower(KeyPersonCandidate.company_name) == c_low
-        )
-    ).all()
-    existing_names = {p["name"].lower() for p in decision_makers}
-    for kp in kp_cands:
-        if kp.person_name and kp.person_name.lower() not in existing_names:
-            kp_url = kp.source_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(kp.person_name + ' ' + clean_c_name)}"
-            decision_makers.append({
-                "name": kp.person_name,
-                "title": kp.role or "Executive / Leadership",
-                "linkedin_url": kp_url,
-                "linkedin_search_url": kp_url
-            })
-            existing_names.add(kp.person_name.lower())
 
     doc_payload = {
         "id": doc.id,
@@ -1117,42 +869,27 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         "content_type": doc.content_type or "text/html",
         "raw_path": doc.raw_path or f"local://raw/pages/{doc.content_hash or 'ingested'}.html",
         "retrieved_at": doc.retrieved_at.isoformat() if doc.retrieved_at else None,
-        "status": "Verified" if (linked and (linked.status in ["Verified", "Active"] or (getattr(linked, "confidence", None) and float(linked.confidence) >= 0.60))) else ("Discovered" if linked else "Raw Ingested"),
-        "verified_entity_id": linked.id if linked else None,
-        "industry": (linked.entity_type if linked else None) or dom_data.get("industry") or "Unknown",
-        "country": (linked.country if linked else None) or dom_data.get("country") or "Global",
-        "company_tier": determine_company_tier(linked, dom_data),
+        "status": "CRAWLED_PENDING_AGENT_2",
+        "lifecycle_state": lifecycle,
+        "verified_entity_id": None,
+        "industry": "Pending Agent 2",
+        "country": "Global",
+        "company_tier": "Pending Agent 2",
         "word_count": max(48, word_count),
         "text_preview": text_preview,
-        "extracted_facts": extracted_facts,
-        "firmographics": dom_data,
-        "technology_stack": dom_data.get("technologies") or dom_data.get("tech_stack") or ["Web Infrastructure", "Cloud Hosting"],
-        "decision_makers": decision_makers,
-        "crawled_subpages": dom_data.get("crawled_subpages") or [{"title": f"/ • {clean_c_name}", "url": doc.url, "minio_raw_path": f"companies/{domain}/pages/homepage.md"}],
-        "verified_emails": dom_data.get("contact_emails") or dom_data.get("verified_emails") or [],
-        "revenue_funding": dom_data.get("funding_stage") or dom_data.get("revenue_funding") or "Unknown",
-        "lead_quality_score": calculate_evidence_quality_score(
-            canonical_name=clean_c_name,
-            domain=domain,
-            industry=dom_data.get("industry") or (linked.entity_type if linked else None),
-            business_overview=dom_data.get("business_overview") or (linked.description if linked else None),
-            products_services=dom_data.get("technologies") or dom_data.get("tech_stack"),
-            headquarters=dom_data.get("headquarters") or dom_data.get("location") or (linked.location if linked else None),
-            company_size=determine_company_tier(linked, dom_data),
-            decision_makers=decision_makers,
-            verified_emails=dom_data.get("contact_emails") or dom_data.get("verified_emails") or [],
-        ),
-        "quality_score": calculate_evidence_quality_score(
-            canonical_name=clean_c_name,
-            domain=domain,
-            industry=dom_data.get("industry") or (linked.entity_type if linked else None),
-            business_overview=dom_data.get("business_overview") or (linked.description if linked else None),
-            products_services=dom_data.get("technologies") or dom_data.get("tech_stack"),
-            headquarters=dom_data.get("headquarters") or dom_data.get("location") or (linked.location if linked else None),
-            company_size=determine_company_tier(linked, dom_data),
-            decision_makers=decision_makers,
-            verified_emails=dom_data.get("contact_emails") or dom_data.get("verified_emails") or [],
-        ),
+        "extracted_facts": [],
+        "minio_artifacts": raw_artifacts,
+        "raw_metadata": raw_meta,
+        "technology_stack": [],
+        "decision_makers": [],
+        "crawled_subpages": subpages_list,
+        "verified_emails": detected_emails,
+        "detected_phones": detected_phones,
+        "revenue_funding": "Pending Agent 2",
+        "business_overview": meta_desc if meta_desc else "Raw crawl evidence completed. Synthesis pending Agent 2.",
+        "lead_quality_score": None,
+        "quality_score": None,
+        "agent_boundary": "AGENT_1_COMPLETED_PENDING_AGENT_2",
     }
     try:
         cache_set("doc", document_id, doc_payload, ttl=300)
@@ -1532,26 +1269,29 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             v_people = vault_lead.get("people") or []
 
             from app.persistence.models import KeyPersonCandidate
-            from sqlalchemy import func
+            from app.persistence.models import KeyPersonCandidate
+            from app.extraction.person_verifier import person_verifier
             v_cname = vault_lead.get("company_name", "")
             v_dom = vault_lead.get("domain", "")
-            v_low = v_cname.lower().strip()
             kp_cands = db.query(KeyPersonCandidate).filter(
-                or_(
-                    KeyPersonCandidate.source_domain == v_dom,
-                    func.lower(KeyPersonCandidate.company_name) == v_low
-                )
+                KeyPersonCandidate.source_domain == v_dom,
+                KeyPersonCandidate.verification_status.in_(["VERIFIED", "HIGH_CONFIDENCE"]),
+                KeyPersonCandidate.confidence_score >= 0.75
             ).all()
             existing_names = {p.get("name", "").lower() for p in v_people}
             for kp in kp_cands:
-                if kp.person_name.lower() not in existing_names:
+                if kp.person_name and kp.person_name.lower() not in existing_names:
                     p_link = kp.source_url if kp.source_url and "linkedin.com/in/" in kp.source_url else None
                     v_people.append({
                         "name": kp.person_name,
                         "title": kp.role,
-                        "linkedin_url": p_link or kp.source_url,
-                        "linkedin_search_url": p_link or kp.source_url
+                        "linkedin_url": p_link,
+                        "linkedin_search_url": p_link,
+                        "match_status": kp.verification_status or "VERIFIED",
+                        "match_score": float(kp.confidence_score or 0.95),
+                        "confidence": float(kp.confidence_score or 0.95),
                     })
+                    existing_names.add(kp.person_name.lower())
 
             # Sanitize v_hq if it contains base64/css hash noise
             if v_hq:
@@ -1622,8 +1362,13 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                     "company_size": v_size_clean,
                     "revenue_funding": v_rev_clean,
                     "warmth_score": round(v_score / 10.0, 1),
-                    "verified_emails": v_emails
+                    "verified_emails": v_emails,
                 },
+                "company_match": person_verifier.evaluate_company_data_match(
+                    domain=vault_lead["domain"],
+                    company_name=vault_lead["company_name"],
+                    crawled_subpages=vault_lead.get("subpages", [])
+                ),
                 "lead_quality_score": v_score,
                 "quality_score": v_score,
                 "warmth_score": round(v_score / 10.0, 1),
@@ -1745,24 +1490,26 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 })
 
         from app.persistence.models import KeyPersonCandidate
-        from sqlalchemy import func
-        c_low = clean_c_name.lower().strip()
+        from app.extraction.person_verifier import person_verifier
         kp_cands = db.query(KeyPersonCandidate).filter(
-            or_(
-                KeyPersonCandidate.source_domain == clean_domain,
-                func.lower(KeyPersonCandidate.company_name) == c_low
-            )
+            KeyPersonCandidate.source_domain == clean_domain,
+            KeyPersonCandidate.verification_status.in_(["VERIFIED", "HIGH_CONFIDENCE"]),
+            KeyPersonCandidate.confidence_score >= 0.75
         ).all()
         existing_names = {p["name"].lower() for p in decision_makers}
         for kp in kp_cands:
-            if kp.person_name.lower() not in existing_names:
-                kp_url = kp.source_url or f"https://www.linkedin.com/search/results/people/?keywords={quote(kp.person_name + ' ' + clean_c_name)}"
+            if kp.person_name and kp.person_name.lower() not in existing_names:
+                p_link = kp.source_url if (kp.source_url and "linkedin.com/in/" in kp.source_url) else None
                 decision_makers.append({
                     "name": kp.person_name,
-                    "title": kp.role,
-                    "linkedin_url": kp_url,
-                    "linkedin_search_url": kp_url
+                    "title": kp.role or "Executive / Leadership",
+                    "linkedin_url": p_link,
+                    "linkedin_search_url": p_link,
+                    "match_status": kp.verification_status or "VERIFIED",
+                    "match_score": float(kp.confidence_score or 0.95),
+                    "confidence": float(kp.confidence_score or 0.95),
                 })
+                existing_names.add(kp.person_name.lower())
 
         # Extract Emails & HQ
         emails = domain_data.get("contact_emails") or domain_data.get("emails") or []
@@ -1894,6 +1641,11 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 "warmth_score": warmth_score,
                 "verified_emails": emails if isinstance(emails, list) else []
             },
+            "company_match": person_verifier.evaluate_company_data_match(
+                domain=clean_domain,
+                company_name=clean_c_name,
+                crawled_subpages=subpages
+            ),
             "lead_quality_score": lead_score,
             "quality_score": lead_score,
             "warmth_score": warmth_score,

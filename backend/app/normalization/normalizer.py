@@ -65,7 +65,29 @@ class DataNormalizer:
         c_map = {
             "us": "United States", "usa": "United States", "united states of america": "United States",
             "uk": "United Kingdom", "gb": "United Kingdom", "great britain": "United Kingdom",
-            "in": "India", "ind": "India"
+            "in": "India", "ind": "India",
+            "mu": "Mauritius", "mus": "Mauritius",
+            "de": "Germany", "deu": "Germany", "deutschland": "Germany",
+            "fr": "France", "fra": "France",
+            "ca": "Canada", "can": "Canada",
+            "au": "Australia", "aus": "Australia",
+            "za": "South Africa", "zaf": "South Africa",
+            "sg": "Singapore", "sgp": "Singapore",
+            "ae": "United Arab Emirates", "uae": "United Arab Emirates",
+            "jp": "Japan", "jpn": "Japan",
+            "nl": "Netherlands", "nld": "Netherlands",
+            "ch": "Switzerland", "che": "Switzerland",
+            "se": "Sweden", "swe": "Sweden",
+            "nz": "New Zealand", "nzl": "New Zealand",
+            "br": "Brazil", "bra": "Brazil",
+            "mx": "Mexico", "mex": "Mexico",
+            "ie": "Ireland", "irl": "Ireland",
+            "es": "Spain", "esp": "Spain",
+            "it": "Italy", "ita": "Italy",
+            "cn": "China", "chn": "China",
+            "kr": "South Korea", "kor": "South Korea",
+            "ng": "Nigeria", "nga": "Nigeria",
+            "ke": "Kenya", "ken": "Kenya",
         }
         clean = country.strip().lower()
         return c_map.get(clean, country.strip().title())

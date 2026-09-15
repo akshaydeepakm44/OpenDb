@@ -51,15 +51,19 @@ class KeyPeopleDiscoveryAgent:
         When no domain is available, falls back to exact-phrase brand queries.
         Execution stops early when EARLY_STOP_PEOPLE_COUNT (3) verified people are found.
         """
-        clean_company = re.sub(r'[^\w\s\-\.]', '', company_name).strip()
-        if not clean_company:
-            return []
+        from app.extraction.person_verifier import person_verifier
+        ident = person_verifier.canonicalize_company_identity(url=official_domain or "", title=company_name, raw_name=company_name)
+        domain_str = ident["canonical_domain"] or (extract_domain(official_domain) if official_domain else None)
+        brand_name = ident["company_name"]
 
-        domain_str = extract_domain(official_domain) if official_domain else None
+        # Prevent searching on generic terms
+        if brand_name.lower() in {"home", "index", "welcome", "welcome to", "company", "unknown"}:
+            if domain_str:
+                brand_name = person_verifier.derive_brand_from_domain(domain_str)
+            else:
+                return []
 
-        clean_brand = re.sub(r'\.(com|co|io|ai|net|org|de|uk|fr|app|dev|tech|mu)$', '', clean_company.lower()).strip()
-        brand_name = clean_brand.replace("-", " ").title() if clean_brand else clean_company
-
+        clean_company = brand_name
         queries = []
 
         if domain_str:

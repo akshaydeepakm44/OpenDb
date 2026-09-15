@@ -304,19 +304,6 @@ class AutonomousDiscoveryAgent:
                      state.state_data = state_data
                      db.commit()
 
-                # Continuous Haystack verification agent: analyze unverified crawled records
-                try:
-                    from sqlalchemy import or_
-                    unverified_recs = db.query(UniversalRecord).filter(
-                        or_(UniversalRecord.status == "Discovered", UniversalRecord.status == "Raw Ingested", UniversalRecord.status == None)
-                    ).order_by(UniversalRecord.updated_at.asc().nullsfirst()).limit(10).all()
-                    if unverified_recs:
-                        from app.worker.tasks import _safe_dispatch, enrich_and_verify_task
-                        for u_rec in unverified_recs:
-                            _safe_dispatch(enrich_and_verify_task, universal_record_id=u_rec.id)
-                except Exception as sweep_err:
-                    logger.warning(f"[Agent] Continuous verification sweep notice: {sweep_err}")
-
             except Exception as e:
                 logger.error(f"[Agent] Loop iteration error: {e}", exc_info=True)
             finally:

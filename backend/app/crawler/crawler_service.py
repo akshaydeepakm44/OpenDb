@@ -155,15 +155,8 @@ class CrawlerService:
                             else:
                                 raise ValueError(f"Crawl4AI returned success=False for {curr_url}")
                         except Exception as c_err:
-                            logger.warning(f"Crawl4AI/Playwright failed or timed out for {curr_url} ({c_err}). Falling back to httpx AsyncClient.")
-                            import httpx
-                            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-                            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True, headers=headers) as h_client:
-                                resp = await h_client.get(curr_url)
-                                html_raw = resp.text
-                                markdown_raw = ""
-                                status_code = resp.status_code
-                                canonical_url = str(resp.url)
+                            logger.error(f"CRAWL_FAILED — Crawl4AI / Playwright rendering failed for {curr_url}: {c_err}")
+                            raise RuntimeError(f"CRAWL_FAILED: Browser rendering failed for {curr_url} ({c_err})")
 
                         soup = BeautifulSoup(html_raw, "html.parser")
                         title = normalizer.normalize_string(soup.title.string) if soup.title else ""
@@ -172,7 +165,7 @@ class CrawlerService:
                             title = normalizer.normalize_string(h1.text) if h1 else curr_url
 
                         text_clean = normalizer.normalize_string(soup.get_text()) or markdown_raw
-
+                        
                         raw_links = []
                         for a in soup.find_all("a", href=True):
                             raw_links.append({
@@ -210,7 +203,6 @@ class CrawlerService:
                                 async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as img_client:
                                     img_resp = await img_client.get(logo_url)
                                     if img_resp.status_code == 200 and len(img_resp.content) > 100:
-                                        # Mandatory Safety Guardrail: Content moderation for logo/favicon path
                                         from app.safety.moderation import content_moderator
                                         img_mod = await content_moderator.moderate_image_asset(logo_url, curr_url)
                                         if img_mod["is_safe"]:
@@ -276,73 +268,8 @@ class CrawlerService:
                     except Exception as e:
                         logger.error(f"Error crawling {curr_url}: {e}")
         except Exception as crawl_err:
-            logger.warning(f"Crawl4AI unavailable ({crawl_err}), falling back to httpx fetcher...")
-            import httpx
-            async with httpx.AsyncClient(timeout=4.0, follow_redirects=True) as client:
-                while queue and len(visited_urls) < max_pages:
-                    current_item = queue.pop(0)
-                    curr_url = current_item["url"]
-                    curr_depth = current_item.get("depth", 0)
-                    if curr_url in visited_urls:
-                        continue
-                    visited_urls.add(curr_url)
-                    try:
-                        resp = await client.get(curr_url, headers={"User-Agent": "OpenDB/2.4 Lead Discovery"})
-                        html_raw = resp.text
-                        soup = BeautifulSoup(html_raw, "html.parser")
-                        title = soup.title.string if soup.title else curr_url
-                        text_clean = soup.get_text()
-
-                        raw_links = []
-                        for a in soup.find_all("a", href=True):
-                            raw_links.append({
-                                "href": a["href"],
-                                "text": normalizer.normalize_string(a.text) or ""
-                            })
-
-                        results.append(CrawlResultItem(
-                            url=curr_url,
-                            title=normalizer.normalize_string(title),
-                            html_content=html_raw,
-                            markdown=text_clean,
-                            text=normalizer.normalize_string(text_clean),
-                            http_status=resp.status_code,
-                            content_type="text/html",
-                            links=raw_links,
-                            media=[],
-                            metadata={"word_count": len(text_clean.split())}
-                        ))
-
-                        if curr_depth < max_depth and len(visited_urls) + len(queue) < max_pages:
-                            extracted_hrefs = [l["href"] for l in raw_links]
-                            next_links = url_discovery.filter_and_normalize_links(
-                                links=extracted_hrefs,
-                                base_url=curr_url,
-                                visited_urls=visited_urls,
-                                allowed_host=base_host
-                            )
-                            link_text_map = {}
-                            for l in raw_links:
-                                norm = normalizer.normalize_url(l["href"], base_url=curr_url)
-                                if norm and norm not in link_text_map:
-                                    link_text_map[norm] = l.get("text", "")
-
-                            noise_queued_this_page = 0
-                            new_items = []
-                            for n_url in next_links:
-                                if n_url not in visited_urls and not any(q["url"] == n_url for q in queue) and not any(item["url"] == n_url for item in new_items):
-                                    link_text = link_text_map.get(n_url, "")
-                                    score = _score_link(n_url, link_text)
-                                    if score == 2:
-                                        if noise_queued_this_page >= 5:
-                                            continue
-                                        noise_queued_this_page += 1
-                                    new_items.append({"url": n_url, "depth": curr_depth + 1, "priority": score})
-
-                            queue.extend(new_items)
-                            queue.sort(key=lambda x: (x.get("priority", 1), x.get("depth", 0)))
-                    except Exception as fe:
-                        logger.error(f"HTTPX fetch failed for {curr_url}: {fe}")
+            logger.error(f"CRAWL_FAILED — Crawl4AI / Playwright engine unavailable: {crawl_err}")
+            raise RuntimeError(f"CRAWL_FAILED: Crawl4AI / Playwright engine unavailable ({crawl_err})")
 
         return results
 

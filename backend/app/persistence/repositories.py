@@ -174,6 +174,15 @@ class Repository:
 
         # Get or create domain record in Postgres
         domain_obj = db.query(Domain).filter(Domain.name == class_info["domain"]).first()
+        if not domain_obj and class_info.get("domain"):
+            try:
+                domain_obj = Domain(name=class_info["domain"], description=f"{class_info['domain']} Sector")
+                db.add(domain_obj)
+                db.commit()
+                db.refresh(domain_obj)
+            except Exception:
+                db.rollback()
+                domain_obj = db.query(Domain).filter(Domain.name == class_info["domain"]).first()
 
         univ_rec = UniversalRecord(
             document_id=doc_id,
@@ -187,7 +196,8 @@ class Repository:
             country=univ_data.get("country"),
             location=univ_data.get("location"),
             status=univ_data.get("status"),
-            confidence=univ_data.get("confidence")
+            confidence=univ_data.get("confidence"),
+            metadata_json=univ_data.get("metadata_json") or {}
         )
         db.add(univ_rec)
         db.commit()

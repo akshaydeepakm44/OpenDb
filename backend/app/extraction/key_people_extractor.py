@@ -25,20 +25,11 @@ class KeyPeopleExtractor:
     """
 
     @staticmethod
-    def clean_company_name(company_name: str) -> str:
-        """Strip taglines, slogans, and corporate suffixes to extract the core brand name."""
-        if not company_name:
-            return "Company"
-        # Split on hyphen, en-dash, em-dash, pipe, colon, bullet
-        parts = [p.strip() for p in re.split(r'[\-–—|:•]', company_name) if p.strip()]
-        if parts:
-            first = parts[0]
-            words = first.split()
-            if len(words) <= 3:
-                return first
-            return " ".join(words[:2])
-        words = company_name.strip().split()
-        return " ".join(words[:2]) if len(words) > 3 else company_name.strip()
+    def clean_company_name(company_name: str, domain: str = "") -> str:
+        """Strip taglines, slogans, generic tokens ('Home', 'Index'), and corporate suffixes."""
+        from app.extraction.person_verifier import person_verifier
+        identity = person_verifier.canonicalize_company_identity(url=domain, title=company_name, raw_name=company_name)
+        return identity["company_name"]
 
     @staticmethod
     def extract_from_text_and_html(
@@ -270,12 +261,14 @@ class KeyPeopleExtractor:
     @staticmethod
     def extract_from_linkedin_search_snippets(
         snippets: List[Dict[str, Any]],
-        company_name: str
+        company_name: str,
+        official_domain: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Extract key personnel from SearXNG/LinkedIn search snippet results."""
+        """Extract key personnel from SearXNG/LinkedIn search snippet results with strict PersonCompanyVerifier."""
+        from app.extraction.person_verifier import person_verifier
         people: List[Dict[str, Any]] = []
         seen = set()
-        clean_cname = KeyPeopleExtractor.clean_company_name(company_name)
+        clean_cname = KeyPeopleExtractor.clean_company_name(company_name, official_domain or "")
 
         for s in snippets:
             title_text = s.get("title", "").strip()
@@ -336,21 +329,6 @@ class KeyPeopleExtractor:
             if extracted_name and extracted_title:
                 n_lower = extracted_name.lower()
                 if n_lower not in seen:
-                    # Enforce Person-Company Association:
-                    # Require that snippet or title contains reference to company brand or domain
-                    base_brand = re.sub(r'\.(com|co|io|ai|net|org|de|uk|fr|app|dev|tech)$', '', clean_cname.lower()).strip()
-                    clean_c_words = [w.lower() for w in re.split(r'[\s\.\-]+', clean_cname) if len(w) >= 3 and w.lower() not in {"the", "and", "inc", "ltd", "corp", "llc", "com", "co", "io", "ai", "net", "org"}]
-                    if base_brand and len(base_brand) >= 3 and base_brand not in clean_c_words:
-                        clean_c_words.append(base_brand)
-                    
-                    has_company_evidence = any(cw in combined.lower() for cw in clean_c_words) if clean_c_words else True
-                    
-                    if not has_company_evidence and clean_cname.lower() not in combined.lower() and (not base_brand or base_brand not in combined.lower()):
-                        logger.debug(f"[KeyPeopleExtractor] Skipping candidate {extracted_name}: no company association with '{clean_cname}'")
-                        continue
-
-                    seen.add(n_lower)
-
                     # Direct LinkedIn profile URL strictly if genuine linkedin.com/in/<slug>
                     direct_match = re.search(r'https?://(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-_]+)', f"{url} {combined}")
                     slug = None
@@ -366,23 +344,54 @@ class KeyPeopleExtractor:
                         real_profile_url = None
 
                     evidence_snippet = f"{title_text} — {snippet_text}".strip()[:300]
+
+                    # Dedicated PersonCompanyVerifier: Positive & Negative signal gating
+                    v_res = person_verifier.verify_person_company_match(
+                        person_name=extracted_name,
+                        role=extracted_title,
+                        target_company_name=clean_cname,
+                        target_domain=official_domain or "",
+                        evidence_text=evidence_snippet,
+                        linkedin_url=real_profile_url,
+                        source_url=url
+                    )
+
+                    # Only accept VERIFIED or HIGH_CONFIDENCE (score >= 0.75)
+                    if not v_res["is_verified"] or v_res["match_score"] < 0.75:
+                        logger.info(f"[KeyPeopleExtractor] REJECTED candidate '{extracted_name}' for '{clean_cname}' ({v_res['reason']})")
+                        continue
+
+                    seen.add(n_lower)
                     people.append({
                         "name": extracted_name,
                         "title": extracted_title,
                         "company_name": clean_cname,
                         "linkedin_url": real_profile_url,
                         "source_url": url,
-                        "source_type": "linkedin_search_result" if real_profile_url else "web_search_snippet",
+                        "source_type": "linkedin_profile" if real_profile_url else "web_search_snippet",
                         "evidence": evidence_snippet,
-                        "confidence_score": 0.90 if real_profile_url else 0.75
+                        "confidence_score": v_res["match_score"],
+                        "match_status": v_res["match_status"],
+                        "match_score": v_res["match_score"],
+                        "reason": v_res["reason"],
                     })
 
         return people[:6]
 
     @staticmethod
-    def _is_valid_person_name(name: str, company_name: str) -> bool:
+    def _is_valid_person_name(name: str, company_name: str = "") -> bool:
         if not name or len(name) < 4 or len(name) > 35:
             return False
+        
+        lower_name = name.lower()
+        blocked_names = {
+            "good food", "best food", "home page", "about us", "contact us", "privacy policy",
+            "terms service", "terms of", "read more", "sign up", "sign in", "best saas",
+            "top saas", "choiseul 100", "forbes 30", "tedx speaker", "times top"
+        }
+        if lower_name in blocked_names or any(b in lower_name for b in ["food recipes", "cooking tips"]):
+            return False
+
         words = name.split()
         if len(words) < 2 or len(words) > 4:
             return False

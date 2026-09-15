@@ -123,6 +123,9 @@ class Document(Base):
     word_count = Column(Integer, default=0)
     links_count = Column(Integer, default=0)
     images_count = Column(Integer, default=0)
+    lifecycle_state = Column(String(50), default="CRAWLED_PENDING_AGENT_2", index=True)
+    raw_artifacts = Column(JSON, default=list)
+    raw_metadata = Column(JSON, default=dict)
     content_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True)  # pgvector 384-dim
     retrieved_at = Column(DateTime(timezone=True), default=utc_now)
     created_at = Column(DateTime(timezone=True), default=utc_now)
@@ -518,21 +521,110 @@ class KeyPersonCandidate(Base):
 class PostgresSyncOutbox(Base):
     """
     Transactional Outbox Table for Two-Stage SQLite Staging -> PostgreSQL Sync.
-    Ensures that verified leads from operational SQLite staging are durably transferred
-    to PostgreSQL Lake without pretend-success or data loss.
+    Ensures that fallback and staging records are durably transferred to PostgreSQL
+    with stable IDs, idempotency, and traceability.
     """
     __tablename__ = "postgres_sync_outbox"
     __table_args__ = {'extend_existing': True}
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    record_id = Column(String(36), nullable=False, index=True)
+    domain = Column(String(255), nullable=True, index=True)
+    company_name = Column(String(255), nullable=True)
+    source_url = Column(Text, nullable=True)
+    source_type = Column(String(50), default="website")
+    observed_at = Column(DateTime(timezone=True), default=utc_now)
+    extracted_at = Column(DateTime(timezone=True), default=utc_now)
+    evidence = Column(JSONB_TYPE, default=list)
+    payload_json = Column(JSON, nullable=False, default=dict)
+    sync_status = Column(String(50), default="PENDING", index=True) # PENDING, SYNCING, SYNCED, CONFLICT, FAILED
+    sync_attempts = Column(Integer, default=0)
+    last_sync_error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    synced_at = Column(DateTime(timezone=True), nullable=True)
+
+
+
+class Agent2VerificationSession(Base):
+    """
+    Operational session tracking an Agent 2 verification workflow.
+    Starts strictly from CRAWLED_PENDING_AGENT_2 and progresses through:
+    AGENT2_QUEUED -> PHASE1_RANKED -> PHASE1_VERIFYING -> PHASE1_RECRAWL_REQUIRED ->
+    PHASE1_VERIFIED -> PHASE2_SYNTHESIS -> LINKEDIN_DISCOVERY -> LINKEDIN_CANDIDATES_FOUND ->
+    LINKEDIN_PROFILE_CRAWL -> PERSON_MATCHING -> FINAL_VERIFICATION -> VERIFIED ->
+    POSTGRES_SYNC_PENDING -> POSTGRES_VERIFIED (or explicit BLOCKED/FAILURE states).
+    """
+    __tablename__ = "agent2_verification_sessions"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    document_id = Column(String(36), nullable=True, index=True)
     domain = Column(String(255), nullable=False, index=True)
     company_name = Column(String(255), nullable=False)
-    payload_json = Column(JSON, nullable=False)
-    sync_status = Column(String(50), default="PENDING_SYNC", index=True) # PENDING_SYNC, SYNCED, SYNC_FAILED
-    retry_count = Column(Integer, default=0)
+    status = Column(String(60), default="AGENT2_QUEUED", index=True)
+    priority_score = Column(Float, default=0.0)
+    priority_reasons = Column(JSON, default=list)
+    phase1_data = Column(JSON, default=dict)
+    phase2_data = Column(JSON, default=dict)
+    recrawl_count = Column(Integer, default=0)
+    search_rounds = Column(Integer, default=0)
+    investigation_log = Column(JSON, default=list)
     error_message = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
-    synced_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    evidence_items = relationship("Agent2Evidence", back_populates="session", cascade="all, delete-orphan")
+    person_candidates = relationship("Agent2PersonCandidate", back_populates="session", cascade="all, delete-orphan")
+
+
+class Agent2Evidence(Base):
+    """
+    Field-level provenance and verification record for an Agent 2 session.
+    Preserves exact source URL, snippet, method, and the complete audit investigation record.
+    """
+    __tablename__ = "agent2_evidence"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(36), ForeignKey("agent2_verification_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    field_name = Column(String(100), nullable=False, index=True)
+    value = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=True)
+    evidence_snippet = Column(Text, nullable=True)
+    verification_status = Column(String(50), default="UNVERIFIED", index=True)  # VERIFIED, NOT_FOUND_AFTER_SEARCH, NOT_APPLICABLE, UNVERIFIED
+    verification_method = Column(String(100), nullable=True)
+    investigation_record = Column(JSON, default=dict)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    session = relationship("Agent2VerificationSession", back_populates="evidence_items")
+
+
+class Agent2PersonCandidate(Base):
+    """
+    Discovered LinkedIn candidate profile evaluated during Phase 2 key-person discovery.
+    Strictly accepts only genuine personal profiles (linkedin.com/in/<slug>).
+    """
+    __tablename__ = "agent2_person_candidates"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String(36), ForeignKey("agent2_verification_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
+    person_name = Column(String(255), nullable=False)
+    linkedin_url = Column(Text, nullable=False)
+    title = Column(String(255), nullable=True)
+    company = Column(String(255), nullable=True)
+    candidate_status = Column(String(50), default="DISCOVERED")  # DISCOVERED, CRAWLED, VERIFIED, REJECTED
+    company_match_status = Column(Boolean, default=False)
+    is_leadership = Column(Boolean, default=False)
+    rejection_reason = Column(Text, nullable=True)
+    evidence_snippet = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    session = relationship("Agent2VerificationSession", back_populates="person_candidates")
 
 
 

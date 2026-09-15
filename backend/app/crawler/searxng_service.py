@@ -1,3 +1,4 @@
+#searxng
 import logging
 import httpx
 from typing import List, Dict, Any, Optional, Tuple

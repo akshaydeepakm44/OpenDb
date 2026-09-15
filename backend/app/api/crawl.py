@@ -20,13 +20,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/crawl", tags=["Crawl"])
 
-# Domain fallback seeds when no URL is explicitly provided
-DOMAIN_DEFAULT_SEEDS = {
-    "Technology": "https://news.ycombinator.com",
-    "Healthcare": "https://www.who.int",
-    "Education": "https://www.mit.edu",
-    "Business": "https://www.reuters.com"
-}
+
 
 class CrawlRequest(BaseModel):
     url: Optional[str] = None
@@ -196,13 +190,19 @@ def start_crawl_job(request: CrawlRequest, background_tasks: BackgroundTasks, db
     target_domain = request.domain or "Technology"
     raw_url = request.url.strip() if request.url and request.url.strip() else None
 
-    # If URL is not provided, use default domain seed
-    if not raw_url:
-        raw_url = DOMAIN_DEFAULT_SEEDS.get(target_domain, "https://news.ycombinator.com")
+    if not raw_url and not request.query:
+        raise HTTPException(
+            status_code=400,
+            detail="URL or query is required for crawl execution. Preset fallback seeds are prohibited."
+        )
 
-    norm_url = normalizer.normalize_url(raw_url)
+    if not raw_url and request.query:
+        raw_url = f"query://{request.query}"
+
+    norm_url = normalizer.normalize_url(raw_url) if raw_url.startswith("http") else raw_url
     if not norm_url:
         norm_url = raw_url
+
 
     job = repo.create_crawl_job(
         db=db,

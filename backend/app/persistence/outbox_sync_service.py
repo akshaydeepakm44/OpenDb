@@ -144,7 +144,36 @@ class OutboxSyncService:
                             pg_lead.headquarters = payload.get("headquarters")
                         if payload.get("industry"):
                             pg_lead.industry = payload.get("industry")
+                        if payload.get("verified_emails"):
+                            pg_lead.verified_emails = payload.get("verified_emails")
                     
+                    pg_db.flush()
+
+                    # Synchronize verified leadership to PostgreSQL lake
+                    import hashlib
+                    for p in payload.get("people", []):
+                        p_name = p.get("full_name") or p.get("name")
+                        if not p_name:
+                            continue
+                        p_id = hashlib.md5(f"{item.domain}_{p_name}".encode()).hexdigest()
+                        existing_p = pg_db.query(GlobalLeadPerson).filter(GlobalLeadPerson.id == p_id).first()
+                        if not existing_p:
+                            pg_db.add(GlobalLeadPerson(
+                                id=p_id,
+                                global_lead_id=pg_lead.id,
+                                domain=item.domain,
+                                full_name=p_name,
+                                title=p.get("title") or "Executive",
+                                linkedin_url=p.get("linkedin_url"),
+                                linkedin_search_url=p.get("linkedin_search_url") or p.get("linkedin_url")
+                            ))
+                        else:
+                            if p.get("title"):
+                                existing_p.title = p.get("title")
+                            if p.get("linkedin_url"):
+                                existing_p.linkedin_url = p.get("linkedin_url")
+                                existing_p.linkedin_search_url = p.get("linkedin_url")
+
                     pg_db.commit()
 
                     # Mark SQLite outbox entry as SYNCED

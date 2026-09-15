@@ -75,28 +75,39 @@ def _quick_port_check(url_or_endpoint: str, default_port: int) -> bool:
 
 @router.get("/health/services")
 def services_health_check(db: Session = Depends(get_db)):
-    """Instant non-blocking service health status check (<5ms total latency)."""
-    from app.persistence.database import IS_FALLBACK_ACTIVE
+    """Sanitized non-blocking infrastructure services health check."""
+    from app.persistence.database import get_database_status
+    db_status_info = get_database_status()
 
-    pg_status = "degraded (SQLite fallback active)" if IS_FALLBACK_ACTIVE else (_check_postgres(db))
-    redis_status = _check_redis()
-    minio_status = _check_minio()
-    searx_status = "online" if _quick_port_check(settings.SEARXNG_URL, 8080) else "degraded (Live DuckDuckGo Active)"
-    
-    ollama_online = _quick_port_check(settings.OLLAMA_BASE_URL, 11434)
-    if ollama_online:
-        llm_status = "online (Ollama active)"
-    elif getattr(settings, "OPENAI_API_KEY", None):
-        llm_status = "online (OpenAI API)"
-    else:
-        llm_status = "degraded (Local Extractor)"
+    redis_state = _check_redis()
+    redis_status = "CONNECTED" if redis_state == "online" else "UNAVAILABLE"
+
+    minio_state = _check_minio()
+    minio_status = "CONNECTED" if minio_state == "online" else "UNAVAILABLE"
+
+    searxng_online = _quick_port_check(settings.SEARXNG_URL, 8080) or _quick_port_check(settings.SEARXNG_URL, 9090)
+    searxng_status = "CONNECTED" if searxng_online else "UNAVAILABLE"
 
     return {
-        "postgres": pg_status,
-        "redis": redis_status,
-        "minio": minio_status,
-        "searxng": searx_status,
-        "crawl4ai": "online",
-        "llm": llm_status
+        "database": {
+            "mode": db_status_info["mode"],
+            "status": db_status_info["status"],
+            "degraded": db_status_info["degraded"]
+        },
+        "redis": {
+            "status": redis_status
+        },
+        "searxng": {
+            "status": searxng_status
+        },
+        "minio": {
+            "status": minio_status
+        },
+        "crawler": {
+            "status": "READY",
+            "browser_engine": "Playwright",
+            "crawl4ai_status": "READY"
+        }
     }
+
 

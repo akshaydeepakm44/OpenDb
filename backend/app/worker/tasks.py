@@ -91,28 +91,21 @@ def _has_active_celery_worker() -> bool:
         return False
 
 
-def _safe_dispatch(task_func, **kwargs):
+def _dispatch_task(task_func, **kwargs):
     """
-    Safely dispatch task.
-    Attempts direct Celery enqueueing to the Redis queue.
-    If Redis or Celery enqueueing fails, falls back to a background daemon thread.
+    Enqueues Celery task strictly into Redis task queue.
+    If Redis or Celery queue is unreachable, logs QUEUE_FAILED and raises RuntimeError.
+    Does NOT launch background daemon threads or pretend to queue work.
     """
-    dispatched = False
     try:
         task_func.apply_async(kwargs=kwargs, queue="celery")
-        dispatched = True
-        logger.info(f"[Safe Dispatch] Enqueued task '{task_func.name}' to Redis Celery queue.")
+        logger.info(f"[Task Queue] Enqueued task '{getattr(task_func, 'name', str(task_func))}' into Redis Celery queue.")
+        return True
     except Exception as e:
-        logger.debug(f"[Safe Dispatch] Celery queue push unavailable ({e}), falling back to background thread.")
+        logger.error(f"QUEUE_FAILED — Failed to enqueue task '{getattr(task_func, 'name', str(task_func))}' to Redis: {e}")
+        raise RuntimeError(f"QUEUE_FAILED: Redis task queue unreachable ({e})")
 
-    if not dispatched:
-        def _run_bg():
-            try:
-                task_func(**kwargs)
-            except Exception as err:
-                logger.error(f"[Safe Dispatch] Background task execution failed: {err}")
-
-        threading.Thread(target=_run_bg, daemon=True).start()
+_safe_dispatch = _dispatch_task
 
 
 
@@ -255,19 +248,6 @@ def search_and_discover_task(
                 _safe_dispatch(crawl_entity_task, url=entity_root_url, domain=domain, batch_id=batch_id)
                 enqueued += 1
 
-                # Immediate Parallel Key-People Search: Dispatched in parallel without blocking company crawler
-                company_title_for_people = res.get("title")
-                if company_title_for_people:
-                    clean_cname = company_title_for_people.split("|")[0].split("-")[0].strip()
-                    if len(clean_cname) > 2:
-                        _safe_dispatch(
-                            search_company_people_task,
-                            company_name=clean_cname,
-                            domain=domain,
-                            official_domain=parsed_u.netloc,
-                            batch_id=batch_id
-                        )
-
         return {
             "query": query,
             "keyword": keyword,
@@ -376,9 +356,11 @@ def crawl_source_task(
 # Targeted corporate subpages to crawl for company intelligence (§12, §13)
 ENTITY_SUBPAGES = [
     "/about", "/about-us", "/company", "/products", "/services",
-    "/solutions", "/team", "/leadership", "/contact", "/careers"
+    "/solutions", "/technology", "/platform", "/product", "/contact",
+    "/locations", "/team", "/leadership", "/careers", "/customers",
+    "/industries", "/case-studies", "/pricing", "/blog"
 ]
-MAX_ENTITY_PAGES = 6
+MAX_ENTITY_PAGES = 8
 
 
 @celery_app.task(
@@ -479,19 +461,120 @@ def crawl_entity_task(
             db.close()
         return {"status": "filtered", "reason": reason, "url": url}
 
-    # ── Stage 3: Save to MinIO raw storage & persist Document Record ───────────
+    # ── Stage 3: Save to MinIO raw storage & persist Document Record in SQLite ───────────
+    clean_domain = base_host.replace("www.", "").lower()
+    raw_artifacts_list = []
+    crawl_ts = datetime.now(timezone.utc).isoformat()
+
     html_hash, raw_rel = file_storage.save_raw_page(item.html_content or "")
     md_rel = file_storage.save_processed_markdown(item.markdown or "", html_hash)
     txt_rel = file_storage.save_processed_text(item.text or "", html_hash)
 
-    # Derive genuine title from evidence — NEVER append "Official Portal"
+    # Save homepage company page artifact
+    _, hp_md_path = file_storage.save_company_page_artifact(
+        domain=clean_domain,
+        page_slug="homepage",
+        content=item.markdown or item.text or "",
+        ext="md",
+        metadata={
+            "source_url": url,
+            "page_type": "homepage",
+            "crawl_timestamp": crawl_ts,
+            "crawl_job_id": batch_id or ""
+        }
+    )
+    raw_artifacts_list.append(hp_md_path)
+
+    if item.html_content:
+        _, hp_html_path = file_storage.save_company_page_artifact(
+            domain=clean_domain,
+            page_slug="homepage",
+            content=item.html_content,
+            ext="html",
+            metadata={
+                "source_url": url,
+                "page_type": "homepage",
+                "crawl_timestamp": crawl_ts,
+                "crawl_job_id": batch_id or ""
+            }
+        )
+        raw_artifacts_list.append(hp_html_path)
+
+    # Derive genuine title from evidence — NEVER append "Official Portal" or fabricate description
     derived_title = (item.title or "").strip()
     if not derived_title or len(derived_title) < 2 or derived_title.lower() in ["home", "index", "welcome", "default", "404", "error"]:
-        netloc = base_host.replace("www.", "")
-        derived_title = netloc.split(".")[0].replace("-", " ").title() if "." in netloc else netloc
+        derived_title = clean_domain.split(".")[0].replace("-", " ").title() if "." in clean_domain else clean_domain
     if not derived_title:
         derived_title = "Unknown"
 
+    # ── Stage 4: Crawl prioritized subpages (strictly evidence-based, 404/error = skip) ──
+    base = urlparse(url)
+    base_url = f"{base.scheme}://{base.netloc}"
+    additional_text = []
+    subpages_crawled_urls = []
+    seen_subpaths = set()
+
+    for subpath in ENTITY_SUBPAGES:
+        subpage_url = f"{base_url}{subpath}"
+        if subpage_url in seen_subpaths:
+            continue
+        seen_subpaths.add(subpage_url)
+        try:
+            sub_items = run_async(
+                crawler_service.crawl_site(
+                    starting_url=subpage_url, max_depth=1, max_pages=1
+                )
+            )
+            if sub_items and sub_items[0] and sub_items[0].text and sub_items[0].http_status == 200:
+                sub_item = sub_items[0]
+                additional_text.append(sub_item.text)
+                subpages_crawled_urls.append(subpage_url)
+                sub_slug = subpath.strip("/").replace("/", "_") or "subpage"
+                _, sub_md_path = file_storage.save_company_page_artifact(
+                    domain=clean_domain,
+                    page_slug=sub_slug,
+                    content=sub_item.markdown or sub_item.text or "",
+                    ext="md",
+                    metadata={
+                        "source_url": subpage_url,
+                        "page_type": sub_slug,
+                        "crawl_timestamp": crawl_ts,
+                        "crawl_job_id": batch_id or ""
+                    }
+                )
+                raw_artifacts_list.append(sub_md_path)
+        except Exception:
+            pass  # Non-existing subpages are cleanly skipped without guessing
+
+    # Combine crawled evidence text for fact extraction
+    enriched_text = item.text or ""
+    if additional_text:
+        enriched_text += "\n\n" + "\n\n".join(additional_text)
+
+    # ── Stage 5: Extract directly observable facts using Anti-Hallucination Validator ────
+    from app.crawler.evidence_validator import extract_raw_page_facts, validate_fact
+    raw_facts = extract_raw_page_facts(item.html_content or "", enriched_text, url)
+
+    # Validate detected facts against evidence
+    validated_emails = []
+    for em in raw_facts.get("detected_emails") or []:
+        fact_prov = validate_fact("email", em, enriched_text, url, domain=clean_domain)
+        if fact_prov:
+            validated_emails.append(em)
+
+    raw_metadata_payload = {
+        "raw_page_title": raw_facts.get("raw_page_title") or derived_title,
+        "meta_description": raw_facts.get("meta_description"),
+        "detected_emails": validated_emails,
+        "detected_phones": raw_facts.get("detected_phones") or [],
+        "detected_social_links": raw_facts.get("detected_social_links") or [],
+        "subpages_crawled": subpages_crawled_urls,
+        "pages_crawled_count": 1 + len(subpages_crawled_urls),
+        "crawl_timestamp": crawl_ts,
+        "crawl_job_id": batch_id or "",
+    }
+
+    # ── Stage 6: Persist SQLite Staging Document Record & STOP ──────────────────────────
     db = SessionLocal()
     try:
         if existing_doc_id:
@@ -517,6 +600,9 @@ def crawl_entity_task(
                 links_count=item.metadata.get("links_count", 0) if item.metadata else 0,
                 images_count=item.metadata.get("images_count", 0) if item.metadata else 0,
             )
+            doc.lifecycle_state = "CRAWLED_PENDING_AGENT_2"
+            doc.raw_artifacts = raw_artifacts_list
+            doc.raw_metadata = raw_metadata_payload
             db.commit()
             db.refresh(doc)
         else:
@@ -529,210 +615,34 @@ def crawl_entity_task(
             doc.word_count = word_count
             doc.links_count = item.metadata.get("links_count", 0) if item.metadata else 0
             doc.images_count = item.metadata.get("images_count", 0) if item.metadata else 0
+            doc.lifecycle_state = "CRAWLED_PENDING_AGENT_2"
+            doc.raw_artifacts = raw_artifacts_list
+            doc.raw_metadata = raw_metadata_payload
             db.commit()
 
         doc_id = doc.id
-        _log_activity(db, url=url, stage="CRAWL", domain=domain,
-                      status="OK", message=f"Crawled OK — Persisted Document ID={doc_id[:8]} ({word_count} words)",
-                      batch_id=batch_id)
-    finally:
-        db.close()
-
-    # ── Stage 4: Also crawl subpages (outside DB transaction) ────────────────
-    base = urlparse(url)
-    base_url = f"{base.scheme}://{base.netloc}"
-    additional_html = []
-    for subpath in ENTITY_SUBPAGES:
-        subpage_url = f"{base_url}{subpath}"
-        try:
-            sub_items = run_async(
-                crawler_service.crawl_site(
-                    starting_url=subpage_url, max_depth=1, max_pages=1
-                )
-            )
-            if sub_items and sub_items[0].text:
-                additional_html.append(sub_items[0].text)
-        except Exception:
-            pass  # Subpage failures are non-fatal
-
-    enriched_text = item.text or ""
-    if additional_html:
-        enriched_text += "\n\n" + "\n\n".join(additional_html)
-        enriched_text = enriched_text[:50000]
-
-    # ── Stage 5: Extract Information via LLM (outside DB transaction) ───────
-    try:
-        payload = run_async(
-            extraction_pipeline.process_document_extraction(
-                document_id=doc_id,
-                url=item.url,
-                html_content=item.html_content or "",
-                text_content=enriched_text,
-                user_domain=domain,
-            )
+        _log_activity(
+            db, url=url, stage="CRAWL", domain=domain,
+            status="OK",
+            message=f"Agent 1 Crawled OK — Staging Card recorded [CRAWLED_PENDING_AGENT_2] with {len(raw_artifacts_list)} MinIO artifacts. AGENT 1 STOPS.",
+            batch_id=batch_id
         )
-    except Exception as ext_err:
-        logger.error(f"[Worker B] Extraction failed for {url}: {ext_err}")
-        return {"status": "error", "error": str(ext_err)}
 
-    # Save JSON extraction payload to MinIO
-    file_storage.save_extracted_json(doc_id, payload)
+        logger.info(f"[Agent 1] Successfully crawled and stored {clean_domain}. Staging record {doc_id} created. AGENT 1 STOPS.")
 
-    # ── Stage 6: Persist Extracted Record to Database ────────────────────────
-    db = SessionLocal()
-    try:
-        _log_activity(db, url=url, stage="EXTRACT", domain=domain,
-                      status="OK", message=f"Extracted JSON payload generated for document ID={doc_id[:8]}",
-                      entity_name=(payload.get("universal") or {}).get("canonical_name"), batch_id=batch_id)
-
-        entity_name = (
-            (payload.get("universal") or {}).get("canonical_name", "")
-            or (payload.get("domain_data") or {}).get("company_name", "")
-            or item.title
-            or ""
-        )
-        entity_confidence = float(
-            (payload.get("universal") or {}).get("confidence", 0.5) or 0.5
-        )
-        entity_url = item.url
-
-        keep_entity, entity_reason = quality_filter.filter_entity(
-            canonical_name=entity_name,
-            url=entity_url,
-            confidence=entity_confidence,
-        )
-        if not keep_entity:
-            logger.info(f"[Worker B] Entity filtered ({entity_reason}): {entity_name}")
-            _log_activity(db, url=url, stage="FILTER", domain=domain,
-                          status="FILTERED", message=f"Entity rejected: {entity_reason} | name='{entity_name}'",
-                          entity_name=entity_name, batch_id=batch_id)
-            return {"status": "entity_filtered", "reason": entity_reason, "url": url}
-
-        domain_key = urlparse(entity_url).netloc.lower()
-        existing = db.query(UniversalRecord).filter(
-            UniversalRecord.url.ilike(f"%{domain_key}%")
-        ).first()
-        if existing:
-            logger.info(f"[Worker B] Duplicate domain {domain_key} — skipping")
-            _log_activity(db, url=url, stage="FILTER", domain=domain,
-                          status="DUPLICATE", message=f"Domain already indexed: {domain_key}",
-                          entity_name=entity_name, batch_id=batch_id)
-            return {"status": "duplicate_domain", "url": url, "existing_id": existing.id}
-
-        # Optional: Attempt to discover company LinkedIn URL — attach if found, skip gracefully if not
-        from app.extraction.key_people_extractor import key_people_extractor
-        company_linkedin = key_people_extractor.extract_company_linkedin_url(
-            item.html_content or "", enriched_text, entity_name, domain_key
-        )
-        if not company_linkedin:
-            try:
-                company_linkedin = run_async(
-                    key_people_extractor.find_company_linkedin_via_search(entity_name, domain_key)
-                )
-            except Exception as li_err:
-                logger.debug(f"[Worker B] LinkedIn search skipped for {entity_name}: {li_err}")
-
-        # Attach company LinkedIn URL to payload if found (not a hard requirement)
-        univ_data = payload.get("universal") or {}
-        if "metadata_json" not in univ_data or not isinstance(univ_data["metadata_json"], dict):
-            univ_data["metadata_json"] = {}
-        if company_linkedin:
-            univ_data["metadata_json"]["company_linkedin_url"] = company_linkedin
-        payload["universal"] = univ_data
-
-        dom_data = payload.get("domain_data") or {}
-        if company_linkedin:
-            dom_data["company_linkedin_url"] = company_linkedin
-        payload["domain_data"] = dom_data
-
-        if company_linkedin:
-            logger.info(f"[Worker B] LinkedIn found for {entity_name}: {company_linkedin}")
-        else:
-            logger.debug(f"[Worker B] No LinkedIn found for {entity_name} — continuing without it")
-
-        repo.save_extraction_results(db, payload)
-
-        # Enterprise Master Vault Integration (Redis L1, SQLite WAL Vault, MinIO L3, Postgres Open Lake)
-        try:
-            from app.persistence.vault_service import MasterVaultService
-            subpages_list = [
-                {"url": url, "markdown": item.markdown or item.text or ""}
-            ]
-            d_makers = dom_data.get("key_people") or dom_data.get("leadership")
-            if not d_makers:
-                d_makers = key_people_extractor.extract_from_text_and_html(
-                    enriched_text, item.html_content or "", entity_name, domain_key
-                )
-            if not d_makers:
-                _safe_dispatch(
-                    search_company_people_task,
-                    company_name=entity_name,
-                    domain=domain,
-                    official_domain=domain_key,
-                    batch_id=batch_id
-                )
-            MasterVaultService.persist_master_lead(
-                db=db,
-                domain=domain_key,
-                company_name=entity_name,
-                logo_url=dom_data.get("logo_url"),
-                technology_stack=dom_data.get("technologies") or dom_data.get("tech_stack"),
-                quality_score=entity_confidence * 10.0,
-                headquarters=dom_data.get("headquarters") or dom_data.get("location"),
-                industry=dom_data.get("industry"),
-                company_size=dom_data.get("company_size"),
-                revenue_funding=dom_data.get("funding_stage") or dom_data.get("revenue"),
-                verified_emails=dom_data.get("contact_emails") or dom_data.get("emails"),
-                summary=univ_data.get("description") or dom_data.get("business_overview"),
-                decision_makers=d_makers,
-                crawled_subpages=subpages_list,
-                company_linkedin_url=company_linkedin
-            )
-
-            # Also persist discovered key people to KeyPersonCandidate table
-            if d_makers and isinstance(d_makers, list):
-                from app.persistence.models import KeyPersonCandidate
-                for dm in d_makers:
-                    if isinstance(dm, dict) and dm.get("name"):
-                        p_name = dm["name"].strip()
-                        if not p_name.lower().startswith("leadership team"):
-                            existing_kp = db.query(KeyPersonCandidate).filter(
-                                KeyPersonCandidate.company_name == entity_name,
-                                KeyPersonCandidate.person_name == p_name
-                            ).first()
-                            if not existing_kp:
-                                db.add(KeyPersonCandidate(
-                                    company_name=entity_name,
-                                    person_name=p_name,
-                                    role=dm.get("title") or "Executive / Leadership",
-                                    source_url=dm.get("linkedin_url") or dm.get("linkedin_search_url") or url,
-                                    discovery_query="Webpage HTML / Team Extraction",
-                                    confidence_score=0.90
-                                ))
-                db.commit()
-        except Exception as vault_err:
-            logger.warning(f"[Worker B] MasterVault persistence notice for {domain_key}: {vault_err}")
-
-        univ_rec = db.query(UniversalRecord).filter(
-            UniversalRecord.document_id == doc_id
-        ).first()
-
-        if univ_rec:
-            _log_activity(db, url=url, stage="POSTGRES", domain=domain,
-                          status="OK",
-                          message=f"UniversalRecord persisted — name='{entity_name}' ID={univ_rec.id[:8]} confidence={entity_confidence:.0%}",
-                          entity_name=entity_name, batch_id=batch_id)
-            _safe_dispatch(enrich_and_verify_task, universal_record_id=univ_rec.id)
-
+        # STRICT AGENT 1 BOUNDARY: Stop here. Do not call extraction, people search, or Postgres verified lake.
         return {
             "status": "success",
+            "lifecycle_state": "CRAWLED_PENDING_AGENT_2",
             "document_id": doc_id,
-            "universal_record_id": univ_rec.id if univ_rec else None,
-            "entity_name": entity_name,
-            "subpages_crawled": len(additional_html),
+            "domain": clean_domain,
+            "url": url,
+            "pages_crawled": 1 + len(subpages_crawled_urls),
+            "minio_artifacts": raw_artifacts_list,
+            "raw_metadata": raw_metadata_payload,
         }
     except Exception as e:
-        logger.error(f"[Worker B] Save extraction failed for {url}: {e}")
+        logger.error(f"[Worker B] Save staging record failed for {url}: {e}")
         _log_crawl_error(db, url, "crawl_entity", e)
         return {"status": "error", "error": str(e)}
     finally:
@@ -890,6 +800,12 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
                 from app.persistence.vault_service import MasterVaultService
                 domain_key = urlparse(record.url).netloc.lower().lstrip("www.")
                 dom_data = dom_rec.data if dom_rec and isinstance(dom_rec.data, dict) else {}
+                rec_industry = (
+                    dom_data.get("industry")
+                    or (record.domain.name if (record.domain and hasattr(record.domain, "name")) else None)
+                    or "Commercial Enterprise"
+                )
+                rec_size = dom_data.get("company_size") or dom_data.get("company_tier")
                 MasterVaultService.persist_master_lead(
                     db=db,
                     domain=domain_key,
@@ -897,7 +813,8 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
                     technology_stack=dom_data.get("technologies") or [],
                     quality_score=confidence * 10.0,
                     headquarters=dom_data.get("headquarters") or record.location,
-                    industry=record.domain.name if (record.domain and hasattr(record.domain, "name")) else "Technology",
+                    industry=rec_industry,
+                    company_size=rec_size,
                     summary=record.description or f"{record.canonical_name} corporate profile.",
                     decision_makers=dom_data.get("key_people") or dom_data.get("leadership")
                 )
@@ -905,7 +822,7 @@ def enrich_and_verify_task(self, universal_record_id: str) -> Dict[str, Any]:
                     _safe_dispatch(
                         search_company_people_task,
                         company_name=record.canonical_name,
-                        domain=record.domain.name if (record.domain and hasattr(record.domain, "name")) else "Technology",
+                        domain=rec_industry,
                         official_domain=domain_key
                     )
             except Exception as vault_err:
@@ -979,12 +896,19 @@ def search_company_people_task(
             bad_slugs = {"search", "jobs", "feed", "login", "signup", "home", "pub", "in", "sharing", "posts"}
             return slug not in bad_slugs
         
-        clean_company = key_people_extractor.clean_company_name(company_name)
+        from app.extraction.person_verifier import person_verifier
+        ident = person_verifier.canonicalize_company_identity(url=official_domain or domain or "", title=company_name, raw_name=company_name)
+        clean_company = ident["company_name"]
+        site_domain = ident["canonical_domain"] or (official_domain or "").replace("www.", "").lower().strip()
+
+        if not site_domain or clean_company.lower() in {"home", "index", "welcome", "unknown", "company"}:
+            logger.info(f"[Worker P] Aborting people search for invalid/generic identity: '{clean_company}' ({site_domain})")
+            return {"status": "skipped", "reason": "Invalid or generic company identity"}
 
         # Generate prioritized queries (cap 5)
         queries = key_people_agent.generate_queries(
             company_name=clean_company,
-            official_domain=official_domain
+            official_domain=site_domain
         )
         
         all_discovered = []
@@ -999,10 +923,14 @@ def search_company_people_task(
                 if results:
                     relevant_results = key_people_agent.filter_relevant_results(
                         results,
-                        official_domain=official_domain,
+                        official_domain=site_domain,
                         company_name=clean_company
                     )
-                    batch_people = key_people_extractor.extract_from_linkedin_search_snippets(relevant_results, clean_company)
+                    batch_people = key_people_extractor.extract_from_linkedin_search_snippets(
+                        relevant_results,
+                        clean_company,
+                        official_domain=site_domain
+                    )
                     for bp in batch_people:
                         if not any(dp["name"].lower() == bp["name"].lower() for dp in all_discovered):
                             all_discovered.append(bp)
@@ -1015,16 +943,12 @@ def search_company_people_task(
                 logger.warning(f"[Worker P] SearXNG error on query '{q}': {e}")
 
         if not all_discovered:
-            return {"status": "no_results", "company_name": company_name}
-
-        clean_dom = (official_domain or "").replace("www.", "").lower().strip()
-        site_domain = clean_dom if clean_dom else domain
+            return {"status": "no_results", "company_name": clean_company}
 
         saved_count = 0
         for p in all_discovered:
-            target_names = [company_name, clean_company]
             existing = db.query(KeyPersonCandidate).filter(
-                (KeyPersonCandidate.company_name.in_(target_names)) | (KeyPersonCandidate.source_domain == site_domain),
+                KeyPersonCandidate.source_domain == site_domain,
                 KeyPersonCandidate.person_name == p["name"]
             ).first()
             
@@ -1034,19 +958,21 @@ def search_company_people_task(
             
             # Genuine profile URL only — never store a search or query URL
             valid_profile_url = p_profile if p_profile else None
+            cand_status = p.get("match_status", "VERIFIED" if valid_profile_url else "HIGH_CONFIDENCE")
+            cand_score = float(p.get("confidence_score", 0.95))
             
             if not existing:
                 cand = KeyPersonCandidate(
-                    company_name=company_name,
+                    company_name=clean_company,
                     person_name=p["name"],
                     role=p["title"],
                     source_url=valid_profile_url, # Genuine profile URL or None, NEVER a search query!
                     source_domain=site_domain,
-                    source_type=p.get("source_type", "search_discovery"),
+                    source_type=p.get("source_type", "linkedin_profile" if valid_profile_url else "web_search_snippet"),
                     discovery_query=last_query,
                     evidence_text=p.get("evidence", ""),
-                    confidence_score=p.get("confidence_score", 0.85),
-                    verification_status="HIGH_CONFIDENCE" if valid_profile_url else "DISCOVERED"
+                    confidence_score=cand_score,
+                    verification_status=cand_status
                 )
                 db.add(cand)
                 saved_count += 1
@@ -1112,3 +1038,107 @@ def search_company_people_task(
             return {"error": str(e)}
     finally:
         db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AGENT 2 CELERY TASKS — Autonomous Verification & Evidence Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(name="tasks.agent2_rank_cards", bind=True)
+def agent2_rank_cards_task(self) -> Dict[str, Any]:
+    """Ranks all pending CRAWLED_PENDING_AGENT_2 cards."""
+    from app.agent.agent2_orchestrator import agent2_orchestrator
+    db = SessionLocal()
+    try:
+        pending_docs = db.query(Document).filter(
+            Document.lifecycle_state == "CRAWLED_PENDING_AGENT_2"
+        ).all()
+        ranked = []
+        for doc in pending_docs:
+            session = agent2_orchestrator.get_or_create_session(doc.id, db)
+            if session:
+                score = agent2_orchestrator.rank_card(session, db)
+                ranked.append({"document_id": doc.id, "domain": session.domain, "priority_score": score})
+        return {"status": "success", "ranked_count": len(ranked), "results": ranked}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.agent2_process_card", bind=True)
+def agent2_process_card_task(self, document_id: str) -> Dict[str, Any]:
+    """Runs end-to-end Agent 2 verification workflow for a specific card."""
+    from app.agent.agent2_orchestrator import agent2_orchestrator
+    logger.info(f"[Agent 2] Processing verification for document {document_id}")
+    return run_async(agent2_orchestrator.execute_full_verification(document_id))
+
+
+@celery_app.task(name="tasks.agent2_verify_phase1", bind=True)
+def agent2_verify_phase1_task(self, session_id: str) -> Dict[str, Any]:
+    """Executes Phase 1 evidence verification for an Agent 2 session."""
+    from app.agent.agent2_orchestrator import agent2_orchestrator
+    from app.persistence.models import Agent2VerificationSession
+    db = SessionLocal()
+    try:
+        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        if not session:
+            return {"status": "error", "error": "Session not found"}
+        return run_async(agent2_orchestrator.verify_phase1(session, db))
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.agent2_synthesize_business", bind=True)
+def agent2_synthesize_business_task(self, session_id: str) -> Dict[str, Any]:
+    """Runs Phase 2 Haystack business synthesis."""
+    from app.agent.agent2_orchestrator import agent2_orchestrator
+    from app.persistence.models import Agent2VerificationSession
+    db = SessionLocal()
+    try:
+        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        if not session:
+            return {"status": "error", "error": "Session not found"}
+        return run_async(agent2_orchestrator.synthesize_business(session, db))
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.agent2_search_linkedin", bind=True)
+def agent2_search_linkedin_task(self, session_id: str) -> Dict[str, Any]:
+    """Runs Phase 2 LinkedIn key person discovery."""
+    from app.agent.agent2_orchestrator import agent2_orchestrator
+    from app.persistence.models import Agent2VerificationSession
+    db = SessionLocal()
+    try:
+        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        if not session:
+            return {"status": "error", "error": "Session not found"}
+        return run_async(agent2_orchestrator.discover_and_verify_linkedin(session, db))
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.agent2_finalize_verification", bind=True)
+def agent2_finalize_verification_task(self, session_id: str) -> Dict[str, Any]:
+    """Finalizes verification decision and triggers PostgreSQL Outbox."""
+    from app.agent.agent2_orchestrator import agent2_orchestrator
+    from app.persistence.models import Agent2VerificationSession
+    db = SessionLocal()
+    try:
+        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        if not session:
+            return {"status": "error", "error": "Session not found"}
+        return run_async(agent2_orchestrator.finalize_verification_and_sync(session, db))
+    finally:
+        db.close()
+
+
+@celery_app.task(name="tasks.agent2_sync_postgres", bind=True)
+def agent2_sync_postgres_task(self, limit: int = 10) -> Dict[str, Any]:
+    """Flushes SQLite outbox entries to PostgreSQL Lake."""
+    from app.persistence.outbox_sync_service import outbox_sync_service
+    db = SessionLocal()
+    try:
+        return outbox_sync_service.process_outbox_queue(db=db, limit=limit)
+    finally:
+        db.close()
+

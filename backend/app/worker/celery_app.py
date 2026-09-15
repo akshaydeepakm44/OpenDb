@@ -10,22 +10,24 @@ logger = logging.getLogger(__name__)
 import redis
 
 redis_url = settings.REDIS_URL
-broker_url = settings.CELERY_BROKER_URL
-backend_url = settings.CELERY_RESULT_BACKEND
+broker_url = settings.CELERY_BROKER_URL or redis_url
+backend_url = settings.CELERY_RESULT_BACKEND or redis_url
+REDIS_AVAILABLE = False
 
 try:
-    r = redis.Redis.from_url(redis_url, socket_connect_timeout=0.05, socket_timeout=0.05)
+    r = redis.Redis.from_url(redis_url, socket_connect_timeout=0.2, socket_timeout=0.2)
     if r.ping():
         broker_url = redis_url
         backend_url = redis_url
+        REDIS_AVAILABLE = True
         logger.info(f"Celery Redis broker connected successfully ({redis_url})")
+    else:
+        logger.warning(f"REDIS_UNAVAILABLE — Redis ping returned False for {redis_url}")
 except Exception as e:
     if settings.OPENDB_ENV.lower() == "production":
         logger.error(f"Redis connection failed in PRODUCTION mode for Celery: {e}")
         raise RuntimeError(f"Redis connection failed in PRODUCTION mode for Celery: {e}")
-    logger.warning(f"Redis ping failed, using SQLite fallback for Celery Broker (OPENDB_ENV={settings.OPENDB_ENV}): {e}")
-    broker_url = "sqla+sqlite:///./opendb_celery.db"
-    backend_url = "db+sqlite:///./opendb_celery.db"
+    logger.warning(f"REDIS_UNAVAILABLE — Redis connection failed: {e}. SQLite Celery broker is prohibited.")
 
 celery_app = Celery(
     "opendb_worker",
