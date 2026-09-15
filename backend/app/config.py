@@ -12,8 +12,8 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "password123"
     POSTGRES_DB: str = "opendb"
     POSTGRES_HOST: str = "localhost"
-    POSTGRES_PORT: int = 5433
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://admin:password123@localhost:5433/opendb")
+    POSTGRES_PORT: int = 5432
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://admin:password123@localhost:5432/opendb")
     
     RAW_STORAGE_DIR: str = "./data"
     

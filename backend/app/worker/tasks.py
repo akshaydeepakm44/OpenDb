@@ -79,7 +79,7 @@ def _has_active_celery_worker() -> bool:
             _worker_check_cache["last_check"] = now
             return False
 
-        inspector = celery_app.control.inspect(timeout=0.25)
+        inspector = celery_app.control.inspect(timeout=1.0)
         res = inspector.ping()
         is_active = bool(res and len(res) > 0)
         _worker_check_cache["active"] = is_active
@@ -107,13 +107,18 @@ def _dispatch_task(task_func, **kwargs):
     try:
         task_res = task_func.apply_async(kwargs=kwargs, queue="celery")
         task_id = getattr(task_res, "id", str(uuid.uuid4()))
+        
+        has_worker = _has_active_celery_worker()
+        worker_note = "" if has_worker else " (WARNING: CELERY_WORKER_UNAVAILABLE - no worker actively consuming queue)"
+        
         tracer.log_event(
-            level="INFO",
+            level="INFO" if has_worker else "WARNING",
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="TASK_ENQUEUED",
-            message=f"Enqueued Celery task '{task_name}' into Redis queue (celery_task_id={task_id})",
+            message=f"Enqueued Celery task '{task_name}' into Redis queue (celery_task_id={task_id}){worker_note}",
             task_id=task_id,
-            status="QUEUED"
+            status="QUEUED",
+            extra={"has_active_worker": has_worker, "task": task_name, "celery_task_id": task_id}
         )
         return True
     except (TypeError, ValueError) as sig_err:
@@ -121,25 +126,26 @@ def _dispatch_task(task_func, **kwargs):
             level="ERROR",
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="QUEUE_DISPATCH_FAILED",
-            message=f"TASK_SIGNATURE_ERROR: Invalid arguments/signature for task '{task_name}': {sig_err}",
+            message=f"TASK_SIGNATURE_MISMATCH: Invalid arguments/signature for task '{task_name}': {sig_err}",
             status="FAILED",
-            extra={"failure_class": "TASK_SIGNATURE_ERROR", "service": "CELERY", "task": task_name},
+            extra={"failure_class": "TASK_SIGNATURE_MISMATCH", "service": "CELERY", "task": task_name},
             exc_info=True
         )
-        raise RuntimeError(f"TASK_SIGNATURE_ERROR: Celery task signature rejected for '{task_name}' ({sig_err})")
+        raise RuntimeError(f"QUEUE_FAILED (TASK_SIGNATURE_MISMATCH): Celery task signature rejected for '{task_name}' ({sig_err})")
     except Exception as e:
         err_type = type(e).__name__
-        failure_class = "BROKER_UNAVAILABLE" if any(x in str(e).lower() or x in err_type.lower() for x in ["connection", "timeout", "socket", "refused"]) else "TASK_DISPATCH_FAILED"
+        is_conn = any(x in str(e).lower() or x in err_type.lower() for x in ["connection", "timeout", "socket", "refused", "auth"])
+        failure_class = "REDIS_CONNECTION_FAILED" if is_conn else "TASK_DISPATCH_FAILED"
         tracer.log_event(
             level="ERROR",
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="QUEUE_DISPATCH_FAILED",
-            message=f"QUEUE_FAILED ({failure_class}): Redis task queue unreachable for task '{task_name}': {e}",
+            message=f"{failure_class}: Redis task queue unreachable for task '{task_name}': {e}",
             status="FAILED",
             extra={"failure_class": failure_class, "service": "REDIS", "task": task_name},
             exc_info=True
         )
-        raise RuntimeError(f"QUEUE_FAILED: Redis task queue unreachable ({e})")
+        raise RuntimeError(f"QUEUE_FAILED ({failure_class}): Redis task queue unreachable ({e})")
 
 _safe_dispatch = _dispatch_task
 

@@ -8,7 +8,28 @@ logger = logging.getLogger(__name__)
 
 class SchemaRegistry:
     def __init__(self, schemas_dir: Optional[str] = None):
-        self.schemas_dir = Path(schemas_dir or "./schemas")
+        # Resolution order:
+        # 1. Explicit argument
+        # 2. SCHEMAS_DIR environment variable
+        # 3. Repository root schemas folder (relative to source file)
+        # 4. Local ./schemas fallback
+        env_dir = os.environ.get("SCHEMAS_DIR")
+        repo_root_schemas = Path(__file__).resolve().parent.parent.parent.parent / "schemas"
+        
+        if schemas_dir:
+            resolved_path = Path(schemas_dir)
+        elif env_dir and Path(env_dir).exists():
+            resolved_path = Path(env_dir)
+        elif repo_root_schemas.exists():
+            resolved_path = repo_root_schemas
+        elif Path("./schemas").exists():
+            resolved_path = Path("./schemas")
+        elif Path("../schemas").exists():
+            resolved_path = Path("../schemas")
+        else:
+            resolved_path = repo_root_schemas
+
+        self.schemas_dir = resolved_path
         self.universal_schema_path = self.schemas_dir / "universal" / "resource_schema.json"
         self.domains_dir = self.schemas_dir / "domains"
         self._cache: Dict[str, Dict[str, Any]] = {}
@@ -33,6 +54,9 @@ class SchemaRegistry:
                         self._cache[domain_key] = data
                 except Exception as e:
                     logger.error(f"Error loading domain schema {schema_file}: {e}")
+
+        status = "ONLINE" if self._cache else "DEGRADED"
+        logger.info(f"[SchemaRegistry] schemas_dir={self.schemas_dir} schemas_loaded={len(self._cache)} status={status}")
 
     def get_universal_schema(self) -> Dict[str, Any]:
         return self._cache.get("universal", {})

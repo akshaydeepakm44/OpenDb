@@ -51,12 +51,12 @@ def _is_postgres_listening(host: str, port: int) -> bool:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.setblocking(False)
         s.connect_ex((host, port))
-        _, writable, _ = select.select([], [s], [], 0.05)
+        _, writable, _ = select.select([], [s], [], 1.0)
         if not writable:
             s.close()
             return False
         s.setblocking(True)
-        s.settimeout(0.05)
+        s.settimeout(1.0)
         s.sendall(b"\x00\x00\x00\x08\x04\xd2\x16\x2f")
         data = s.recv(1)
         s.close()

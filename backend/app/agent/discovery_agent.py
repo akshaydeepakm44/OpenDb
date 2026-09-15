@@ -500,9 +500,10 @@ class AutonomousDiscoveryAgent:
         # 2. Try LiteLLM completion fallback
         if litellm:
             try:
+                litellm_model = f"openai/{model}" if not model.startswith("openai/") else model
                 response = await asyncio.to_thread(
                     litellm.completion,
-                    model=model,
+                    model=litellm_model,
                     api_key=api_key,
                     api_base=base_url,
                     messages=[

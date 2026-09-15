@@ -156,8 +156,9 @@ class CrawlerService:
                         status_code = 200
                         canonical_url = curr_url
 
+                        crawl_timeout = 35.0
                         try:
-                            crawl_res = await asyncio.wait_for(crawler.arun(url=curr_url, config=config), timeout=12.0)
+                            crawl_res = await asyncio.wait_for(crawler.arun(url=curr_url, config=config), timeout=crawl_timeout)
                             if crawl_res and crawl_res.success:
                                 html_raw = crawl_res.html or ""
                                 markdown_raw = crawl_res.markdown or ""
@@ -178,15 +179,17 @@ class CrawlerService:
                                 raise ValueError(f"Crawl4AI returned success=False for {curr_url}")
                         except Exception as c_err:
                             crawl_dur = time.time() - t_crawl_start
+                            is_timeout = isinstance(c_err, asyncio.TimeoutError)
+                            evt_name = "CRAWL_TIMEOUT" if is_timeout else "CRAWL_FAILED"
                             tracer.log_event(
                                 level="ERROR",
                                 checkpoint=Checkpoint.CP18_CRAWL_EXECUTION,
-                                event="CRAWL_FAILED",
-                                message=f"CRAWL_FAILED — Browser rendering failed for {curr_url}: {c_err}",
+                                event=evt_name,
+                                message=f"{evt_name} — Browser rendering {'timed out after 35s' if is_timeout else 'failed'} for {curr_url}: {c_err}",
                                 lead_id=base_host,
                                 duration=crawl_dur,
                                 status="FAILED",
-                                extra={"url": curr_url, "error": str(c_err)},
+                                extra={"url": curr_url, "error": str(c_err), "timeout": crawl_timeout if is_timeout else None, "attempt": 1},
                                 exc_info=True
                             )
                             raise RuntimeError(f"CRAWL_FAILED: Browser rendering failed for {curr_url} ({c_err})")

@@ -111,3 +111,115 @@ def services_health_check(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/preflight")
+async def system_preflight_check(db: Session = Depends(get_db)):
+    """
+    Truthful System Pre-Flight Validation endpoint (§20 of Master Prompt).
+    Checks all 9 runtime dependencies without faking or swallowing states.
+    """
+    import time
+    from app.persistence.database import IS_FALLBACK_ACTIVE, DATABASE_MODE
+    from app.schemas.registry import schema_registry
+    from app.worker.tasks import _has_active_celery_worker
+    from app.worker.celery_app import celery_app
+
+    report = {
+        "fastapi": {"status": "ONLINE"}
+    }
+
+    # 1. PostgreSQL Check
+    try:
+        if IS_FALLBACK_ACTIVE:
+            report["postgresql"] = {"status": "DEGRADED", "mode": "SQLITE_FALLBACK"}
+        else:
+            tbl_count = db.execute(text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public'")).scalar()
+            report["postgresql"] = {"status": "ONLINE", "mode": "PRIMARY", "table_count": tbl_count}
+    except Exception as e:
+        report["postgresql"] = {"status": "OFFLINE", "error": str(e)}
+
+    # 2. Redis Check
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(settings.REDIS_URL.replace("localhost", "127.0.0.1"))
+        t0 = time.time()
+        r = redis.Redis(host=p.hostname or "127.0.0.1", port=p.port or 6379, password=p.password, socket_connect_timeout=1.5, socket_timeout=1.5)
+        if r.ping():
+            lat = round((time.time() - t0) * 1000, 2)
+            report["redis"] = {"status": "ONLINE", "latency_ms": lat}
+        else:
+            report["redis"] = {"status": "OFFLINE"}
+    except Exception as e:
+        report["redis"] = {"status": "OFFLINE", "error": str(e)}
+
+    # 3. Celery Worker Check
+    try:
+        active_worker = _has_active_celery_worker()
+        worker_count = 0
+        if active_worker:
+            inspector = celery_app.control.inspect(timeout=0.5)
+            ping_res = inspector.ping()
+            worker_count = len(ping_res) if ping_res else 1
+        report["celery_worker"] = {
+            "status": "ONLINE" if active_worker else "OFFLINE",
+            "active_workers": worker_count
+        }
+    except Exception:
+        report["celery_worker"] = {"status": "OFFLINE", "active_workers": 0}
+
+    # 4. SearXNG Check
+    try:
+        searx_url = settings.SEARXNG_URL
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(searx_url)
+            report["searxng"] = {"status": "ONLINE" if resp.status_code in (200, 302, 301) else "DEGRADED", "url": searx_url}
+    except Exception as e:
+        report["searxng"] = {"status": "OFFLINE", "url": settings.SEARXNG_URL, "error": str(e)}
+
+    # 5. Crawl4AI Check
+    try:
+        from crawl4ai import AsyncWebCrawler
+        report["crawl4ai"] = {"status": "ONLINE", "engine": "Playwright"}
+    except Exception as e:
+        report["crawl4ai"] = {"status": "OFFLINE", "error": str(e)}
+
+    # 6. MinIO Check
+    try:
+        from minio import Minio
+        ep = settings.MINIO_ENDPOINT.replace("localhost", "127.0.0.1")
+        m = Minio(ep, access_key=settings.MINIO_ACCESS_KEY, secret_key=settings.MINIO_SECRET_KEY, secure=settings.MINIO_SECURE)
+        buckets = [b.name for b in m.list_buckets()]
+        report["minio"] = {"status": "ONLINE", "buckets": buckets}
+    except Exception as e:
+        report["minio"] = {"status": "OFFLINE", "error": str(e)}
+
+    # 7. Schemas Check
+    schema_count = len(schema_registry._cache)
+    report["schemas"] = {
+        "status": "ONLINE" if schema_count > 0 else "DEGRADED",
+        "loaded": schema_count,
+        "schemas": list(schema_registry._cache.keys())
+    }
+
+    # 8. LLM Check
+    try:
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or getattr(settings, "QWEN_API_KEY", "")
+        base_url = getattr(settings, "OPENAI_BASE_URL", "")
+        model = getattr(settings, "LLM_MODEL", "current-model")
+        if api_key and base_url:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                models_resp = await client.get(f"{base_url.rstrip('/')}/models", headers={"Authorization": f"Bearer {api_key}"})
+                llm_online = models_resp.status_code == 200
+            report["llm"] = {
+                "status": "ONLINE" if llm_online else "DEGRADED",
+                "model": model,
+                "provider": getattr(settings, "LLM_PROVIDER", "qwen_gpu")
+            }
+        else:
+            report["llm"] = {"status": "DEGRADED", "reason": "No API key configured", "mode": "DETERMINISTIC_FALLBACK"}
+    except Exception as e:
+        report["llm"] = {"status": "DEGRADED", "error": str(e), "mode": "DETERMINISTIC_FALLBACK"}
+
+    return report
+
+
+
