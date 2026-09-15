@@ -139,6 +139,17 @@ class CrawlerService:
                             current_url=curr_url
                         )
 
+                    from app.audit.tracer import tracer, Checkpoint
+                    t_crawl_start = time.time()
+                    tracer.log_event(
+                        level="INFO",
+                        checkpoint=Checkpoint.CP18_CRAWL_EXECUTION,
+                        event="CRAWL_START",
+                        message=f"Crawl4AI / Playwright requesting: {curr_url} (depth={curr_depth})",
+                        lead_id=base_host,
+                        extra={"url": curr_url, "depth": curr_depth}
+                    )
+
                     try:
                         html_raw = ""
                         markdown_raw = ""
@@ -146,16 +157,38 @@ class CrawlerService:
                         canonical_url = curr_url
 
                         try:
-                            crawl_res = await asyncio.wait_for(crawler.arun(url=curr_url, config=config), timeout=7.0)
+                            crawl_res = await asyncio.wait_for(crawler.arun(url=curr_url, config=config), timeout=12.0)
                             if crawl_res and crawl_res.success:
                                 html_raw = crawl_res.html or ""
                                 markdown_raw = crawl_res.markdown or ""
                                 status_code = crawl_res.status_code or 200
                                 canonical_url = crawl_res.url or curr_url
+                                crawl_dur = time.time() - t_crawl_start
+                                tracer.log_event(
+                                    level="DEBUG",
+                                    checkpoint=Checkpoint.CP18_CRAWL_EXECUTION,
+                                    event="PAGE_RESPONSE",
+                                    message=f"Crawl4AI received {status_code} for {curr_url} ({len(html_raw)} chars)",
+                                    lead_id=base_host,
+                                    duration=crawl_dur,
+                                    status="SUCCESS",
+                                    extra={"url": curr_url, "status_code": status_code, "html_len": len(html_raw)}
+                                )
                             else:
                                 raise ValueError(f"Crawl4AI returned success=False for {curr_url}")
                         except Exception as c_err:
-                            logger.error(f"CRAWL_FAILED — Crawl4AI / Playwright rendering failed for {curr_url}: {c_err}")
+                            crawl_dur = time.time() - t_crawl_start
+                            tracer.log_event(
+                                level="ERROR",
+                                checkpoint=Checkpoint.CP18_CRAWL_EXECUTION,
+                                event="CRAWL_FAILED",
+                                message=f"CRAWL_FAILED — Browser rendering failed for {curr_url}: {c_err}",
+                                lead_id=base_host,
+                                duration=crawl_dur,
+                                status="FAILED",
+                                extra={"url": curr_url, "error": str(c_err)},
+                                exc_info=True
+                            )
                             raise RuntimeError(f"CRAWL_FAILED: Browser rendering failed for {curr_url} ({c_err})")
 
                         soup = BeautifulSoup(html_raw, "html.parser")

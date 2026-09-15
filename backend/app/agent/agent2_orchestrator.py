@@ -153,6 +153,17 @@ class Agent2Orchestrator:
             "reasons": reasons
         })
         db.commit()
+
+        from app.audit.tracer import tracer, Checkpoint
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP13_LEAD_ANALYSIS,
+            event="PRIORITY_RANKED",
+            message=f"Agent 2 priority ranked {session.domain}: score={final_score} ({len(reasons)} criteria met)",
+            agent_id="AGENT-02",
+            lead_id=session.domain,
+            extra={"priority_score": final_score, "reasons": reasons}
+        )
         return final_score
 
     async def verify_phase1(self, session: Agent2VerificationSession, db) -> Dict[str, Any]:
@@ -161,11 +172,34 @@ class Agent2Orchestrator:
         Investigates all 7 required Phase-1 fields with field-specific strategies and multi-round retries.
         Enforces Phase 1 Gate: ZERO UNVERIFIED or MISSING_BUT_NOT_CHECKED fields allowed.
         """
+        from app.audit.tracer import tracer, Checkpoint
+        import time
+        t_phase1_start = time.time()
+
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP14_LEAD_CLASSIFICATION,
+            event="PHASE1_VERIFICATION_START",
+            message=f"Agent 2 Phase 1 Gate verification starting for {session.domain} ({session.company_name})",
+            agent_id="AGENT-02",
+            lead_id=session.domain,
+            status="STARTED"
+        )
+
         doc = db.query(Document).filter(Document.id == session.document_id).first()
         if not doc:
             session.status = "PHASE1_BLOCKED"
             session.error_message = "Source document not found in database"
             db.commit()
+            tracer.log_event(
+                level="ERROR",
+                checkpoint=Checkpoint.CP14_LEAD_CLASSIFICATION,
+                event="PHASE1_GATE_BLOCKED",
+                message=f"Phase 1 Gate BLOCKED for {session.domain}: Source document {session.document_id} not found",
+                agent_id="AGENT-02",
+                lead_id=session.domain,
+                status="FAILED"
+            )
             return {"status": "blocked", "error": "Document not found"}
 
         session.status = "PHASE1_VERIFYING"
@@ -240,7 +274,7 @@ class Agent2Orchestrator:
         )
         field_results["company_size_tier"] = res_size
 
-        # Persist Agent2Evidence records
+        # Persist Agent2Evidence records & log extracted fields at DEBUG level
         for fname, fres in field_results.items():
             ev = Agent2Evidence(
                 session_id=session.id,
@@ -254,10 +288,21 @@ class Agent2Orchestrator:
             )
             db.add(ev)
 
+            tracer.log_event(
+                level="DEBUG",
+                checkpoint=Checkpoint.CP22_EVIDENCE_COLLECTION,
+                event="FIELD_EVIDENCE_EXTRACTED",
+                message=f"Field '{fname}' -> status={fres.get('status')} value='{fres.get('value')}' (method={fres.get('verification_method')})",
+                agent_id="AGENT-02",
+                lead_id=domain,
+                extra={"field": fname, "value": fres.get("value"), "status": fres.get("status"), "source": fres.get("source_url")}
+            )
+
         session.phase1_data = field_results
 
         # ── Phase 1 Gate Evaluation ──────────────────────────────────────────
         unverified_fields = [k for k, v in field_results.items() if v.get("status") == "UNVERIFIED"]
+        phase1_dur = time.time() - t_phase1_start
         if unverified_fields:
             session.status = "PHASE1_BLOCKED"
             session.error_message = f"Phase 1 Gate blocked: incomplete investigations for {unverified_fields}"
@@ -267,6 +312,17 @@ class Agent2Orchestrator:
                 "unverified_fields": unverified_fields
             })
             db.commit()
+            tracer.log_event(
+                level="WARNING",
+                checkpoint=Checkpoint.CP23_VALIDATION_GATE,
+                event="PHASE1_GATE_BLOCKED",
+                message=f"Phase 1 Gate BLOCKED for {domain}: unverified fields {unverified_fields}",
+                agent_id="AGENT-02",
+                lead_id=domain,
+                duration=phase1_dur,
+                status="BLOCKED",
+                extra={"unverified_fields": unverified_fields}
+            )
             return {"status": "blocked", "unverified_fields": unverified_fields}
 
         session.status = "PHASE1_VERIFIED"
@@ -276,6 +332,17 @@ class Agent2Orchestrator:
             "message": "All 7 fields successfully investigated and passed Phase 1 Gate."
         })
         db.commit()
+
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP23_VALIDATION_GATE,
+            event="PHASE1_GATE_PASSED",
+            message=f"Phase 1 Gate PASSED for {domain}: All 7 fields verified or exhausted without unhandled status",
+            agent_id="AGENT-02",
+            lead_id=domain,
+            duration=phase1_dur,
+            status="SUCCESS"
+        )
         return {"status": "success", "field_results": field_results}
 
     async def synthesize_business(self, session: Agent2VerificationSession, db) -> Dict[str, Any]:
@@ -283,6 +350,19 @@ class Agent2Orchestrator:
         Phase 2: Business Overview & Synthesis.
         Uses Haystack / LLM to produce an evidence-grounded summary without hallucinations.
         """
+        from app.audit.tracer import tracer, Checkpoint
+        import time
+        t_synth_start = time.time()
+
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP15_DEEP_RESEARCH,
+            event="BUSINESS_SYNTHESIS_START",
+            message=f"Agent 2 business synthesis starting for {session.domain}",
+            agent_id="AGENT-02",
+            lead_id=session.domain,
+            status="STARTED"
+        )
         session.status = "PHASE2_SYNTHESIS"
         db.commit()
 
@@ -447,6 +527,17 @@ class Agent2Orchestrator:
         })
         db.commit()
 
+        from app.audit.tracer import tracer, Checkpoint
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP24_VERIFICATION_GATE,
+            event="FINAL_VERIFICATION_PASSED",
+            message=f"Agent 2 final verification PASSED for {session.domain} ({session.company_name})",
+            agent_id="AGENT-02",
+            lead_id=session.domain,
+            status="VERIFIED"
+        )
+
         # Stage in Transactional Outbox for PostgreSQL Sync
         session.status = "POSTGRES_SYNC_PENDING"
         db.commit()
@@ -498,6 +589,15 @@ class Agent2Orchestrator:
                 "state": "POSTGRES_VERIFIED",
                 "message": "Intelligence successfully synchronized to PostgreSQL Lake."
             })
+            tracer.log_event(
+                level="INFO",
+                checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+                event="POSTGRES_SYNC_SUCCESS",
+                message=f"Persisted verified company {session.domain} to PostgreSQL Lake",
+                agent_id="AGENT-02",
+                lead_id=session.domain,
+                status="POSTGRES_VERIFIED"
+            )
         else:
             # Remains honestly in POSTGRES_SYNC_PENDING without pretending success!
             session.investigation_log.append({
@@ -505,6 +605,15 @@ class Agent2Orchestrator:
                 "state": "POSTGRES_SYNC_PENDING",
                 "message": f"PostgreSQL synchronization pending (status: {sync_result.get('status')})."
             })
+            tracer.log_event(
+                level="WARNING",
+                checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+                event="POSTGRES_SYNC_PENDING",
+                message=f"PostgreSQL sync pending for {session.domain}: {sync_result.get('status')}",
+                agent_id="AGENT-02",
+                lead_id=session.domain,
+                status="POSTGRES_SYNC_PENDING"
+            )
         db.commit()
 
         return {

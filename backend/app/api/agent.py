@@ -531,13 +531,39 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         db.rollback()
         search_stream = []
 
-    # 7. Live Crawl Activity Stream (all stages: SEARCH, CRAWL, EXTRACT, FILTER, DUPLICATE, ERROR)
+    # 7. Live Crawl & Agent Activity Stream (combining DB logs + live tracer telemetry events)
     crawl_activity_stream = []
     try:
+        from app.audit.tracer import live_telemetry
+        recent_telemetry = live_telemetry.get_recent(limit=40)
+        for t_evt in recent_telemetry:
+            stage_map = {
+                "CP-04": "SEARCH", "CP-05": "SEARCH", "CP-06": "SEARCH",
+                "CP-07": "FILTER", "CP-08": "FILTER",
+                "CP-10": "CREATE", "CP-12": "AGENT-02", "CP-13": "RANK",
+                "CP-14": "VERIFY", "CP-15": "SYNTHESIS", "CP-16": "LINKEDIN",
+                "CP-18": "CRAWL", "CP-20": "EXTRACT", "CP-22": "EVIDENCE",
+                "CP-24": "VERIFIED", "CP-25": "POSTGRES", "CP-26": "STORAGE",
+                "CP-27": "QUEUE", "CP-30": "FAILURE"
+            }
+            stage_name = stage_map.get(t_evt.get("checkpoint"), t_evt.get("agent_id", "SYSTEM"))
+            crawl_activity_stream.append({
+                "id": t_evt.get("event_id"),
+                "url": t_evt.get("lead_id") or "",
+                "domain": t_evt.get("lead_id") or "General",
+                "stage": stage_name,
+                "status": t_evt.get("status") or ("OK" if t_evt.get("level") in ["INFO", "DEBUG"] else "ERROR"),
+                "message": f"[{t_evt.get('checkpoint')}] {t_evt.get('event')}: {t_evt.get('message')}",
+                "entity_name": t_evt.get("lead_id"),
+                "batch_id": t_evt.get("run_id"),
+                "stage_color": "#38bdf8" if "SEARCH" in stage_name else ("#a78bfa" if "CRAWL" in stage_name else ("#10b981" if "VERIF" in stage_name else "#f59e0b")),
+                "timestamp": t_evt.get("timestamp"),
+            })
+
         activities = (
             db.query(CrawlActivityLog)
             .order_by(CrawlActivityLog.timestamp.desc())
-            .limit(60)
+            .limit(30)
             .all()
         )
         for a in activities:
@@ -562,16 +588,27 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
             })
     except Exception:
         db.rollback()
-        crawl_activity_stream = []
 
-    # 8. Failure / Rejection Stream (errors and filtered entries)
+    # 8. Failure / Rejection Stream (errors, retries, and blocked checkpoints)
     failure_stream = []
     try:
+        from app.audit.tracer import live_telemetry
+        for t_evt in live_telemetry.get_recent(limit=60):
+            if t_evt.get("level") in ["WARNING", "ERROR", "CRITICAL"] or t_evt.get("status") in ["FAILED", "BLOCKED", "DEGRADED"]:
+                failure_stream.append({
+                    "id": t_evt.get("event_id"),
+                    "url": t_evt.get("lead_id") or "",
+                    "stage": t_evt.get("checkpoint"),
+                    "status": t_evt.get("status") or t_evt.get("level"),
+                    "message": f"[{t_evt.get('checkpoint')}] {t_evt.get('event')}: {t_evt.get('message')}",
+                    "timestamp": t_evt.get("timestamp"),
+                })
+
         filtered_events = (
             db.query(CrawlActivityLog)
             .filter(CrawlActivityLog.status.in_(["FILTERED", "DUPLICATE", "ERROR", "EMPTY"]))
             .order_by(CrawlActivityLog.timestamp.desc())
-            .limit(30)
+            .limit(20)
             .all()
         )
         for ev in filtered_events:
@@ -585,7 +622,6 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
             })
     except Exception:
         db.rollback()
-        failure_stream = []
 
     # 8. Distinct Filter Options dynamically queried from DB
     distinct_domains_ur = []

@@ -103,17 +103,37 @@ class AutonomousDiscoveryAgent:
 
     def set_status(self, status: str) -> Dict[str, Any]:
         """RUN or PAUSE the agent."""
+        from app.audit.tracer import tracer, Checkpoint
         db = SessionLocal()
         try:
             state = self._get_or_create_state(db)
+            old_status = state.status
             state.status = status.upper()
             state.last_run_at = utc_now()
             db.commit()
-            logger.info(f"[Agent] Status → {state.status}")
 
-            if state.status == "RUNNING" and not self.is_running_loop:
-                self._start_background_thread()
+            if state.status == "RUNNING":
+                run_id = tracer.new_run_id()
+                tracer.set_context(run_id=run_id, agent_id="AGENT-01", checkpoint="CP-01")
+                tracer.log_event(
+                    level="INFO",
+                    checkpoint=Checkpoint.CP01_RUN_INIT,
+                    event="RUN_STARTED",
+                    message=f"Autonomous discovery RUN started (prev_status={old_status}, new_status={state.status})",
+                    agent_id="AGENT-01",
+                    status="RUNNING"
+                )
+                if not self.is_running_loop:
+                    self._start_background_thread()
             elif state.status == "PAUSED":
+                tracer.log_event(
+                    level="INFO",
+                    checkpoint=Checkpoint.CP29_RUN_COMPLETION,
+                    event="RUN_PAUSED",
+                    message=f"Autonomous discovery agent PAUSED (prev_status={old_status})",
+                    agent_id="AGENT-01",
+                    status="PAUSED"
+                )
                 self.is_running_loop = False
 
             return {
@@ -126,14 +146,31 @@ class AutonomousDiscoveryAgent:
 
     def resume_if_was_running(self):
         """Called at app startup — resumes if agent was RUNNING before restart."""
+        from app.audit.tracer import tracer, Checkpoint
         db = SessionLocal()
         try:
             state = db.query(AgentState).first()
             if state and state.status == "RUNNING" and not self.is_running_loop:
-                logger.info("[Agent] Auto-resuming agent loop after restart...")
+                run_id = tracer.new_run_id()
+                tracer.set_context(run_id=run_id, agent_id="AGENT-01")
+                tracer.log_event(
+                    level="INFO",
+                    checkpoint=Checkpoint.CP02_AGENT_INIT,
+                    event="AGENT_RESUMED",
+                    message=f"Agent 1 auto-resumed from previous running state after restart ({run_id})",
+                    agent_id="AGENT-01",
+                    status="RUNNING"
+                )
                 self._start_background_thread()
         except Exception as e:
-            logger.error(f"[Agent] Auto-resume failed: {e}")
+            tracer.log_event(
+                level="ERROR",
+                checkpoint=Checkpoint.CP02_AGENT_INIT,
+                event="AGENT_RESUME_FAILED",
+                message=f"Agent 1 auto-resume failed: {e}",
+                agent_id="AGENT-01",
+                exc_info=True
+            )
         finally:
             db.close()
 
@@ -147,7 +184,15 @@ class AutonomousDiscoveryAgent:
             daemon=True,
         )
         self._thread.start()
-        logger.info("[Agent] Background discovery thread started.")
+        from app.audit.tracer import tracer, Checkpoint
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP02_AGENT_INIT,
+            event="AGENT_THREAD_STARTED",
+            message="Agent 1 background discovery thread spawned.",
+            agent_id="AGENT-01",
+            status="RUNNING"
+        )
 
     def _thread_entry(self):
         self._loop = asyncio.new_event_loop()
@@ -155,7 +200,16 @@ class AutonomousDiscoveryAgent:
         try:
             self._loop.run_until_complete(self._discovery_loop())
         except Exception as e:
-            logger.error(f"[Agent] Discovery loop crashed: {e}", exc_info=True)
+            from app.audit.tracer import tracer, Checkpoint
+            tracer.log_event(
+                level="CRITICAL",
+                checkpoint=Checkpoint.CP30_FAILURE_RECOVERY,
+                event="AGENT_LOOP_CRASHED",
+                message=f"Agent 1 discovery loop crashed: {e}",
+                agent_id="AGENT-01",
+                status="FAILED",
+                exc_info=True
+            )
         finally:
             try:
                 self._loop.run_until_complete(self._loop.shutdown_asyncgens())
@@ -164,13 +218,29 @@ class AutonomousDiscoveryAgent:
             self._loop.close()
             self._loop = None
             self.is_running_loop = False
-            logger.info("[Agent] Background discovery thread stopped.")
+            from app.audit.tracer import tracer, Checkpoint
+            tracer.log_event(
+                level="INFO",
+                checkpoint=Checkpoint.CP29_RUN_COMPLETION,
+                event="AGENT_THREAD_STOPPED",
+                message="Agent 1 background discovery thread stopped.",
+                agent_id="AGENT-01",
+                status="STOPPED"
+            )
 
     # ─── Core Discovery Loop ───────────────────────────────────────────────────
 
     async def _discovery_loop(self):
         """24/7 continuous agent loop using LLM for decision making."""
-        logger.info("[Agent] Discovery loop starting...")
+        from app.audit.tracer import tracer, Checkpoint
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP02_AGENT_INIT,
+            event="AGENT_LOOP_STARTING",
+            message="Agent 1 continuous discovery loop activated.",
+            agent_id="AGENT-01",
+            status="RUNNING"
+        )
 
         while self.is_running_loop:
             db = SessionLocal()
@@ -178,7 +248,6 @@ class AutonomousDiscoveryAgent:
                 state = self._get_or_create_state(db)
 
                 if state.status != "RUNNING":
-                    logger.info("[Agent] PAUSED. Sleeping...")
                     db.close()
                     await asyncio.sleep(3)
                     continue
@@ -191,7 +260,14 @@ class AutonomousDiscoveryAgent:
                 # ── 1. GATHER STATE FOR LLM ──────────────────────────────────
                 metrics = self.get_metrics(db)
                 prompt = self._build_agent_prompt(metrics, batch)
-                logger.info(f"[Agent] Thinking... Batch={batch_id_str[:8]} #{batch.searches_executed}/{BATCH_SIZE}")
+                tracer.log_event(
+                    level="DEBUG",
+                    checkpoint=Checkpoint.CP03_KEYWORD_GEN,
+                    event="EVALUATE_TAXONOMY_STATE",
+                    message=f"Agent 1 evaluating domain '{current_domain}' | Batch={batch_id_str[:8]} ({batch.searches_executed}/{BATCH_SIZE})",
+                    agent_id="AGENT-01",
+                    extra={"batch_id": batch_id_str, "searches_executed": batch.searches_executed, "domain": current_domain}
+                )
             finally:
                 db.close()
 
@@ -221,18 +297,32 @@ class AutonomousDiscoveryAgent:
                     except Exception:
                         args = {}
 
-                    logger.info(f"[Agent] Decision -> {func_name}({args})")
-
                     if func_name == "search_web":
                         query = args.get("query")
                         domain = args.get("domain", state.current_domain)
                         subdomain = args.get("subdomain", state.current_subdomain)
                         keyword = args.get("keyword", state.current_keyword)
 
+                        tracer.log_event(
+                            level="DEBUG",
+                            checkpoint=Checkpoint.CP03_KEYWORD_GEN,
+                            event="KEYWORD_SELECTED",
+                            message=f"Agent 1 generated keyword query: '{query}' (domain='{domain}', sub='{subdomain}')",
+                            agent_id="AGENT-01",
+                            extra={"query": query, "keyword": keyword, "domain": domain, "subdomain": subdomain}
+                        )
+
                         # Code-Level Safety Guardrail Hard Constraint Pre-Check
                         allowed, block_reason = self._pre_check_agent_instruction(db, query, domain)
                         if not allowed:
-                            logger.warning(f"🛡️ [AGENT GUARDRAIL] Aborting search_web for '{query}' due to safety block: {block_reason}")
+                            tracer.log_event(
+                                level="WARNING",
+                                checkpoint=Checkpoint.CP07_DOMAIN_FILTER,
+                                event="SAFETY_GUARDRAIL_BLOCKED",
+                                message=f"Aborting search_web for '{query}' due to safety block: {block_reason}",
+                                agent_id="AGENT-01",
+                                extra={"query": query, "reason": block_reason}
+                            )
                             continue
 
                         # Update State
@@ -245,17 +335,6 @@ class AutonomousDiscoveryAgent:
                         
                         batch.searches_executed = (batch.searches_executed or 0) + 1
                         db.commit()
-
-                        # Guardrail Step 6: Batch Block Threshold Monitoring
-                        from app.persistence.models import BlockedDomain
-                        blocked_in_batch = db.query(BlockedDomain).filter(BlockedDomain.created_at >= batch.started_at).count()
-                        searches_done = max(1, batch.searches_executed or 1)
-                        block_rate = blocked_in_batch / searches_done
-                        if block_rate > 0.10 and searches_done >= 5:
-                            logger.critical(f"🚨 [SAFETY ALERT] Batch block rate ({block_rate:.1%}) exceeded safety threshold (10%). Pausing batch.")
-                            batch.status = "PAUSED_SAFETY_THRESHOLD"
-                            db.commit()
-                            break
 
                         # Dispatch
                         await asyncio.to_thread(

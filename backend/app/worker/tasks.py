@@ -93,16 +93,38 @@ def _has_active_celery_worker() -> bool:
 
 def _dispatch_task(task_func, **kwargs):
     """
-    Enqueues Celery task strictly into Redis task queue.
+    Enqueues Celery task strictly into Redis task queue with serialized trace context.
     If Redis or Celery queue is unreachable, logs QUEUE_FAILED and raises RuntimeError.
     Does NOT launch background daemon threads or pretend to queue work.
     """
+    from app.audit.tracer import tracer, Checkpoint
+    task_name = getattr(task_func, 'name', str(task_func))
+    
+    # Inject active trace context into task kwargs if not already provided
+    if "trace_ctx" not in kwargs:
+        kwargs["trace_ctx"] = tracer.get_context_dict()
+
     try:
-        task_func.apply_async(kwargs=kwargs, queue="celery")
-        logger.info(f"[Task Queue] Enqueued task '{getattr(task_func, 'name', str(task_func))}' into Redis Celery queue.")
+        task_res = task_func.apply_async(kwargs=kwargs, queue="celery")
+        task_id = getattr(task_res, "id", str(uuid.uuid4()))
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+            event="TASK_ENQUEUED",
+            message=f"Enqueued Celery task '{task_name}' into Redis queue (celery_task_id={task_id})",
+            task_id=task_id,
+            status="QUEUED"
+        )
         return True
     except Exception as e:
-        logger.error(f"QUEUE_FAILED — Failed to enqueue task '{getattr(task_func, 'name', str(task_func))}' to Redis: {e}")
+        tracer.log_event(
+            level="ERROR",
+            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+            event="QUEUE_DISPATCH_FAILED",
+            message=f"QUEUE_FAILED: Redis task queue unreachable for task '{task_name}': {e}",
+            status="FAILED",
+            exc_info=True
+        )
         raise RuntimeError(f"QUEUE_FAILED: Redis task queue unreachable ({e})")
 
 _safe_dispatch = _dispatch_task
@@ -1065,10 +1087,21 @@ def agent2_rank_cards_task(self) -> Dict[str, Any]:
 
 
 @celery_app.task(name="tasks.agent2_process_card", bind=True)
-def agent2_process_card_task(self, document_id: str) -> Dict[str, Any]:
+def agent2_process_card_task(self, document_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Runs end-to-end Agent 2 verification workflow for a specific card."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
-    logger.info(f"[Agent 2] Processing verification for document {document_id}")
+    from app.audit.tracer import tracer, Checkpoint
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
+    tracer.log_event(
+        level="INFO",
+        checkpoint=Checkpoint.CP12_AGENT2_INIT,
+        event="AGENT2_TASK_STARTED",
+        message=f"Agent 2 worker received verification task for document {document_id}",
+        agent_id="AGENT-02",
+        status="STARTED"
+    )
     return run_async(agent2_orchestrator.execute_full_verification(document_id))
 
 

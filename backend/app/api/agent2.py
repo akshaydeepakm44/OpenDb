@@ -216,15 +216,28 @@ def trigger_agent2_process(
     if not session:
         raise HTTPException(status_code=500, detail="Failed to initialize Agent 2 session")
 
-    # Dispatch Celery background task
+    # Dispatch Celery background task with explicit queue failure visibility
     try:
-        agent2_process_card_task.delay(doc_id_str)
+        from app.audit.tracer import tracer, Checkpoint
+        ctx_dict = tracer.get_context_dict()
+        agent2_process_card_task.delay(doc_id_str, trace_ctx=ctx_dict)
         dispatch_method = "celery_async"
     except Exception as e:
-        # If Celery broker is temporarily unreachable in dev, execute via background_tasks
-        import asyncio
-        background_tasks.add_task(asyncio.run, agent2_orchestrator.execute_full_verification(doc_id_str))
-        dispatch_method = f"fastapi_background (celery fallback: {e})"
+        from app.audit.tracer import tracer, Checkpoint
+        tracer.log_event(
+            level="ERROR",
+            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+            event="QUEUE_DISPATCH_FAILED",
+            message=f"QUEUE_FAILED: Failed to dispatch Agent 2 verification task to Redis queue: {e}",
+            agent_id="AGENT-02",
+            lead_id=session.domain,
+            status="FAILED",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"QUEUE_FAILED: Redis Celery broker is unreachable ({e}). Task cannot be queued."
+        )
 
     return {
         "status": "queued",

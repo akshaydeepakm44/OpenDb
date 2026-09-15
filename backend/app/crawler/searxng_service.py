@@ -57,57 +57,106 @@ class SearXNGService:
             "Accept": "application/json, text/html, */*"
         }
 
-        try:
-            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-                response = await client.get(url, params=params, headers=headers)
+        from app.audit.tracer import tracer, Checkpoint
+        import time
 
-                if response.status_code != 200:
-                    # Retry without engine restriction for maximum reliability
-                    params_retry = {"q": query, "format": "json", "categories": clean_category, "safesearch": 2}
-                    resp2 = await client.get(url, params=params_retry, headers=headers)
-                    if resp2.status_code == 200:
-                        response = resp2
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP04_SEARCH_EXECUTION,
+            event="SEARCH_START",
+            message=f"SearXNG query dispatch: '{query}' (category={clean_category}, engines={FAST_ENGINES})",
+            extra={"query": query, "category": clean_category, "max_results": max_results}
+        )
 
-                if response.status_code == 200:
-                    try:
+        t0 = time.time()
+        max_retries = 3
+        last_err = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+                    response = await client.get(url, params=params, headers=headers)
+                    if response.status_code != 200:
+                        params_retry = {"q": query, "format": "json", "categories": clean_category, "safesearch": 2}
+                        response = await client.get(url, params=params_retry, headers=headers)
+
+                    if response.status_code == 200:
                         data = response.json()
                         results = data.get("results", [])
                         cleaned = []
-                        for item in results[:max_results]:
+                        for idx, item in enumerate(results[:max_results], 1):
                             item_url = item.get("url", "")
                             if not item_url:
                                 continue
-                            cleaned.append({
+                            item_clean = {
                                 "title": item.get("title") or "B2B Organization",
                                 "url": item_url,
                                 "snippet": item.get("content") or "",
                                 "engine": item.get("engine", "searxng"),
                                 "score": item.get("score", 1.0),
-                            })
+                            }
+                            cleaned.append(item_clean)
+                            # Log every single search result at DEBUG level
+                            tracer.log_event(
+                                level="DEBUG",
+                                checkpoint=Checkpoint.CP05_SEARCH_RESULTS,
+                                event="SEARCH_RESULT_ITEM",
+                                message=f"Result #{idx:02d} | title='{item_clean['title']}' | url={item_url}",
+                                extra={"index": idx, "query": query, "title": item_clean["title"], "url": item_url, "snippet": item_clean["snippet"][:200]}
+                            )
+
+                        dur = time.time() - t0
+                        tracer.log_event(
+                            level="INFO",
+                            checkpoint=Checkpoint.CP05_SEARCH_RESULTS,
+                            event="SEARCH_END",
+                            message=f"SearXNG query '{query}' completed: {len(cleaned)} results found",
+                            duration=dur,
+                            status="SUCCESS",
+                            extra={"query": query, "results_count": len(cleaned)}
+                        )
                         if cleaned:
                             cache_set("search", query, clean_category, max_results, value=(cleaned, False, "SearXNG OK"), ttl=SEARCH_CACHE_TTL)
-                            logger.info(f"🔎 [SearXNG] Retrieved {len(cleaned)} B2B candidate results for query: '{query}'")
-                            return cleaned, False, f"SearXNG returned {len(cleaned)} results."
-                        else:
-                            return [], False, "SearXNG returned 0 results for query."
-                    except Exception as json_err:
-                        logger.warning(f"[SearXNG] JSON parse error: {json_err}")
-                        return [], False, f"SearXNG JSON parse error: {json_err}"
+                        return cleaned, False, f"SearXNG returned {len(cleaned)} results."
+                    else:
+                        tracer.log_event(
+                            level="WARNING",
+                            checkpoint=Checkpoint.CP04_SEARCH_EXECUTION,
+                            event="SEARCH_RETRY",
+                            message=f"SearXNG returned HTTP {response.status_code} on attempt {attempt}/{max_retries} for query '{query}'",
+                            extra={"attempt": attempt, "status_code": response.status_code}
+                        )
+            except Exception as e:
+                last_err = e
+                tracer.log_event(
+                    level="WARNING",
+                    checkpoint=Checkpoint.CP04_SEARCH_EXECUTION,
+                    event="SEARCH_RETRY",
+                    message=f"SearXNG attempt {attempt}/{max_retries} failed for query '{query}': {e}",
+                    extra={"attempt": attempt, "error": str(e)}
+                )
+            if attempt < max_retries:
+                import asyncio
+                await asyncio.sleep(0.5 * attempt)
 
-                # Non-200 status: honestly report degraded without mock fallbacks
-                logger.warning(f"⚠️ [SearXNG] Service returned HTTP {response.status_code} for '{query}'")
-                return [], False, f"SearXNG HTTP {response.status_code} (DEGRADED)"
-
-        except Exception as err:
-            logger.warning(f"⚠️ [SearXNG] Connection failed for '{query}': {err}")
-            return [], False, f"SearXNG connection failed: {err} (DEGRADED)"
+        dur = time.time() - t0
+        tracer.log_event(
+            level="ERROR",
+            checkpoint=Checkpoint.CP30_FAILURE_RECOVERY,
+            event="SEARCH_FAILED",
+            message=f"SearXNG query completely failed after {max_retries} retries for '{query}': {last_err}",
+            duration=dur,
+            status="FAILED",
+            extra={"query": query, "retries_exhausted": True, "error": str(last_err)},
+            exc_info=True
+        )
+        return [], False, f"SearXNG failed after retries: {last_err} (DEGRADED)"
 
     async def search(
         self, query: str, category: str = "general", max_results: int = 20
     ) -> List[Dict[str, Any]]:
         results, _, _ = await self.search_with_meta(query, category, max_results)
         return results
-
 
 searxng_service = SearXNGService()
 

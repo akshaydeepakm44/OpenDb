@@ -20,9 +20,30 @@ def get_database_status() -> dict:
 
 def mark_postgres_degraded():
     global DATABASE_MODE, IS_FALLBACK_ACTIVE
-    logger.error("POSTGRES_CONNECTION_FAILED — Database marked as DATABASE_DEGRADED. Transitioning mode to SQLITE_FALLBACK.")
+    from app.audit.tracer import tracer, Checkpoint
+    tracer.log_event(
+        level="ERROR",
+        checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+        event="POSTGRESQL_CONNECTION_FAILED",
+        message="POSTGRESQL_CONNECTION_FAILED — Primary database connection lost or unreachable.",
+        status="FAILED"
+    )
+    tracer.log_event(
+        level="WARNING",
+        checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+        event="DATABASE_FALLBACK_STARTED",
+        message="DATABASE FALLBACK ACTIVATED: Switching persistence path to SQLite fallback store (opendb_fallback.db).",
+        status="DEGRADED"
+    )
     DATABASE_MODE = "SQLITE_FALLBACK"
     IS_FALLBACK_ACTIVE = True
+    tracer.log_event(
+        level="INFO",
+        checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+        event="DATABASE_MODE_CHANGED",
+        message="DATABASE MODE=SQLITE_FALLBACK (Operational in DEGRADED persistence mode).",
+        status="DEGRADED"
+    )
 
 def _is_postgres_listening(host: str, port: int) -> bool:
     try:
@@ -61,6 +82,7 @@ def _create_sqlite_fallback_engine():
 
 def create_db_engine():
     global DATABASE_MODE, IS_FALLBACK_ACTIVE
+    from app.audit.tracer import tracer, Checkpoint
     db_url = settings.DATABASE_URL.replace("localhost", "127.0.0.1")
     
     if "postgresql" in db_url:
@@ -91,13 +113,31 @@ def create_db_engine():
                 )
                 DATABASE_MODE = "POSTGRESQL"
                 IS_FALLBACK_ACTIVE = False
-                logger.info(f"PostgreSQL primary database connected successfully ({db_url})")
+                tracer.log_event(
+                    level="INFO",
+                    checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+                    event="DATABASE_CONNECTED",
+                    message=f"PostgreSQL PRIMARY connected successfully ({host}:{port})",
+                    status="ONLINE"
+                )
                 return eng
             except Exception as pg_err:
-                logger.warning(f"POSTGRES_CONNECTION_FAILED: {pg_err}. Activating DATABASE_DEGRADED mode.")
+                tracer.log_event(
+                    level="WARNING",
+                    checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+                    event="POSTGRESQL_CONNECT_ERROR",
+                    message=f"PostgreSQL connection probe failed: {pg_err}",
+                    status="DEGRADED"
+                )
 
         if settings.OPENDB_ENV.lower() == "production":
-            logger.error("POSTGRES_CONNECTION_FAILED in PRODUCTION mode.")
+            tracer.log_event(
+                level="CRITICAL",
+                checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+                event="POSTGRESQL_FATAL_PRODUCTION",
+                message="POSTGRES_CONNECTION_FAILED in PRODUCTION mode. Refusing fallback.",
+                status="FAILED"
+            )
             raise RuntimeError("PostgreSQL connection failed in PRODUCTION mode.")
 
         mark_postgres_degraded()

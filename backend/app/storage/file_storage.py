@@ -1,4 +1,5 @@
 import os
+import time
 import hashlib
 import json
 import logging
@@ -15,18 +16,30 @@ except ImportError:
     HAS_MINIO = False
 
 from app.config import settings
+from app.audit.tracer import tracer, Checkpoint
 
 logger = logging.getLogger(__name__)
 
 class StorageManager:
     def __init__(self):
-        self.use_local = settings.STORAGE_BACKEND == "local" or not HAS_MINIO
+        self.use_local = settings.STORAGE_BACKEND == "local"
         self.local_dir = Path(settings.RAW_STORAGE_DIR)
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self.bucket_name = "opendb"
         self.client = None
+        self.is_degraded = False
         
-        if not self.use_local:
+        if settings.STORAGE_BACKEND == "minio":
+            if not HAS_MINIO:
+                tracer.log_event(
+                    level="CRITICAL",
+                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                    event="MINIO_LIB_MISSING",
+                    message="STORAGE_FAILED: minio python package not installed."
+                )
+                self.is_degraded = True
+                return
+
             endpoint = os.getenv("MINIO_ENDPOINT", settings.MINIO_ENDPOINT)
             access_key = os.getenv("MINIO_ACCESS_KEY", settings.MINIO_ACCESS_KEY)
             secret_key = os.getenv("MINIO_SECRET_KEY", settings.MINIO_SECRET_KEY)
@@ -41,68 +54,79 @@ class StorageManager:
                 with socket.create_connection((h, pt), timeout=2.0):
                     pass
             except Exception as sock_err:
-                if settings.OPENDB_ENV.lower() == "production":
-                    logger.error(f"MinIO endpoint unreachable in PRODUCTION mode: {sock_err}")
-                    raise RuntimeError(f"MinIO endpoint unreachable in PRODUCTION mode: {sock_err}")
-                logger.warning(f"MinIO endpoint unreachable ({sock_err}). Falling back to local filesystem storage.")
-                self.use_local = True
-
-            if not self.use_local:
-                import urllib3, threading
-                http_client = urllib3.PoolManager(
-                    timeout=urllib3.Timeout(connect=2.0, read=5.0),
-                    retries=False
+                tracer.log_event(
+                    level="ERROR",
+                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                    event="MINIO_ENDPOINT_UNREACHABLE",
+                    message=f"STORAGE_FAILED: MinIO endpoint unreachable ({endpoint}): {sock_err}"
                 )
-                
-                def _init_minio():
-                    try:
-                        self.client = Minio(
-                            endpoint,
-                            access_key=access_key,
-                            secret_key=secret_key,
-                            secure=secure,
-                            http_client=http_client
-                        )
-                        self._ensure_bucket()
-                    except Exception as e:
-                        if settings.OPENDB_ENV.lower() == "production":
-                            logger.error(f"MinIO initialization failed in PRODUCTION mode: {e}")
-                            raise RuntimeError(f"MinIO initialization failed in PRODUCTION mode: {e}")
-                        logger.warning(f"MinIO initialization failed ({e}), using local storage.")
-                        self.use_local = True
+                self.is_degraded = True
+                self.client = None
+                return
 
-                minio_thread = threading.Thread(target=_init_minio, daemon=True)
-                minio_thread.start()
-                minio_thread.join(timeout=3.0)
-                if minio_thread.is_alive() or self.client is None:
-                    if settings.OPENDB_ENV.lower() == "production":
-                        logger.error("MinIO connection timed out in PRODUCTION mode.")
-                        raise RuntimeError("MinIO connection timed out in PRODUCTION mode.")
-                    logger.warning("MinIO initialization timed out (>3.0s). Falling back to local storage.")
-                    self.use_local = True
-                    self.client = None
+            import urllib3
+            http_client = urllib3.PoolManager(
+                timeout=urllib3.Timeout(connect=2.0, read=5.0),
+                retries=False
+            )
+            try:
+                self.client = Minio(
+                    endpoint,
+                    access_key=access_key,
+                    secret_key=secret_key,
+                    secure=secure,
+                    http_client=http_client
+                )
+                self._ensure_bucket()
+                tracer.log_event(
+                    level="INFO",
+                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                    event="MINIO_CONNECTED",
+                    message=f"MinIO object storage connected to {endpoint} bucket '{self.bucket_name}'"
+                )
+            except Exception as e:
+                tracer.log_event(
+                    level="ERROR",
+                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                    event="MINIO_INIT_FAILED",
+                    message=f"STORAGE_FAILED: MinIO initialization error: {e}",
+                    exc_info=True
+                )
+                self.is_degraded = True
+                self.client = None
 
     def _ensure_bucket(self):
         try:
             if self.client and not self.client.bucket_exists(self.bucket_name):
                 self.client.make_bucket(self.bucket_name)
         except Exception as e:
-            if settings.OPENDB_ENV.lower() == "production":
-                logger.error(f"MinIO bucket check failed in PRODUCTION mode: {e}")
-                raise RuntimeError(f"MinIO bucket check failed in PRODUCTION mode: {e}")
-            logger.info(f"MinIO storage unready ({e.__class__.__name__}) — using local disk storage (OPENDB_ENV={settings.OPENDB_ENV})")
-            self.use_local = True
-            self.client = None
+            tracer.log_event(
+                level="ERROR",
+                checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                event="MINIO_BUCKET_ERROR",
+                message=f"STORAGE_FAILED: MinIO bucket check failed: {e}",
+                exc_info=True
+            )
+            self.is_degraded = True
+            raise RuntimeError(f"STORAGE_FAILED: MinIO bucket '{self.bucket_name}' error: {e}")
 
     @staticmethod
     def calculate_hash(content: bytes) -> str:
         return hashlib.sha256(content).hexdigest()
 
     def _put_object(self, object_name: str, content_bytes: bytes, content_type: str = "application/octet-stream") -> str:
+        t0 = time.time()
         if settings.STORAGE_BACKEND == "minio":
-            if self.client is None or self.use_local:
-                logger.error(f"STORAGE_FAILED — MinIO object storage uninitialized/unreachable for {object_name}")
-                raise RuntimeError(f"STORAGE_FAILED: MinIO object storage uninitialized for {object_name}")
+            if self.client is None or self.is_degraded:
+                msg = f"STORAGE_FAILED: MinIO object storage unreachable. Refusing silent fallback for {object_name}"
+                tracer.log_event(
+                    level="ERROR",
+                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                    event="PUT_OBJECT_REFUSED",
+                    message=msg,
+                    status="FAILED"
+                )
+                raise RuntimeError(msg)
             try:
                 self.client.put_object(
                     self.bucket_name,
@@ -111,14 +135,42 @@ class StorageManager:
                     len(content_bytes),
                     content_type=content_type
                 )
+                dur = time.time() - t0
+                tracer.log_event(
+                    level="DEBUG",
+                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                    event="PUT_OBJECT_SUCCESS",
+                    message=f"MinIO put object: s3://{self.bucket_name}/{object_name} ({len(content_bytes)} bytes)",
+                    duration=dur,
+                    status="SUCCESS",
+                    extra={"bucket": self.bucket_name, "object": object_name, "size": len(content_bytes)}
+                )
                 return f"s3://{self.bucket_name}/{object_name}"
             except Exception as e:
-                logger.error(f"STORAGE_FAILED — MinIO put error for {object_name}: {e}")
+                dur = time.time() - t0
+                tracer.log_event(
+                    level="ERROR",
+                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+                    event="PUT_OBJECT_FAILED",
+                    message=f"STORAGE_FAILED: MinIO put error for {object_name}: {e}",
+                    duration=dur,
+                    status="FAILED",
+                    exc_info=True
+                )
                 raise RuntimeError(f"STORAGE_FAILED: MinIO put operation failed for {object_name}: {e}")
 
+        # Local storage mode (only when explicitly configured STORAGE_BACKEND=local)
         local_path = self.local_dir / object_name
         local_path.parent.mkdir(parents=True, exist_ok=True)
         local_path.write_bytes(content_bytes)
+        dur = time.time() - t0
+        tracer.log_event(
+            level="DEBUG",
+            checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
+            event="LOCAL_FILE_SAVED",
+            message=f"Local disk write: local://{object_name} ({len(content_bytes)} bytes)",
+            duration=dur
+        )
         return f"local://{object_name}"
 
 

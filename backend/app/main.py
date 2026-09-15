@@ -15,18 +15,22 @@ if sys.platform == 'win32':
         pass
 
 from app.config import settings
+from app.audit.tracer import tracer, Checkpoint
 from app.persistence.database import init_db
 from app.api import health, crawl, documents, schemas, agent, admin_safety, agent2
 
-logging.basicConfig(
-    level=settings.LOG_LEVEL,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
-)
-logger = logging.getLogger(__name__)
+tracer.initialize(log_level=settings.LOG_LEVEL)
+logger = logging.getLogger("opendb")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing OpenDB FastAPI Application...")
+    tracer.log_event(
+        level="INFO",
+        checkpoint=Checkpoint.CP01_RUN_INIT,
+        event="APP_LIFESPAN_START",
+        message="Initializing OpenDB FastAPI Application...",
+        status="STARTING"
+    )
     init_db()
 
     # §10 — Auto-resume agent if it was RUNNING before container restart
@@ -34,7 +38,12 @@ async def lifespan(app: FastAPI):
         from app.agent.discovery_agent import discovery_agent
         discovery_agent.resume_if_was_running()
     except Exception as e:
-        logger.warning(f"Agent auto-resume skipped: {e}")
+        tracer.log_event(
+            level="WARNING",
+            checkpoint=Checkpoint.CP02_AGENT_INIT,
+            event="AGENT_AUTO_RESUME_SKIPPED",
+            message=f"Agent auto-resume skipped: {e}"
+        )
 
     yield
     logger.info("Shutting down OpenDB application.")
