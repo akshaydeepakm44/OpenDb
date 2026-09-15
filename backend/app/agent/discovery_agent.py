@@ -177,14 +177,16 @@ class AutonomousDiscoveryAgent:
     # ─── Background Thread (wraps async event loop) ───────────────────────────
 
     def _start_background_thread(self):
+        from app.audit.tracer import tracer, Checkpoint
         self.is_running_loop = True
+        ctx_snapshot = tracer.get_context_dict()
         self._thread = threading.Thread(
             target=self._thread_entry,
+            args=(ctx_snapshot,),
             name="opendb-agent-loop",
             daemon=True,
         )
         self._thread.start()
-        from app.audit.tracer import tracer, Checkpoint
         tracer.log_event(
             level="INFO",
             checkpoint=Checkpoint.CP02_AGENT_INIT,
@@ -194,7 +196,12 @@ class AutonomousDiscoveryAgent:
             status="RUNNING"
         )
 
-    def _thread_entry(self):
+    def _thread_entry(self, ctx_snapshot: Optional[Dict[str, Any]] = None):
+        from app.audit.tracer import tracer, Checkpoint
+        if ctx_snapshot:
+            tracer.restore_context_dict(ctx_snapshot)
+        tracer.set_context(agent_id="AGENT-01")
+
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
@@ -273,6 +280,7 @@ class AutonomousDiscoveryAgent:
 
             # ── 2. INVOKE AGENT LLM (NETWORK CALL - NO DB LOCK HELD) ──
             tool_calls = await self._invoke_llm_agent(prompt)
+            generation_mode = "LLM" if tool_calls else "DETERMINISTIC"
 
             if not tool_calls:
                 # Fallback to deterministic expansion if LLM fails or doesn't use tools
@@ -307,9 +315,9 @@ class AutonomousDiscoveryAgent:
                             level="DEBUG",
                             checkpoint=Checkpoint.CP03_KEYWORD_GEN,
                             event="KEYWORD_SELECTED",
-                            message=f"Agent 1 generated keyword query: '{query}' (domain='{domain}', sub='{subdomain}')",
+                            message=f"Agent 1 generated keyword query: '{query}' (domain='{domain}', sub='{subdomain}', mode='{generation_mode}')",
                             agent_id="AGENT-01",
-                            extra={"query": query, "keyword": keyword, "domain": domain, "subdomain": subdomain}
+                            extra={"query": query, "keyword": keyword, "domain": domain, "subdomain": subdomain, "generation_mode": generation_mode}
                         )
 
                         # Code-Level Safety Guardrail Hard Constraint Pre-Check
@@ -336,15 +344,29 @@ class AutonomousDiscoveryAgent:
                         batch.searches_executed = (batch.searches_executed or 0) + 1
                         db.commit()
 
-                        # Dispatch
-                        await asyncio.to_thread(
-                            self._dispatch_search_task,
-                            query=query,
-                            keyword=keyword,
-                            domain=domain,
-                            subdomain=subdomain,
-                            batch_id=batch_id_str,
-                        )
+                        # Dispatch with safety guardrail against broker outages
+                        try:
+                            await asyncio.to_thread(
+                                self._dispatch_search_task,
+                                query=query,
+                                keyword=keyword,
+                                domain=domain,
+                                subdomain=subdomain,
+                                batch_id=batch_id_str,
+                            )
+                        except RuntimeError as dispatch_err:
+                            logger.error(f"[Agent] Search dispatch failed: {dispatch_err}")
+                            state.status = "DEGRADED"
+                            db.commit()
+                            tracer.log_event(
+                                level="ERROR",
+                                checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+                                event="AGENT_DEGRADED",
+                                message=f"Search dispatch failed: {dispatch_err}. Backing off.",
+                                agent_id="AGENT-01",
+                                extra={"error": str(dispatch_err), "status": "DEGRADED"}
+                            )
+                            await asyncio.sleep(10.0)
 
                     elif func_name == "discover_new_subdomain":
                         logger.info(f"[Agent] Discovered new subdomain: {args.get('new_subdomain')} in {args.get('domain')} because: {args.get('reason')}")
@@ -459,7 +481,10 @@ class AutonomousDiscoveryAgent:
             client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
             response = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "system", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": "You are the Lead Discovery Agent for OpenDB. Call tools to search and evaluate leads."},
+                    {"role": "user", "content": prompt}
+                ],
                 tools=AGENT_TOOLS,
                 tool_choice="auto",
                 temperature=0.2,
@@ -480,7 +505,10 @@ class AutonomousDiscoveryAgent:
                     model=model,
                     api_key=api_key,
                     api_base=base_url,
-                    messages=[{"role": "system", "content": prompt}],
+                    messages=[
+                        {"role": "system", "content": "You are the Lead Discovery Agent for OpenDB. Call tools to search and evaluate leads."},
+                        {"role": "user", "content": prompt}
+                    ],
                     tools=AGENT_TOOLS,
                     tool_choice="auto",
                     temperature=0.2,

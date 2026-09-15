@@ -116,13 +116,27 @@ def _dispatch_task(task_func, **kwargs):
             status="QUEUED"
         )
         return True
-    except Exception as e:
+    except (TypeError, ValueError) as sig_err:
         tracer.log_event(
             level="ERROR",
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="QUEUE_DISPATCH_FAILED",
-            message=f"QUEUE_FAILED: Redis task queue unreachable for task '{task_name}': {e}",
+            message=f"TASK_SIGNATURE_ERROR: Invalid arguments/signature for task '{task_name}': {sig_err}",
             status="FAILED",
+            extra={"failure_class": "TASK_SIGNATURE_ERROR", "service": "CELERY", "task": task_name},
+            exc_info=True
+        )
+        raise RuntimeError(f"TASK_SIGNATURE_ERROR: Celery task signature rejected for '{task_name}' ({sig_err})")
+    except Exception as e:
+        err_type = type(e).__name__
+        failure_class = "BROKER_UNAVAILABLE" if any(x in str(e).lower() or x in err_type.lower() for x in ["connection", "timeout", "socket", "refused"]) else "TASK_DISPATCH_FAILED"
+        tracer.log_event(
+            level="ERROR",
+            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+            event="QUEUE_DISPATCH_FAILED",
+            message=f"QUEUE_FAILED ({failure_class}): Redis task queue unreachable for task '{task_name}': {e}",
+            status="FAILED",
+            extra={"failure_class": failure_class, "service": "REDIS", "task": task_name},
             exc_info=True
         )
         raise RuntimeError(f"QUEUE_FAILED: Redis task queue unreachable ({e})")
@@ -192,12 +206,18 @@ def search_and_discover_task(
     domain: str = None,
     subdomain: str = None,
     batch_id: str = None,
+    trace_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     §11 — Worker A: Search SearXNG → classify results → enqueue entity crawls.
     Each SearXNG URL is classified as listing page or entity page.
     Listing pages get their entity links extracted and each entity enqueued separately.
     """
+    from app.audit.tracer import tracer, Checkpoint
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-01", task_id=getattr(self.request, "id", None))
+
     # Backward compat: if called without 'query', build it from keyword + domain
     if not query:
         query = f"{domain or ''} {keyword or ''}".strip()
@@ -305,12 +325,19 @@ def crawl_source_task(
     source_url: str,
     domain: str,
     batch_id: str = None,
+    trace_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     §11 — Crawl a listing/directory page and extract individual entity URLs.
     Each discovered entity URL is enqueued as a separate crawl_entity_task.
     """
+    from app.audit.tracer import tracer, Checkpoint
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-01", task_id=getattr(self.request, "id", None))
+
     logger.info(f"[Worker A.2] Crawling source listing: {source_url}")
+
 
     try:
         crawled = run_async(
@@ -396,12 +423,18 @@ def crawl_entity_task(
     url: str,
     domain: str,
     batch_id: str = None,
+    trace_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     §12, §13 — Worker B: Deep entity crawl + extraction.
     Crawls homepage + targeted subpages (/about, /company, /team, /leadership, etc.)
     for maximum verified field extraction.
     """
+    from app.audit.tracer import tracer, Checkpoint
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-01", task_id=getattr(self.request, "id", None), lead_id=domain)
+
     logger.info(f"[Worker B] Entity crawl: {url}")
 
     # ── Stage 0: Look up existing source reference (DO NOT create document yet) ───
@@ -1106,10 +1139,14 @@ def agent2_process_card_task(self, document_id: str, trace_ctx: Optional[Dict[st
 
 
 @celery_app.task(name="tasks.agent2_verify_phase1", bind=True)
-def agent2_verify_phase1_task(self, session_id: str) -> Dict[str, Any]:
+def agent2_verify_phase1_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Executes Phase 1 evidence verification for an Agent 2 session."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
     from app.persistence.models import Agent2VerificationSession
+    from app.audit.tracer import tracer
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
         session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
@@ -1121,10 +1158,14 @@ def agent2_verify_phase1_task(self, session_id: str) -> Dict[str, Any]:
 
 
 @celery_app.task(name="tasks.agent2_synthesize_business", bind=True)
-def agent2_synthesize_business_task(self, session_id: str) -> Dict[str, Any]:
+def agent2_synthesize_business_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Runs Phase 2 Haystack business synthesis."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
     from app.persistence.models import Agent2VerificationSession
+    from app.audit.tracer import tracer
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
         session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
@@ -1136,10 +1177,14 @@ def agent2_synthesize_business_task(self, session_id: str) -> Dict[str, Any]:
 
 
 @celery_app.task(name="tasks.agent2_search_linkedin", bind=True)
-def agent2_search_linkedin_task(self, session_id: str) -> Dict[str, Any]:
+def agent2_search_linkedin_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Runs Phase 2 LinkedIn key person discovery."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
     from app.persistence.models import Agent2VerificationSession
+    from app.audit.tracer import tracer
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
         session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
@@ -1151,10 +1196,14 @@ def agent2_search_linkedin_task(self, session_id: str) -> Dict[str, Any]:
 
 
 @celery_app.task(name="tasks.agent2_finalize_verification", bind=True)
-def agent2_finalize_verification_task(self, session_id: str) -> Dict[str, Any]:
+def agent2_finalize_verification_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Finalizes verification decision and triggers PostgreSQL Outbox."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
     from app.persistence.models import Agent2VerificationSession
+    from app.audit.tracer import tracer
+    if trace_ctx:
+        tracer.restore_context_dict(trace_ctx)
+    tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
         session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()

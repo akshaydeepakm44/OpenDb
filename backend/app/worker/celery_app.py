@@ -15,7 +15,7 @@ backend_url = settings.CELERY_RESULT_BACKEND or redis_url
 REDIS_AVAILABLE = False
 
 try:
-    r = redis.Redis.from_url(redis_url, socket_connect_timeout=0.2, socket_timeout=0.2)
+    r = redis.Redis.from_url(redis_url, socket_connect_timeout=2.0, socket_timeout=2.0)
     if r.ping():
         broker_url = redis_url
         backend_url = redis_url
