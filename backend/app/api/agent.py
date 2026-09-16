@@ -307,6 +307,7 @@ def reset_database_data(db: Session = Depends(get_db)):
         discovery_agent.is_running_loop = False
 
         from app.persistence.models import (
+            Agent2PersonCandidate, Agent2Evidence, Agent2VerificationSession, PostgresSyncOutbox,
             GlobalLeadSubpage, GlobalLeadPerson, GlobalLead, OpenLakeRecord,
             KeyPersonCandidate, ManualReviewQueue,
             ResourceLink, Resource, ExtractionRun, DocumentVersion,
@@ -320,7 +321,9 @@ def reset_database_data(db: Session = Depends(get_db)):
         except Exception:
             pass
 
+        # Foreign-key ordered: children and dependents first, parents last
         models_to_clear = [
+            Agent2PersonCandidate, Agent2Evidence, Agent2VerificationSession, PostgresSyncOutbox,
             GlobalLeadSubpage, GlobalLeadPerson, GlobalLead, OpenLakeRecord,
             KeyPersonCandidate, ManualReviewQueue,
             ResourceLink, Resource, ExtractionRun, DocumentVersion,
@@ -331,20 +334,21 @@ def reset_database_data(db: Session = Depends(get_db)):
         for m in models_to_clear:
             try:
                 db.execute(text(f"DELETE FROM {m.__tablename__};"))
+                db.commit()
             except Exception as de:
-                logger.warning(f"Reset: table clearing warning for {m.__tablename__}: {de}")
+                db.rollback()
+                logger.warning(f"Reset: table clearing note for {m.__tablename__}: {de}")
 
         try:
             db.execute(text("DELETE FROM global_leads_fts;"))
+            db.commit()
         except Exception:
-            pass
+            db.rollback()
 
         try:
             db.execute(text("PRAGMA foreign_keys = ON;"))
         except Exception:
             pass
-
-        db.commit()
 
         # Clean all local storage directories across project
         candidate_data_dirs = [
