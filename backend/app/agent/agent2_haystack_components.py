@@ -196,6 +196,7 @@ def generate_dynamic_linkedin_queries(
 ) -> List[str]:
     """
     Dynamically constructs search queries targeting genuine personal LinkedIn profiles.
+    Strips corporate legal suffixes (Inc, LLC, Ltd) so query matches real user titles.
     Expands queries on subsequent search rounds when candidates are insufficient.
     """
     clean_domain = domain.lower().replace("www.", "").strip()
@@ -206,26 +207,30 @@ def generate_dynamic_linkedin_queries(
     
     # If clean_name is empty or is an unrelated slogan/tagline, prioritize domain_brand
     if not clean_name or domain_brand.lower() not in clean_name.lower():
-        brand = domain_brand
+        raw_brand = domain_brand
     else:
-        brand = clean_name
+        raw_brand = clean_name
+
+    # Strip legal entity suffixes so "Acme Robotics Inc" -> "Acme Robotics"
+    brand = re.sub(r'(?i)\b(inc|llc|ltd|gmbh|corp|corporation|technologies|solutions|group|holdings|pte)\b', '', raw_brand).strip(' ,.-') or raw_brand
 
     if search_round == 1:
         return [
             f"site:linkedin.com/in/ \"{brand}\" founder OR CEO",
+            f"site:linkedin.com/in/ \"{brand}\" \"Chief Executive Officer\"",
             f"site:linkedin.com/in/ \"{domain_brand}\" founder OR CEO",
             f"site:linkedin.com/in/ \"{clean_domain}\" executive",
             f"site:linkedin.com/in/ \"{brand}\" CTO OR \"Chief Technology Officer\"",
-            f"site:linkedin.com/in/ \"{clean_domain}\" leadership",
-            f"site:linkedin.com/in/ \"{brand}\" \"Managing Director\" OR \"Vice President\"",
+            f"site:linkedin.com/in/ \"{brand}\" \"Managing Director\" OR President",
         ]
     elif search_round == 2:
-        # Round 2: broaden to directors, co-founders, head of engineering
+        # Round 2: broaden to directors, co-founders, head of engineering, VP
         return [
             f"site:linkedin.com/in/ \"{brand}\" \"Co-Founder\"",
             f"site:linkedin.com/in/ \"{domain_brand}\" \"Co-Founder\"",
+            f"site:linkedin.com/in/ \"{brand}\" \"Vice President\" OR VP",
             f"site:linkedin.com/in/ \"{brand}\" \"Head of\"",
-            f"site:linkedin.com/in/ \"{clean_domain}\" founder",
+            f"site:linkedin.com/in/ \"{clean_domain}\" founder OR leadership",
             f"site:linkedin.com/in/ \"{brand}\" director",
         ]
     else:

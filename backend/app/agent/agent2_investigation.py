@@ -520,17 +520,95 @@ class Agent2InvestigationEngine:
         }
 
     def _extract_size_evidence(self, text: str) -> Optional[Dict[str, str]]:
-        """Identify explicit headcount patterns in text without guessing."""
+        """Identify explicit headcount patterns, ranges, and LinkedIn size disclosures without guessing."""
+        if not text:
+            return None
+
+        # 1. Standard employee ranges (e.g., "51-200 employees", "11-50 team members", "1,001-5,000 staff")
+        m_range = re.search(
+            r'\b(\d{1,3}(?:,\d{3})*)\s*(?:-|to)\s*(\d{1,3}(?:,\d{3})*)\s*(?:employees|people|team members|staff|engineers|professionals)\b',
+            text, re.IGNORECASE
+        )
+        if m_range:
+            try:
+                low = int(m_range.group(1).replace(',', ''))
+                high = int(m_range.group(2).replace(',', ''))
+                if 1 <= high <= 1000000:
+                    tier = (
+                        "1-10" if high <= 10
+                        else "11-50" if high <= 50
+                        else "51-200" if high <= 200
+                        else "201-500" if high <= 500
+                        else "501-1000" if high <= 1000
+                        else "1001-5000" if high <= 5000
+                        else "5000+"
+                    )
+                    start = max(0, m_range.start() - 30)
+                    end = min(len(text), m_range.end() + 30)
+                    snippet = text[start:end].strip().replace("\n", " ")
+                    return {"tier": tier, "snippet": f"...{snippet} (range: {low}-{high})..."}
+            except Exception:
+                pass
+
+        # 2. Explicit company size label (common in LinkedIn, directories, Crunchbase)
+        m_label = re.search(
+            r'(?:company size|headcount|team size|organization size)\s*[:\-]?\s*(\d{1,3}(?:,\d{3})*)\s*(?:-|to)\s*(\d{1,3}(?:,\d{3})*)',
+            text, re.IGNORECASE
+        )
+        if m_label:
+            try:
+                high = int(m_label.group(2).replace(',', ''))
+                tier = (
+                    "1-10" if high <= 10
+                    else "11-50" if high <= 50
+                    else "51-200" if high <= 200
+                    else "201-500" if high <= 500
+                    else "501-1000" if high <= 1000
+                    else "1001-5000" if high <= 5000
+                    else "5000+"
+                )
+                start = max(0, m_label.start() - 20)
+                end = min(len(text), m_label.end() + 25)
+                snippet = text[start:end].strip().replace("\n", " ")
+                return {"tier": tier, "snippet": f"...{snippet}..."}
+            except Exception:
+                pass
+
+        # 3. Plus patterns (e.g., "500+ employees", "10,000+ staff")
+        m_plus = re.search(
+            r'\b(\d{1,3}(?:,\d{3})*)\+\s*(?:employees|people|team members|staff|engineers|headcount)\b',
+            text, re.IGNORECASE
+        )
+        if m_plus:
+            try:
+                num = int(m_plus.group(1).replace(',', ''))
+                if 1 <= num <= 1000000:
+                    tier = (
+                        "1-10" if num <= 10
+                        else "11-50" if num <= 50
+                        else "51-200" if num <= 200
+                        else "201-500" if num <= 500
+                        else "501-1000" if num <= 1000
+                        else "1001-5000" if num <= 5000
+                        else "5000+"
+                    )
+                    start = max(0, m_plus.start() - 30)
+                    end = min(len(text), m_plus.end() + 30)
+                    snippet = text[start:end].strip().replace("\n", " ")
+                    return {"tier": tier, "snippet": f"...{snippet} ({num}+ staff)..."}
+            except Exception:
+                pass
+
+        # 4. Standard single headcount patterns
         patterns = [
-            (r"(?:team of|over|more than|approximately|approx\.)\s*(\d{1,5})\s*(?:people|employees|members|engineers|staff)", 1),
-            (r"(\d{1,5})\+\s*(?:employees|people|team members|staff)", 1),
-            (r"headcount\s*(?:of|is|:)\s*(\d{1,5})", 1),
+            (r"(?:team of|over|more than|approximately|approx\.)\s*(\d{1,3}(?:,\d{3})*)\s*(?:people|employees|members|engineers|staff)", 1),
+            (r"headcount\s*(?:of|is|:)\s*(\d{1,3}(?:,\d{3})*)", 1),
         ]
         for pat, grp in patterns:
             m = re.search(pat, text, re.IGNORECASE)
             if m:
                 try:
-                    num = int(m.group(grp))
+                    num = int(m.group(grp).replace(',', ''))
                     if 1 <= num <= 500000:
                         tier = (
                             "1-10" if num <= 10
