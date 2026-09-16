@@ -279,6 +279,11 @@ def calculate_evidence_quality_score(
 @router.post("/run")
 def start_discovery_agent(db: Session = Depends(get_db)):
     """User Action: RUN - Starts/resumes the 24/7 global discovery agent."""
+    try:
+        from app.persistence.sync_fallback import sync_pending_fallback_records
+        sync_pending_fallback_records()
+    except Exception as e:
+        logger.debug(f"[Agent Run] Fallback sync note: {e}")
     result = discovery_agent.set_status("RUNNING")
     return {
         "message": "Autonomous Global Lead Discovery Agent is now RUNNING.",

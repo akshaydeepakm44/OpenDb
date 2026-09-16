@@ -33,6 +33,15 @@ async def lifespan(app: FastAPI):
     )
     init_db()
 
+    # Recovery Sync: Synchronize any pending records from SQLite fallback to PostgreSQL
+    try:
+        from app.persistence.sync_fallback import sync_pending_fallback_records
+        res = sync_pending_fallback_records()
+        if res.get("synced_count", 0) > 0:
+            logger.info(f"[Lifespan] Recovered and synchronized {res['synced_count']} fallback records from SQLite into PostgreSQL.")
+    except Exception as sync_err:
+        logger.debug(f"[Lifespan] SQLite fallback recovery note: {sync_err}")
+
     # §10 — Auto-resume agent if it was RUNNING before container restart
     try:
         from app.agent.discovery_agent import discovery_agent
