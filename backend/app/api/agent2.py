@@ -14,7 +14,7 @@ from app.persistence.models import (
     Document, Agent2VerificationSession, Agent2Evidence, Agent2PersonCandidate
 )
 from app.agent.agent2_orchestrator import agent2_orchestrator
-from app.worker.tasks import agent2_process_card_task, agent2_rank_cards_task
+from app.worker.tasks import agent2_process_card_task, agent2_rank_cards_task, _safe_dispatch
 
 router = APIRouter()
 
@@ -121,19 +121,59 @@ def list_agent2_cards(
 
 @router.get("/cards/{session_id}")
 def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Return full card detail including Phase 1 evidence, Phase 2 synthesis, and LinkedIn candidate audit."""
+    """
+    Return full card detail including Phase 1 evidence, Phase 2 synthesis,
+    LinkedIn candidate audit, and Authoritative Verification Contract Evaluation.
+    Supports lookup by session_id, document_id, domain, or entity_id.
+    """
+    clean_target = str(session_id).strip()
     session = db.query(Agent2VerificationSession).filter(
-        Agent2VerificationSession.id == session_id
+        Agent2VerificationSession.id == clean_target
     ).first()
 
     if not session:
         # Check if caller passed document_id
         session = db.query(Agent2VerificationSession).filter(
-            Agent2VerificationSession.document_id == session_id
+            Agent2VerificationSession.document_id == clean_target
         ).first()
 
     if not session:
-        raise HTTPException(status_code=404, detail="Agent 2 session not found")
+        # Check by domain
+        clean_dom = clean_target.lower().replace("https://", "").replace("http://", "").replace("www.", "").split("/")[0]
+        session = db.query(Agent2VerificationSession).filter(
+            Agent2VerificationSession.domain == clean_dom
+        ).first()
+
+    if not session:
+        # Check Document table
+        doc = db.query(Document).filter(Document.id == clean_target).first()
+        if not doc:
+            try:
+                import uuid as _uuid
+                doc = db.query(Document).filter(Document.id == _uuid.UUID(clean_target)).first()
+            except Exception:
+                pass
+        if doc:
+            session = agent2_orchestrator.get_or_create_session(str(doc.id), db)
+
+    if not session:
+        # Check UniversalRecord table
+        from app.persistence.models import UniversalRecord
+        ur = db.query(UniversalRecord).filter(UniversalRecord.id == clean_target).first()
+        if ur and ur.document_id:
+            session = agent2_orchestrator.get_or_create_session(str(ur.document_id), db)
+
+    if not session:
+        # Check GlobalLead table
+        from app.persistence.models import GlobalLead
+        gl = db.query(GlobalLead).filter(GlobalLead.id == clean_target).first()
+        if gl and gl.domain:
+            session = db.query(Agent2VerificationSession).filter(
+                Agent2VerificationSession.domain == gl.domain
+            ).first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Verification record or session not found")
 
     evidence_rows = db.query(Agent2Evidence).filter(
         Agent2Evidence.session_id == session.id
@@ -142,6 +182,10 @@ def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Di
     candidates_rows = db.query(Agent2PersonCandidate).filter(
         Agent2PersonCandidate.session_id == session.id
     ).all()
+
+    # Authoritative Verification Contract Evaluation
+    from app.verification.verification_contract import verification_contract
+    verification_audit = verification_contract.evaluate_session(session, db)
 
     return {
         "session_id": session.id,
@@ -156,6 +200,9 @@ def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Di
         "recrawl_count": session.recrawl_count,
         "search_rounds": session.search_rounds,
         "verified_at": session.verified_at.isoformat() if session.verified_at else None,
+        "completeness_score": verification_audit.get("completeness_score", 0.0),
+        "is_verified": verification_audit.get("is_verified", False),
+        "verification_audit": verification_audit,
         "evidence": [
             {
                 "field": e.field_name,
@@ -183,6 +230,65 @@ def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Di
             for c in candidates_rows
         ],
         "timeline": session.investigation_log or []
+    }
+
+
+@router.post("/rerun/{session_id}")
+def rerun_agent2_verification(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Re-runs verification on a lead in a non-verified state (§20).
+    Only permitted for PARTIALLY_VERIFIED, NEEDS_REVIEW, PHASE1_BLOCKED, VERIFICATION_FAILED, etc.
+    Preserves valid existing evidence while conducting targeted missing-field investigation.
+    """
+    clean_target = str(session_id).strip()
+    session = db.query(Agent2VerificationSession).filter(
+        Agent2VerificationSession.id == clean_target
+    ).first()
+    if not session:
+        session = db.query(Agent2VerificationSession).filter(
+            Agent2VerificationSession.document_id == clean_target
+        ).first()
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Agent 2 session not found")
+
+    # Only allow rerun for appropriate states
+    rerun_allowed_states = [
+        "PARTIALLY_VERIFIED", "NEEDS_REVIEW", "PHASE1_BLOCKED", "VERIFICATION_FAILED",
+        "INSUFFICIENT_EVIDENCE", "CRAWL_FAILED", "AGENT2_QUEUED", "PHASE1_RANKED"
+    ]
+    if session.status == "VERIFIED" or session.status == "POSTGRES_VERIFIED":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Card is already authoritatively VERIFIED. Re-run is not required."
+        )
+
+    session.status = "QUEUED_FOR_VERIFICATION"
+    from datetime import datetime, timezone
+    session.investigation_log.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "state": "QUEUED_FOR_VERIFICATION",
+        "message": "Verification re-run requested by user. Preserving valid evidence."
+    })
+    db.commit()
+
+    try:
+        from app.audit.tracer import tracer, Checkpoint
+        ctx_dict = tracer.get_context_dict()
+        _safe_dispatch(agent2_process_card_task, document_id=str(session.document_id), trace_ctx=ctx_dict)
+    except Exception as e:
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id))
+
+    return {
+        "status": "rerun_dispatched",
+        "session_id": session.id,
+        "document_id": session.document_id,
+        "domain": session.domain,
+        "new_state": "QUEUED_FOR_VERIFICATION"
     }
 
 
@@ -216,28 +322,11 @@ def trigger_agent2_process(
     if not session:
         raise HTTPException(status_code=500, detail="Failed to initialize Agent 2 session")
 
-    # Dispatch Celery background task with explicit queue failure visibility
-    try:
-        from app.audit.tracer import tracer, Checkpoint
-        ctx_dict = tracer.get_context_dict()
-        agent2_process_card_task.delay(doc_id_str, trace_ctx=ctx_dict)
-        dispatch_method = "celery_async"
-    except Exception as e:
-        from app.audit.tracer import tracer, Checkpoint
-        tracer.log_event(
-            level="ERROR",
-            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
-            event="QUEUE_DISPATCH_FAILED",
-            message=f"QUEUE_FAILED: Failed to dispatch Agent 2 verification task to Redis queue: {e}",
-            agent_id="AGENT-02",
-            lead_id=session.domain,
-            status="FAILED",
-            exc_info=True
-        )
-        raise HTTPException(
-            status_code=503,
-            detail=f"QUEUE_FAILED: Redis Celery broker is unreachable ({e}). Task cannot be queued."
-        )
+    # Dispatch task via observable execution adapter
+    from app.audit.tracer import tracer, Checkpoint
+    ctx_dict = tracer.get_context_dict()
+    _safe_dispatch(agent2_process_card_task, document_id=doc_id_str, trace_ctx=ctx_dict)
+    dispatch_method = "safe_dispatch"
 
     return {
         "status": "queued",

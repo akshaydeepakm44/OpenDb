@@ -172,34 +172,13 @@ class Agent2InvestigationEngine:
                 "investigation": inv,
             }
 
-        # Strategy 2: Targeted crawl of missing corporate subpages
+        # Strategy 2: Check deep crawl corporate subpages
         inv["strategies_completed"].append("targeted_subpages")
         inv["strategies_remaining"].remove("targeted_subpages")
         inv["sources_checked"].append("about_or_company")
-        new_text = ""
 
-        try:
-            for path in ["/about", "/company", "/products", "/solutions", "/industries"]:
-                url = f"https://{domain}{path}"
-                inv["urls_crawled"].append(url)
-                inv["crawl_attempts"] += 1
-                items = await crawler_service.crawl_site(starting_url=url, max_depth=1, max_pages=1)
-                if items and items[0] and items[0].text and items[0].http_status == 200:
-                    new_text += "\n" + items[0].text
-                    slug = path.strip("/").replace("/", "_")
-                    file_storage.save_agent2_artifact(
-                        domain=domain,
-                        page_slug=slug,
-                        content=items[0].markdown or items[0].text,
-                        metadata={"source_url": url, "page_type": slug}
-                    )
-        except Exception as crawl_err:
-            logger.warning(f"[Agent 2][Industry] Targeted crawl error for {domain}: {crawl_err}")
-            inv["infra_failure"] = f"CRAWLER_ERROR: {crawl_err}"
-
-        combined_text = f"{existing_text}\n{new_text}"
-        c_dom2, _, conf2 = domain_classifier.classify(combined_text, title=company_name, url=domain)
-        if conf2 >= 0.65 and c_dom2 != "Unknown":
+        c_dom2, _, conf2 = domain_classifier.classify(existing_text, title=company_name, url=domain)
+        if conf2 >= 0.60 and c_dom2 != "Unknown" and c_dom2 != "Commercial Web":
             inv["evidence_found"] = True
             inv["completed_at"] = utc_now_iso()
             return {
@@ -207,7 +186,7 @@ class Agent2InvestigationEngine:
                 "value": c_dom2,
                 "status": "VERIFIED",
                 "source_url": f"https://{domain}/about",
-                "evidence_snippet": f"Verified from targeted subpage crawl as {c_dom2}.",
+                "evidence_snippet": f"Verified from multi-page corporate crawl as {c_dom2}.",
                 "verification_method": "targeted_subpage_evidence",
                 "investigation": inv,
             }
@@ -330,42 +309,24 @@ class Agent2InvestigationEngine:
                 "investigation": inv,
             }
 
-        # Strategy 2: Targeted crawl of contact & locations pages
+        # Strategy 2: Check deep crawl contact & locations content
         inv["sources_checked"].append("contact_or_locations")
         inv["strategies_completed"].append("targeted_contact_pages")
         inv["strategies_remaining"].remove("targeted_contact_pages")
 
-        contact_text = ""
-        try:
-            for path in ["/contact", "/locations", "/contact-us", "/about", "/legal"]:
-                url = f"https://{domain}{path}"
-                inv["urls_crawled"].append(url)
-                inv["crawl_attempts"] += 1
-                items = await crawler_service.crawl_site(starting_url=url, max_depth=1, max_pages=1)
-                if items and items[0] and items[0].text and items[0].http_status == 200:
-                    contact_text += "\n" + items[0].text
-                    slug = path.strip("/").replace("/", "_")
-                    file_storage.save_agent2_artifact(
-                        domain=domain,
-                        page_slug=slug,
-                        content=items[0].markdown or items[0].text,
-                        metadata={"source_url": url, "page_type": slug}
-                    )
-                    loc2 = self._extract_location_evidence(items[0].text)
-                    if loc2:
-                        inv["evidence_found"] = True
-                        inv["completed_at"] = utc_now_iso()
-                        return {
-                            "field": "location_region",
-                            "value": loc2["location"],
-                            "status": "VERIFIED",
-                            "source_url": url,
-                            "evidence_snippet": loc2["snippet"],
-                            "verification_method": "targeted_contact_page_address",
-                            "investigation": inv,
-                        }
-        except Exception as crawl_err:
-            inv["infra_failure"] = f"CRAWLER_ERROR: {crawl_err}"
+        loc2 = self._extract_location_evidence(existing_text)
+        if loc2:
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "location_region",
+                "value": loc2["location"],
+                "status": "VERIFIED",
+                "source_url": f"https://{domain}/contact",
+                "evidence_snippet": loc2["snippet"],
+                "verification_method": "targeted_contact_page_address",
+                "investigation": inv,
+            }
 
         # Strategy 3: Multi-round search (SEARCH AGAIN when missing!)
         inv["sources_checked"].append("search_location")
@@ -494,40 +455,24 @@ class Agent2InvestigationEngine:
                 "investigation": inv,
             }
 
-        # Strategy 2: Targeted crawl of /careers and /team
+        # Strategy 2: Check deep crawl careers and team content
         inv["sources_checked"].append("careers_or_team")
         inv["strategies_completed"].append("targeted_career_pages")
         inv["strategies_remaining"].remove("targeted_career_pages")
 
-        try:
-            for path in ["/careers", "/team", "/about", "/company"]:
-                url = f"https://{domain}{path}"
-                inv["urls_crawled"].append(url)
-                inv["crawl_attempts"] += 1
-                items = await crawler_service.crawl_site(starting_url=url, max_depth=1, max_pages=1)
-                if items and items[0] and items[0].text and items[0].http_status == 200:
-                    slug = path.strip("/").replace("/", "_")
-                    file_storage.save_agent2_artifact(
-                        domain=domain,
-                        page_slug=slug,
-                        content=items[0].markdown or items[0].text,
-                        metadata={"source_url": url, "page_type": slug}
-                    )
-                    size2 = self._extract_size_evidence(items[0].text)
-                    if size2:
-                        inv["evidence_found"] = True
-                        inv["completed_at"] = utc_now_iso()
-                        return {
-                            "field": "company_size_tier",
-                            "value": size2["tier"],
-                            "status": "VERIFIED",
-                            "source_url": url,
-                            "evidence_snippet": size2["snippet"],
-                            "verification_method": "targeted_career_page_headcount",
-                            "investigation": inv,
-                        }
-        except Exception as e:
-            inv["infra_failure"] = f"CRAWLER_ERROR: {e}"
+        size2 = self._extract_size_evidence(existing_text)
+        if size2:
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "company_size_tier",
+                "value": size2["tier"],
+                "status": "VERIFIED",
+                "source_url": f"https://{domain}/about",
+                "evidence_snippet": size2["snippet"],
+                "verification_method": "targeted_career_page_headcount",
+                "investigation": inv,
+            }
 
         # Strategy 3: Multi-round search (SEARCH AGAIN when missing!)
         inv["sources_checked"].append("search_size")
@@ -657,36 +602,28 @@ class Agent2InvestigationEngine:
                     "investigation": inv,
                 }
 
-        # Strategy 2: Targeted crawl of contact page & root homepage
+        # Strategy 2: Check deep crawl contact & team content
         inv["sources_checked"].append("contact_page")
         inv["strategies_completed"].append("targeted_contact_page")
         inv["strategies_remaining"].remove("targeted_contact_page")
 
-        try:
-            for path in ["/contact", "/contact-us", "/support", "/"]:
-                url = f"https://{domain}{path}"
-                inv["urls_crawled"].append(url)
-                inv["crawl_attempts"] += 1
-                items = await crawler_service.crawl_site(starting_url=url, max_depth=1, max_pages=1)
-                if items and items[0] and items[0].text and items[0].http_status == 200:
-                    found_emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", items[0].text)
-                    for em in found_emails:
-                        if not any(em.endswith(ext) for ext in [".png", ".jpg", ".svg", ".webp", ".js", ".css"]):
-                            prov = validate_fact("email", em, items[0].text, url, domain=domain)
-                            if prov:
-                                inv["evidence_found"] = True
-                                inv["completed_at"] = utc_now_iso()
-                                return {
-                                    "field": "verified_contact_email",
-                                    "value": em,
-                                    "status": "VERIFIED",
-                                    "source_url": url,
-                                    "evidence_snippet": f"Discovered on official page: {em}",
-                                    "verification_method": "targeted_contact_page_email",
-                                    "investigation": inv,
-                                }
-        except Exception as e:
-            inv["infra_failure"] = f"CRAWLER_ERROR: {e}"
+        if existing_text:
+            found_emails = re.findall(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", existing_text)
+            for em in found_emails:
+                if not any(em.lower().endswith(ext) for ext in [".png", ".jpg", ".svg", ".webp", ".js", ".css"]):
+                    prov = validate_fact("email", em, existing_text, f"https://{domain}", domain=domain)
+                    if prov:
+                        inv["evidence_found"] = True
+                        inv["completed_at"] = utc_now_iso()
+                        return {
+                            "field": "verified_contact_email",
+                            "value": em,
+                            "status": "VERIFIED",
+                            "source_url": f"https://{domain}/contact",
+                            "evidence_snippet": f"Discovered on official page: {em}",
+                            "verification_method": "targeted_contact_page_email",
+                            "investigation": inv,
+                        }
 
         # Strategy 3: Multi-round search (SEARCH AGAIN when missing!)
         inv["sources_checked"].append("search_email")

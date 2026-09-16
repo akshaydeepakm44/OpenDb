@@ -394,16 +394,10 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     persisted_companies_count = 0
     verified_leads_count = 0
     try:
-        from app.persistence.models import GlobalLead
         persisted_companies_count = db.query(UniversalRecord).count()
-        if persisted_companies_count == 0:
-            persisted_companies_count = db.query(GlobalLead).count()
-
         verified_leads_count = db.query(UniversalRecord).filter(
-            or_(UniversalRecord.status == "Verified", UniversalRecord.status == "Active")
+            UniversalRecord.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
         ).count()
-        if verified_leads_count == 0:
-            verified_leads_count = db.query(GlobalLead).count()
     except Exception:
         db.rollback()
 
@@ -971,7 +965,10 @@ def get_entities_list(
     db: Session = Depends(get_db)
 ):
     """Search and filter canonical lead entities."""
-    q = db.query(UniversalRecord)
+    # Authoritative Verification Gate: Only VERIFIED or POSTGRES_VERIFIED records
+    q = db.query(UniversalRecord).filter(
+        UniversalRecord.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
+    )
     
     if query:
         search_pattern = f"%{query}%"
@@ -990,95 +987,9 @@ def get_entities_list(
     total_count = q.count()
     records = q.order_by(UniversalRecord.created_at.desc()).limit(100).all()
 
+    # Hard Invariant 5: Never fallback to unverified GlobalLead rows
     if not records:
-        from app.persistence.models import GlobalLead, GlobalLeadPerson, KeyPersonCandidate
-        g_leads = db.query(GlobalLead).limit(100).all()
-        if not g_leads:
-            return {"total": 0, "results": []}
-
-        g_ids = [g.id for g in g_leads]
-        g_comp_names = [g.company_name for g in g_leads if g.company_name]
-
-        all_people = db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id.in_(g_ids)).all() if g_ids else []
-        people_map = {}
-        for p in all_people:
-            people_map.setdefault(p.global_lead_id, []).append(p)
-
-        all_kps = db.query(KeyPersonCandidate).filter(KeyPersonCandidate.company_name.in_(g_comp_names)).all() if g_comp_names else []
-        kps_map = {}
-        for kp in all_kps:
-            kps_map.setdefault(kp.company_name, []).append(kp)
-
-        g_results = []
-        for g in g_leads:
-            people_recs = people_map.get(g.id, [])
-            d_makers = [{"name": p.full_name, "title": p.title, "linkedin_search_url": p.linkedin_search_url} for p in people_recs]
-            kp_cands = kps_map.get(g.company_name, [])
-            existing_names = {p["name"].lower() for p in d_makers}
-            for kp in kp_cands:
-                if kp.person_name and kp.person_name.lower() not in existing_names:
-                    d_makers.append({
-                        "name": kp.person_name,
-                        "title": kp.role,
-                        "linkedin_search_url": kp.source_url
-                    })
-                    existing_names.add(kp.person_name.lower())
-            
-            comp_li = getattr(g, "linkedin_url", None)
-            g_overview = g.summary or ""
-            if "enterprise lead" in g_overview.lower() or not g_overview.strip():
-                g_overview = "Unknown"
-            g_hq = g.headquarters or "Unknown"
-            g_ind = g.industry or "Unknown"
-            g_size = g.company_size or "Unknown"
-            g_rev = g.revenue_funding or "Unknown"
-            g_emails = g.verified_emails if isinstance(g.verified_emails, list) else []
-
-            g_score = calculate_evidence_quality_score(
-                canonical_name=g.company_name,
-                domain=g.domain,
-                industry=g_ind,
-                business_overview=g_overview,
-                products_services=g.technology_stack,
-                headquarters=g_hq,
-                company_size=g_size,
-                decision_makers=d_makers,
-                verified_emails=g_emails,
-            )
-
-            g_results.append({
-                "id": g.id,
-                "canonical_name": g.company_name,
-                "domain": g.domain,
-                "entity_type": g.industry or "Organization",
-                "country": "Global",
-                "url": f"https://{g.domain}",
-                "logo_url": g.logo_url or f"https://www.google.com/s2/favicons?domain={g.domain}&sz=128",
-                "business_overview": g_overview,
-                "technology_stack": g.technology_stack if isinstance(g.technology_stack, list) else ["Web Infrastructure"],
-                "decision_makers": d_makers,
-                "decision_makers_count": len(d_makers),
-                "crawled_subpages": [{"title": f"/ • {g.company_name}", "url": f"https://{g.domain}"}],
-                "headquarters": g_hq,
-                "industry": g_ind,
-                "company_size": g_size,
-                "company_tier": g_size,
-                "revenue_funding": g_rev,
-                "funding_stage": g_rev,
-                "warmth_score": round(float(g_score / 10.0), 1),
-                "verified_emails": g_emails,
-                "status": "Verified",
-                "confidence": float(g_score / 100.0),
-                "lead_quality_score": g_score,
-                "quality_score": g_score,
-                "linkedin_url": comp_li,
-                "company_linkedin_url": comp_li,
-                "description": g_overview
-            })
-        return {
-            "total": len(g_results),
-            "results": g_results
-        }
+        return {"total": 0, "results": []}
 
     rec_ids = [r.id for r in records]
     dom_map = {

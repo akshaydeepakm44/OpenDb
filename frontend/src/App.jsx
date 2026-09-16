@@ -93,6 +93,23 @@ export default function App() {
   const [agent2Detail, setAgent2Detail] = useState(null);
   const [loadingAgent2Detail, setLoadingAgent2Detail] = useState(false);
   const [triggeringDocIds, setTriggeringDocIds] = useState({});
+  const [rerunningAgent2, setRerunningAgent2] = useState(false);
+
+  const handleRerunAgent2 = async (sessionId) => {
+    if (!sessionId) return;
+    setRerunningAgent2(true);
+    try {
+      const res = await fetch(`${API_BASE}/agent2/rerun/${sessionId}`, { method: 'POST' });
+      if (res.ok) {
+        const refreshed = await fetch(`${API_BASE}/agent2/cards/${sessionId}`).then(r => r.ok ? r.json() : null);
+        if (refreshed) setAgent2Detail(refreshed);
+      }
+    } catch (err) {
+      console.error("Failed to trigger re-run:", err);
+    } finally {
+      setRerunningAgent2(false);
+    }
+  };
 
   // Auto-scroll terminal log window when new events arrive
   useEffect(() => {
@@ -1044,6 +1061,35 @@ export default function App() {
                       🔍 Inspect Raw Crawled Evidence ↗
                     </button>
 
+                    {/* Verification Audit Checklist Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedAgent2Id(doc.id);
+                      }}
+                      style={{
+                        marginTop: '0.15rem',
+                        width: '100%',
+                        padding: '0.45rem 0.75rem',
+                        background: '#1e293b',
+                        border: '1px solid #334155',
+                        borderRadius: '0.375rem',
+                        color: '#f8fafc',
+                        fontWeight: 700,
+                        fontSize: '0.78rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.35rem',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#38bdf8'; e.currentTarget.style.color = '#000'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#1e293b'; e.currentTarget.style.color = '#f8fafc'; }}
+                    >
+                      🔬 Open Verification Audit & Checklist ↗
+                    </button>
+
                     {/* 6. Action: Explicit Trigger for Agent 2 */}
                     <button
                       onClick={(e) => handleTriggerAgent2(doc.id, e)}
@@ -1392,6 +1438,35 @@ export default function App() {
                     >
                       📋 View Entire Dossier ↗
                     </button>
+
+                    {/* Verification Audit Button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedAgent2Id(ent.id);
+                      }}
+                      style={{
+                        marginTop: '0.25rem',
+                        width: '100%',
+                        padding: '0.45rem 0.75rem',
+                        background: '#1e293b',
+                        border: '1px solid #10b981',
+                        borderRadius: '0.375rem',
+                        color: '#f8fafc',
+                        fontWeight: 700,
+                        fontSize: '0.78rem',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '0.35rem',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#10b981'; e.currentTarget.style.color = '#000'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#1e293b'; e.currentTarget.style.color = '#f8fafc'; }}
+                    >
+                      🔬 Open Verification Audit & Checklist ↗
+                    </button>
                   </div>
                 );
               })}
@@ -1628,55 +1703,216 @@ export default function App() {
                   </div>
                 )}
 
-                {/* 1. PHASE 1 HARD-GATED AUDIT CHECKLIST */}
+                {/* ── AUTHORITATIVE COMPLETENESS SCORE & VERIFICATION GATE BANNER ── */}
+                {(() => {
+                  const audit = agent2Detail.verification_audit || {};
+                  const isV = Boolean(audit.is_verified || agent2Detail.is_verified);
+                  const score = audit.completeness_score !== undefined ? audit.completeness_score : (agent2Detail.completeness_score || 0);
+                  const stateLabel = audit.verification_state || agent2Detail.status;
+
+                  return (
+                    <div style={{ background: '#0a101d', border: `1px solid ${isV ? '#10b981' : (stateLabel.includes('BLOCKED') ? '#ef4444' : '#f59e0b')}`, borderRadius: '0.75rem', padding: '1.25rem', marginBottom: '1.5rem', boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '0.85rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <span style={{ fontSize: '1.5rem' }}>{isV ? '🛡️' : '⚠️'}</span>
+                          <div>
+                            <div style={{ fontWeight: 900, fontSize: '1.05rem', color: isV ? '#34d399' : '#fbbf24', letterSpacing: '-0.01em' }}>
+                              {isV ? '✓ Authoritative Verification Contract PASSED' : `Verification Gate: ${stateLabel}`}
+                            </div>
+                            <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: '0.15rem' }}>
+                              Single backend authority • Contract Version: {audit.contract_version || '2026.09.v1'}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ fontSize: '0.72rem', color: '#64748b', display: 'block', textTransform: 'uppercase', fontWeight: 800 }}>Completeness Score</span>
+                            <span style={{ fontSize: '1.4rem', fontWeight: 900, color: isV ? '#34d399' : '#38bdf8' }}>
+                              {score}%
+                            </span>
+                          </div>
+                          {!isV && (
+                            <button
+                              onClick={() => handleRerunAgent2(agent2Detail.session_id)}
+                              disabled={rerunningAgent2}
+                              style={{
+                                background: rerunningAgent2 ? '#334155' : 'rgba(56, 189, 248, 0.15)',
+                                border: '1px solid #38bdf8',
+                                borderRadius: '0.45rem',
+                                color: '#38bdf8',
+                                fontWeight: 800,
+                                fontSize: '0.78rem',
+                                padding: '0.5rem 0.9rem',
+                                cursor: rerunningAgent2 ? 'wait' : 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.35rem',
+                                transition: 'all 0.2s ease'
+                              }}
+                              onMouseEnter={e => { if (!rerunningAgent2) e.currentTarget.style.background = '#38bdf8'; e.currentTarget.style.color = '#000'; }}
+                              onMouseLeave={e => { if (!rerunningAgent2) e.currentTarget.style.background = 'rgba(56, 189, 248, 0.15)'; e.currentTarget.style.color = '#38bdf8'; }}
+                            >
+                              {rerunningAgent2 ? '⏳ Re-running...' : '⚡ Re-run Verification'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Progress bar */}
+                      <div style={{ width: '100%', height: '8px', background: '#1e293b', borderRadius: '4px', overflow: 'hidden' }}>
+                        <div style={{
+                          width: `${Math.min(100, Math.max(0, score))}%`,
+                          height: '100%',
+                          background: isV ? 'linear-gradient(90deg, #10b981, #059669)' : 'linear-gradient(90deg, #38bdf8, #818cf8)',
+                          transition: 'width 0.4s ease'
+                        }} />
+                      </div>
+
+                      {/* Critical Issues & Warnings */}
+                      {Array.isArray(audit.critical_issues) && audit.critical_issues.length > 0 && (
+                        <div style={{ marginTop: '0.85rem', background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '0.5rem', padding: '0.65rem 0.85rem' }}>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#f87171', textTransform: 'uppercase' }}>🚨 Critical Verification Issues:</span>
+                          <ul style={{ margin: '0.3rem 0 0 1rem', padding: 0, fontSize: '0.78rem', color: '#fca5a5' }}>
+                            {audit.critical_issues.map((iss, i) => (
+                              <li key={i}>{iss}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {Array.isArray(audit.warnings) && audit.warnings.length > 0 && (
+                        <div style={{ marginTop: '0.5rem', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '0.5rem', padding: '0.65rem 0.85rem' }}>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#fbbf24', textTransform: 'uppercase' }}>⚠️ Advisory Warnings:</span>
+                          <ul style={{ margin: '0.3rem 0 0 1rem', padding: 0, fontSize: '0.78rem', color: '#fde68a' }}>
+                            {audit.warnings.map((w, i) => (
+                              <li key={i}>{w}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* 1. CORE REQUIRED VERIFICATION CHECKLIST (Failure blocks VERIFIED) */}
                 <div style={{ marginBottom: '1.75rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
                     <h3 style={{ fontSize: '0.85rem', fontWeight: 900, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
-                      📋 Phase 1 Hard-Gated Field Audit Checklist (7 Core Fields)
+                      📋 1. Core Requirements (Failure Strictly Blocks Verified Gate)
                     </h3>
                     <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
-                      Rule: Zero UNVERIFIED allowed • Exhaustive Search required for NOT_FOUND_AFTER_SEARCH
+                      All 7 Required • Zero Placeholders or Heuristic Defaults Allowed
                     </span>
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                    {Array.isArray(agent2Detail.evidence) && agent2Detail.evidence.map((ev, idx) => {
-                      const isV = ev.status === 'VERIFIED';
-                      const isNF = ev.status === 'NOT_FOUND_AFTER_SEARCH';
-                      const isUnv = ev.status === 'UNVERIFIED';
-                      const badgeBg = isV ? 'rgba(16, 185, 129, 0.15)' : (isNF ? 'rgba(245, 158, 11, 0.15)' : (isUnv ? 'rgba(239, 68, 68, 0.15)' : '#1e293b'));
-                      const badgeColor = isV ? '#34d399' : (isNF ? '#fbbf24' : (isUnv ? '#f87171' : '#94a3b8'));
-                      const badgeBorder = isV ? '#10b981' : (isNF ? '#f59e0b' : (isUnv ? '#ef4444' : '#334155'));
+                    {(() => {
+                      const audit = agent2Detail.verification_audit || {};
+                      const reqMap = audit.required_fields || {};
+                      const keys = Object.keys(reqMap).length > 0
+                        ? Object.keys(reqMap)
+                        : ['company_name', 'canonical_domain', 'description', 'industry_sector', 'raw_storage_vault_path', 'crawled_page_text', 'extracted_word_count'];
 
-                      return (
-                        <div key={idx} style={{ background: '#0a101d', border: '1px solid #1e293b', borderRadius: '0.5rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
-                          <div style={{ flex: 1, minWidth: '260px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <span style={{ fontFamily: 'monospace', fontWeight: 800, color: '#f8fafc', fontSize: '0.85rem' }}>
-                                {ev.field}
-                              </span>
-                              <span style={{ fontSize: '0.68rem', fontWeight: 800, padding: '0.15rem 0.45rem', borderRadius: '0.25rem', background: badgeBg, color: badgeColor, border: `1px solid ${badgeBorder}` }}>
-                                {ev.status}
-                              </span>
+                      return keys.map((key, idx) => {
+                        const fieldData = reqMap[key] || {};
+                        const evRow = (agent2Detail.evidence || []).find(e => e.field === key) || {};
+                        const status = fieldData.status || evRow.status || 'UNVERIFIED';
+                        const isVal = status === 'VALIDATED' || status === 'VERIFIED';
+                        const val = fieldData.value || evRow.value;
+                        const label = fieldData.label || key.replace(/_/g, ' ').toUpperCase();
+                        const snippet = fieldData.evidence || evRow.evidence_snippet;
+                        const source = fieldData.source_url || evRow.source_url;
+
+                        const badgeBg = isVal ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)';
+                        const badgeColor = isVal ? '#34d399' : '#f87171';
+                        const badgeBorder = isVal ? '#10b981' : '#ef4444';
+
+                        return (
+                          <div key={idx} style={{ background: '#0a101d', border: `1px solid ${isVal ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`, borderRadius: '0.5rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
+                            <div style={{ flex: 1, minWidth: '260px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span style={{ fontWeight: 800, color: '#f8fafc', fontSize: '0.85rem' }}>
+                                  {isVal ? '✓' : '✗'} {label}
+                                </span>
+                                <span style={{ fontSize: '0.68rem', fontWeight: 800, padding: '0.15rem 0.45rem', borderRadius: '0.25rem', background: badgeBg, color: badgeColor, border: `1px solid ${badgeBorder}` }}>
+                                  {status}
+                                </span>
+                              </div>
+                              <div style={{ color: val ? '#67e8f9' : '#64748b', fontSize: '0.82rem', marginTop: '0.25rem', fontWeight: 600 }}>
+                                {val ? String(val) : '(Missing or generic placeholder)'}
+                              </div>
+                              {snippet && (
+                                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem', fontStyle: 'italic' }}>
+                                  Provenance: {String(snippet).slice(0, 180)}{String(snippet).length > 180 ? '...' : ''}
+                                </div>
+                              )}
                             </div>
-                            <div style={{ color: ev.value ? '#67e8f9' : '#64748b', fontSize: '0.82rem', marginTop: '0.25rem', fontWeight: 600 }}>
-                              {ev.value ? ev.value : '(No reliable evidence found)'}
-                            </div>
-                            {ev.evidence_snippet && (
-                              <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem', fontStyle: 'italic' }}>
-                                Provenance: {ev.evidence_snippet.slice(0, 180)}{ev.evidence_snippet.length > 180 ? '...' : ''}
+                            {source && (
+                              <div style={{ fontSize: '0.72rem', color: '#64748b', textAlign: 'right', flexShrink: 0 }}>
+                                <span style={{ color: '#60a5fa' }}>Source: {String(source).slice(0, 35)}</span>
                               </div>
                             )}
                           </div>
-                          <div style={{ fontSize: '0.72rem', color: '#64748b', textAlign: 'right', flexShrink: 0 }}>
-                            <div>Method: <strong style={{ color: '#cbd5e1' }}>{ev.verification_method || 'investigation'}</strong></div>
-                            {ev.investigation?.search_attempts !== undefined && (
-                              <div>Searches: <strong style={{ color: '#38bdf8' }}>{ev.investigation.search_attempts} rounds</strong> | Sources: <strong style={{ color: '#a78bfa' }}>{ev.investigation.sources_checked?.length || 1}</strong></div>
-                            )}
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+
+                {/* 1.5. RECOMMENDED & CONDITIONAL ENRICHMENT CHECKLIST */}
+                <div style={{ marginBottom: '1.75rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <h3 style={{ fontSize: '0.85rem', fontWeight: 900, color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
+                      📋 2. Recommended & Conditional Intelligence (Completeness Contributors)
+                    </h3>
+                    <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                      Enriches lead dossier without artificially blocking legitimate companies
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                    {(() => {
+                      const audit = agent2Detail.verification_audit || {};
+                      const recMap = audit.recommended_fields || {};
+                      const keys = Object.keys(recMap).length > 0
+                        ? Object.keys(recMap)
+                        : ['location_region', 'verified_contact_email', 'company_size_tier', 'company_linkedin_url', 'key_people', 'founded_year', 'phone'];
+
+                      return keys.map((key, idx) => {
+                        const fieldData = recMap[key] || {};
+                        const status = fieldData.status || 'NOT_FOUND';
+                        const isVal = status === 'VALIDATED' || status === 'VERIFIED';
+                        const val = fieldData.value;
+                        const label = fieldData.label || key.replace(/_/g, ' ').toUpperCase();
+                        const snippet = fieldData.evidence;
+
+                        return (
+                          <div key={idx} style={{ background: '#0a101d', border: '1px solid #1e293b', borderRadius: '0.5rem', padding: '0.65rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                            <div style={{ flex: 1, minWidth: '240px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span style={{ fontWeight: 700, color: isVal ? '#f8fafc' : '#94a3b8', fontSize: '0.82rem' }}>
+                                  {isVal ? '✓' : '•'} {label}
+                                </span>
+                                <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '0.1rem 0.4rem', borderRadius: '0.25rem', background: isVal ? 'rgba(16, 185, 129, 0.12)' : 'rgba(148, 163, 184, 0.08)', color: isVal ? '#34d399' : '#64748b', border: `1px solid ${isVal ? '#10b981' : '#334155'}` }}>
+                                  {status}
+                                </span>
+                              </div>
+                              {val && (
+                                <div style={{ color: '#38bdf8', fontSize: '0.8rem', marginTop: '0.15rem' }}>
+                                  {String(val)}
+                                </div>
+                              )}
+                              {snippet && (
+                                <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.15rem' }}>
+                                  Evidence: {String(snippet).slice(0, 120)}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
 
@@ -1688,16 +1924,24 @@ export default function App() {
                     </h3>
                     <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '0.75rem', padding: '1rem', color: '#cbd5e1', fontSize: '0.88rem', lineHeight: '1.6' }}>
                       <div style={{ marginBottom: '0.6rem' }}>
-                        {agent2Detail.phase2_data.business_overview}
+                        {typeof agent2Detail.phase2_data.business_overview === 'object'
+                          ? (agent2Detail.phase2_data.business_overview?.text || JSON.stringify(agent2Detail.phase2_data.business_overview))
+                          : agent2Detail.phase2_data.business_overview}
                       </div>
                       {agent2Detail.phase2_data.target_customers && (
                         <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                          <strong style={{ color: '#60a5fa' }}>Target Customers:</strong> {agent2Detail.phase2_data.target_customers}
+                          <strong style={{ color: '#60a5fa' }}>Target Customers:</strong>{' '}
+                          {typeof agent2Detail.phase2_data.target_customers === 'object'
+                            ? (agent2Detail.phase2_data.target_customers?.text || JSON.stringify(agent2Detail.phase2_data.target_customers))
+                            : agent2Detail.phase2_data.target_customers}
                         </div>
                       )}
                       {agent2Detail.phase2_data.commercial_model && (
                         <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: '0.2rem' }}>
-                          <strong style={{ color: '#34d399' }}>Commercial Model:</strong> {agent2Detail.phase2_data.commercial_model}
+                          <strong style={{ color: '#34d399' }}>Commercial Model:</strong>{' '}
+                          {typeof agent2Detail.phase2_data.commercial_model === 'object'
+                            ? (agent2Detail.phase2_data.commercial_model?.text || JSON.stringify(agent2Detail.phase2_data.commercial_model))
+                            : agent2Detail.phase2_data.commercial_model}
                         </div>
                       )}
                     </div>
@@ -1854,12 +2098,32 @@ export default function App() {
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => setSelectedEntityId(null)}
-                    style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: '0.5rem', padding: '0.4rem 0.8rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
-                  >
-                    ✕ Close
-                  </button>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <button
+                      onClick={() => setSelectedAgent2Id(entityDetail.id || entityDetail.domain)}
+                      style={{
+                        background: '#1e293b',
+                        border: '1px solid #38bdf8',
+                        color: '#38bdf8',
+                        borderRadius: '0.5rem',
+                        padding: '0.45rem 0.85rem',
+                        cursor: 'pointer',
+                        fontSize: '0.78rem',
+                        fontWeight: 700,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem'
+                      }}
+                    >
+                      🔬 Open Verification Audit & Checklist ↗
+                    </button>
+                    <button
+                      onClick={() => setSelectedEntityId(null)}
+                      style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: '0.5rem', padding: '0.4rem 0.8rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
                 </div>
 
                 {/* 2-Column Main Layout matching uploaded screenshot */}

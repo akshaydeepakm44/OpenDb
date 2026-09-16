@@ -42,97 +42,133 @@ from app.normalization.normalizer import normalizer
 logger = logging.getLogger(__name__)
 
 
-def run_async(coro):
-    """Run async coroutine safely across platforms without 'Event loop is closed' errors."""
-    try:
-        return asyncio.run(coro)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+def _runner(coro):
+    if sys.platform == 'win32':
         try:
-            return loop.run_until_complete(coro)
-        finally:
-            try:
-                pending = asyncio.all_tasks(loop)
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-                loop.run_until_complete(loop.shutdown_asyncgens())
-            except Exception:
-                pass
-            loop.close()
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        except Exception:
+            pass
+    return asyncio.run(coro)
+
+
+def run_async(coro):
+    """
+    Run async coroutine safely across platforms.
+    Guarantees:
+    - coroutine executed exactly once
+    - never reuses an already awaited coroutine
+    - works with or without existing event loop, worker threads, and FastAPI dev mode
+    """
+    import concurrent.futures
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(_runner, coro).result()
+        else:
+            return _runner(coro)
+    except Exception as e:
+        logger.error(f"[run_async] Coroutine execution failed: {e}")
+        raise
 
 
 _worker_check_cache = {"active": False, "last_check": 0}
 
 def _has_active_celery_worker() -> bool:
+    """Non-blocking, truthful detection of active Celery worker on system."""
     import time
+    import os
     now = time.time()
     if now - _worker_check_cache["last_check"] < 5:
         return _worker_check_cache["active"]
 
+    is_active = False
     try:
-        from app.cache.redis_client import get_redis
-        if get_redis() is None:
-            _worker_check_cache["active"] = False
-            _worker_check_cache["last_check"] = now
-            return False
-
-        inspector = celery_app.control.inspect(timeout=1.0)
-        res = inspector.ping()
-        is_active = bool(res and len(res) > 0)
-        _worker_check_cache["active"] = is_active
-        _worker_check_cache["last_check"] = now
-        return is_active
+        import psutil
+        curr_pid = os.getpid()
+        parent_pid = os.getppid()
+        for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                pid = p.info['pid']
+                if pid in (curr_pid, parent_pid):
+                    continue
+                cmd = ' '.join(p.info.get('cmdline') or []).lower()
+                if ('celery' in cmd and 'worker' in cmd) and ('app.worker.celery_app' in cmd or 'celery.exe' in cmd):
+                    is_active = True
+                    break
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
     except Exception:
-        _worker_check_cache["active"] = False
-        _worker_check_cache["last_check"] = now
-        return False
+        is_active = False
+
+    _worker_check_cache["active"] = is_active
+    _worker_check_cache["last_check"] = now
+    return is_active
 
 
 def _dispatch_task(task_func, **kwargs):
     """
-    Enqueues Celery task strictly into Redis task queue with serialized trace context.
-    If Redis or Celery queue is unreachable, logs QUEUE_FAILED and raises RuntimeError.
-    Does NOT launch background daemon threads or pretend to queue work.
+    Enqueues Celery task into Redis task queue with serialized trace context and telemetry.
     """
     from app.audit.tracer import tracer, Checkpoint
     task_name = getattr(task_func, 'name', str(task_func))
     
-    # Inject active trace context into task kwargs if not already provided
     if "trace_ctx" not in kwargs:
         kwargs["trace_ctx"] = tracer.get_context_dict()
+    trace_ctx = kwargs["trace_ctx"] or {}
+    run_id = trace_ctx.get("run_id") or tracer.get_run_id() or "RUN-CELERY"
+    agent_id = trace_ctx.get("agent_id") or "AGENT-01"
 
     try:
         task_res = task_func.apply_async(kwargs=kwargs, queue="celery")
         task_id = getattr(task_res, "id", str(uuid.uuid4()))
         
-        has_worker = _has_active_celery_worker()
-        worker_note = "" if has_worker else " (WARNING: CELERY_WORKER_UNAVAILABLE - no worker actively consuming queue)"
-        
         tracer.log_event(
-            level="INFO" if has_worker else "WARNING",
+            level="INFO",
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="TASK_ENQUEUED",
-            message=f"Enqueued Celery task '{task_name}' into Redis queue (celery_task_id={task_id}){worker_note}",
+            message=f"Enqueued Celery task '{task_name}' into Redis queue (execution_mode=CELERY, task_id={task_id})",
             task_id=task_id,
             status="QUEUED",
-            extra={"has_active_worker": has_worker, "task": task_name, "celery_task_id": task_id}
+            extra={
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "execution_mode": "CELERY",
+                "status": "QUEUED",
+                "task": task_name,
+                "celery_task_id": task_id
+            }
         )
         return True
     except (TypeError, ValueError) as sig_err:
+        task_id = str(uuid.uuid4())
         tracer.log_event(
             level="ERROR",
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="QUEUE_DISPATCH_FAILED",
-            message=f"TASK_SIGNATURE_MISMATCH: Invalid arguments/signature for task '{task_name}': {sig_err}",
-            status="FAILED",
-            extra={"failure_class": "TASK_SIGNATURE_MISMATCH", "service": "CELERY", "task": task_name},
+            message=f"TASK_SIGNATURE_MISMATCH: Invalid arguments for task '{task_name}': {sig_err}",
+            task_id=task_id,
+            status="DISPATCH_FAILED",
+            extra={
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "execution_mode": "DISPATCH_FAILED",
+                "status": "FAILED",
+                "exception": str(sig_err),
+                "failure_class": "TASK_SIGNATURE_MISMATCH",
+                "task": task_name
+            },
             exc_info=True
         )
-        raise RuntimeError(f"QUEUE_FAILED (TASK_SIGNATURE_MISMATCH): Celery task signature rejected for '{task_name}' ({sig_err})")
+        raise RuntimeError(f"QUEUE_FAILED (TASK_SIGNATURE_MISMATCH): Celery signature rejected for '{task_name}' ({sig_err})")
     except Exception as e:
+        task_id = str(uuid.uuid4())
         err_type = type(e).__name__
         is_conn = any(x in str(e).lower() or x in err_type.lower() for x in ["connection", "timeout", "socket", "refused", "auth"])
         failure_class = "REDIS_CONNECTION_FAILED" if is_conn else "TASK_DISPATCH_FAILED"
@@ -141,13 +177,145 @@ def _dispatch_task(task_func, **kwargs):
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="QUEUE_DISPATCH_FAILED",
             message=f"{failure_class}: Redis task queue unreachable for task '{task_name}': {e}",
+            task_id=task_id,
             status="FAILED",
-            extra={"failure_class": failure_class, "service": "REDIS", "task": task_name},
+            extra={
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "execution_mode": "DISPATCH_FAILED",
+                "status": "FAILED",
+                "exception": str(e),
+                "failure_class": failure_class,
+                "task": task_name
+            },
             exc_info=True
         )
         raise RuntimeError(f"QUEUE_FAILED ({failure_class}): Redis task queue unreachable ({e})")
 
-_safe_dispatch = _dispatch_task
+
+def _safe_dispatch(task_func, **kwargs):
+    """
+    Controlled Task Dispatch Execution Adapter:
+    1. If an active Celery worker exists: Dispatches via Celery Redis queue (execution_mode=CELERY).
+    2. If no Celery worker exists: Runs the EXACT SAME task function locally in a background daemon thread
+       (execution_mode=LOCAL_THREAD) with full telemetry (run_id, task_id, agent_id, started_at, completed_at, status, exception).
+    3. If dispatch fails: logs explicit DISPATCH_FAILED state.
+    """
+    from app.audit.tracer import tracer, Checkpoint
+    task_name = getattr(task_func, 'name', str(task_func))
+    
+    if "trace_ctx" not in kwargs:
+        kwargs["trace_ctx"] = tracer.get_context_dict()
+    trace_ctx = kwargs["trace_ctx"] or {}
+    run_id = trace_ctx.get("run_id") or tracer.get_run_id() or "RUN-LOCAL"
+    agent_id = trace_ctx.get("agent_id") or "AGENT-01"
+    task_id = str(uuid.uuid4())
+
+    has_worker = _has_active_celery_worker()
+
+    if has_worker:
+        try:
+            return _dispatch_task(task_func, **kwargs)
+        except Exception as dispatch_err:
+            logger.warning(f"[_safe_dispatch] Celery dispatch failed for {task_name}, falling back to LOCAL_THREAD: {dispatch_err}")
+
+    # Controlled Fallback: LOCAL_THREAD execution mode
+    execution_mode = "LOCAL_THREAD"
+    tracer.log_event(
+        level="INFO",
+        checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+        event="TASK_ENQUEUED",
+        message=f"Task '{task_name}' dispatched to local background thread (execution_mode=LOCAL_THREAD, task_id={task_id})",
+        task_id=task_id,
+        status="QUEUED",
+        extra={
+            "run_id": run_id,
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "execution_mode": execution_mode,
+            "status": "QUEUED",
+            "task": task_name
+        }
+    )
+
+    def _execute_local_thread():
+        started_at = utc_now().isoformat()
+        if trace_ctx:
+            tracer.restore_context_dict(trace_ctx)
+        tracer.set_context(agent_id=agent_id, task_id=task_id, run_id=run_id)
+
+        tracer.log_event(
+            level="INFO",
+            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+            event="TASK_STARTED",
+            message=f"Starting task '{task_name}' in local thread (execution_mode=LOCAL_THREAD, task_id={task_id})",
+            task_id=task_id,
+            status="STARTED",
+            extra={
+                "run_id": run_id,
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "execution_mode": execution_mode,
+                "status": "STARTED",
+                "started_at": started_at,
+                "task": task_name
+            }
+        )
+        try:
+            # Execute the EXACT same Celery task function via apply()
+            res = task_func.apply(kwargs=kwargs)
+            completed_at = utc_now().isoformat()
+            tracer.log_event(
+                level="INFO",
+                checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+                event="TASK_COMPLETED",
+                message=f"Task '{task_name}' completed successfully (execution_mode=LOCAL_THREAD, task_id={task_id})",
+                task_id=task_id,
+                status="SUCCESS",
+                extra={
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "execution_mode": execution_mode,
+                    "status": "SUCCESS",
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                    "exception": None,
+                    "task": task_name
+                }
+            )
+            return res
+        except Exception as exc:
+            completed_at = utc_now().isoformat()
+            tracer.log_event(
+                level="ERROR",
+                checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+                event="TASK_FAILED",
+                message=f"Task '{task_name}' failed in local thread: {exc}",
+                task_id=task_id,
+                status="FAILED",
+                extra={
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "execution_mode": execution_mode,
+                    "status": "FAILED",
+                    "started_at": started_at,
+                    "completed_at": completed_at,
+                    "exception": str(exc),
+                    "task": task_name
+                },
+                exc_info=True
+            )
+
+    thread = threading.Thread(
+        target=_execute_local_thread,
+        name=f"local-task-{task_name[:15]}-{task_id[:6]}",
+        daemon=True
+    )
+    thread.start()
+    return True
 
 
 

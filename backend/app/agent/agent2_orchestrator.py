@@ -217,6 +217,53 @@ class Agent2Orchestrator:
         if not text_corpus and doc.markdown_path:
             text_corpus = file_storage.read_file_content(doc.markdown_path) or ""
 
+        # ── Coordinated Single Crawl Session for Agent 2 ─────────────────────────
+        # Per §8-§15 of Verification Contract: Run ONE controlled crawl session,
+        # discover/crawl target subpages (/about, /contact, /team, etc.), save to MinIO,
+        # register in GlobalLeadSubpage, and aggregate text for investigators.
+        subpages_done = metadata.get("subpages_crawled") or []
+        if len(subpages_done) < 2:
+            try:
+                target_url = doc.url or f"https://{domain}"
+                logger.info(f"AGENT2_BROWSER_CREATED run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
+                crawl_items = await crawler_service.crawl_site(target_url, max_depth=1, max_pages=4)
+                for item in crawl_items:
+                    logger.info(f"AGENT2_PAGE_CRAWLED url={item.url} run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
+                    try:
+                        slug = re.sub(r"[^a-zA-Z0-9_-]", "_", urlparse(item.url).path.strip("/")) or "index"
+                        md_rel = f"companies/{domain}/pages/{slug}.md"
+                        file_storage.save_file(md_rel, (item.markdown or item.text or "").encode("utf-8"), content_type="text/markdown")
+                        if item.html_content:
+                            html_rel = f"companies/{domain}/pages/{slug}.html"
+                            file_storage.save_file(html_rel, item.html_content.encode("utf-8"), content_type="text/html")
+
+                        from app.persistence.models import GlobalLead, GlobalLeadSubpage
+                        gl = db.query(GlobalLead).filter(GlobalLead.domain == domain).first()
+                        if gl:
+                            existing_sub = db.query(GlobalLeadSubpage).filter(GlobalLeadSubpage.page_url == item.url).first()
+                            if not existing_sub:
+                                db.add(GlobalLeadSubpage(
+                                    global_lead_id=gl.id,
+                                    domain=domain,
+                                    page_url=item.url,
+                                    minio_object_path=md_rel
+                                ))
+                                db.commit()
+                    except Exception as sub_err:
+                        logger.debug(f"[Agent 2] Subpage persist error: {sub_err}")
+
+                    if item.text and item.text not in text_corpus:
+                        text_corpus += "\n\n" + item.text
+            except Exception as crawl_err:
+                logger.warning(f"[Agent 2] Coordinated crawl error for {domain}: {crawl_err}")
+            finally:
+                logger.info(f"AGENT2_BROWSER_CLOSED run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
+
+        # Protect existing valid company name & title
+        if not session.company_name or session.company_name.lower() in ["unknown", "index", "discovered entity"]:
+            if doc.title:
+                session.company_name = doc.title
+
         field_results: Dict[str, Any] = {}
 
         # 1. Raw Storage Vault Path (system fact)
@@ -512,27 +559,104 @@ class Agent2Orchestrator:
 
     async def finalize_verification_and_sync(self, session: Agent2VerificationSession, db) -> Dict[str, Any]:
         """
-        Final Verification Gate & Transactional Outbox Promotion to PostgreSQL.
+        Final Authoritative Verification Gate & Transactional Outbox Promotion to PostgreSQL.
+        INVARIANT 2 & 4: Agent 2 completion alone does NOT mean VERIFIED.
+        Only a PASS from the Verification Contract allows status = VERIFIED and UniversalRecord creation.
         """
+        from app.verification.verification_contract import verification_contract
+        from app.audit.tracer import tracer, Checkpoint
+        from app.persistence.models import UniversalRecord
+
         session.status = "FINAL_VERIFICATION"
         db.commit()
 
-        # Mark as VERIFIED
+        # Authoritative Contract Evaluation
+        evaluation = verification_contract.evaluate_session(session, db)
+        session.phase2_data = session.phase2_data or {}
+        session.phase2_data["contract_evaluation"] = evaluation
+
+        # ── GATE CHECK ────────────────────────────────────────────────────────
+        if not evaluation["is_verified"]:
+            failed_state = evaluation["verification_state"]
+            session.status = failed_state
+            session.verified_at = None
+            session.investigation_log.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "state": failed_state,
+                "message": f"Verification Contract evaluated: {failed_state}. Completeness: {evaluation['completeness_score']}%. Missing required: {evaluation['missing_required_fields']}",
+                "evaluation": evaluation
+            })
+
+            doc = db.query(Document).filter(Document.id == session.document_id).first()
+            if doc:
+                doc.lifecycle_state = failed_state
+                # Downgrade any stale UniversalRecord if previously marked verified
+                univ = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+                if univ and univ.status == "VERIFIED":
+                    univ.status = failed_state
+                    univ.metadata_json = {"verification_contract": evaluation}
+            db.commit()
+
+            tracer.log_event(
+                level="WARNING",
+                checkpoint=Checkpoint.CP24_VERIFICATION_GATE,
+                event="VERIFICATION_CONTRACT_FAILED",
+                message=f"Agent 2 verification contract FAILED for {session.domain}: {failed_state} (score={evaluation['completeness_score']}%)",
+                agent_id="AGENT-02",
+                lead_id=session.domain,
+                status=failed_state,
+                extra=evaluation
+            )
+            return {
+                "final_status": failed_state,
+                "is_verified": False,
+                "verified_at": None,
+                "completeness_score": evaluation["completeness_score"],
+                "missing_required_fields": evaluation["missing_required_fields"],
+                "sync_result": {"status": "gated_unverified"}
+            }
+
+        # ── CONTRACT PASSED: Mark as VERIFIED ─────────────────────────────────
         session.status = "VERIFIED"
         session.verified_at = utc_now()
         session.investigation_log.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "state": "VERIFIED",
-            "message": "Final Verification Gate passed successfully."
+            "message": f"Final Verification Gate PASSED (Completeness: {evaluation['completeness_score']}%).",
+            "evaluation": evaluation
         })
         db.commit()
 
-        from app.audit.tracer import tracer, Checkpoint
+        # Update Document and create/update authoritative UniversalRecord
+        doc = db.query(Document).filter(Document.id == session.document_id).first()
+        if doc:
+            doc.lifecycle_state = "VERIFIED"
+            univ = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+            if not univ:
+                univ = UniversalRecord(
+                    document_id=doc.id,
+                    canonical_name=session.company_name,
+                    entity_type=session.phase1_data.get("industry_sector", {}).get("value") or "Organization",
+                    description=session.phase2_data.get("business_overview", {}).get("text") or doc.title or "",
+                    url=f"https://{session.domain}",
+                    country="Global",
+                    status="VERIFIED",
+                    confidence=evaluation.get("confidence", 0.95),
+                    metadata_json={"verification_contract": evaluation}
+                )
+                db.add(univ)
+            else:
+                univ.status = "VERIFIED"
+                univ.canonical_name = session.company_name
+                univ.description = session.phase2_data.get("business_overview", {}).get("text") or univ.description
+                univ.metadata_json = {"verification_contract": evaluation}
+            db.commit()
+
         tracer.log_event(
             level="INFO",
             checkpoint=Checkpoint.CP24_VERIFICATION_GATE,
             event="FINAL_VERIFICATION_PASSED",
-            message=f"Agent 2 final verification PASSED for {session.domain} ({session.company_name})",
+            message=f"Agent 2 final verification PASSED for {session.domain} ({session.company_name}) [Score: {evaluation['completeness_score']}%]",
             agent_id="AGENT-02",
             lead_id=session.domain,
             status="VERIFIED"
@@ -570,7 +694,7 @@ class Agent2Orchestrator:
             "company_size": session.phase1_data.get("company_size_tier", {}).get("value") or "NOT_FOUND_AFTER_SEARCH",
             "verified_emails": [session.phase1_data.get("verified_contact_email", {}).get("value")] if session.phase1_data.get("verified_contact_email", {}).get("value") else [],
             "people": people_payload,
-            "quality_score": 9.2
+            "quality_score": float(evaluation["completeness_score"])
         }
 
         outbox_sync_service.queue_for_postgres_sync(
@@ -618,6 +742,8 @@ class Agent2Orchestrator:
 
         return {
             "final_status": session.status,
+            "is_verified": True,
+            "completeness_score": evaluation["completeness_score"],
             "verified_at": session.verified_at.isoformat() if session.verified_at else None,
             "sync_result": sync_result
         }

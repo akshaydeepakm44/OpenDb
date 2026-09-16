@@ -60,6 +60,8 @@ backend/trace_result.txt
 logs/
 tmp/
 temp/
+scratch/
+backend/scratch/
 
 # =========================
 # IDE / OS / System
