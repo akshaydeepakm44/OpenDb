@@ -83,8 +83,11 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
 
-  # ─── Backend API (from Docker Hub) ───────────────────────────────────────
+  # ─── Backend API (from local source or image) ───────────────────────────
   backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     image: akshaydeepakm/opendb:backend
     container_name: opendb_backend
     restart: unless-stopped
@@ -116,8 +119,11 @@ services:
       minio-init:
         condition: service_completed_successfully
 
-  # ─── Celery Worker (from Docker Hub backend image) ─────────────────────────
+  # ─── Celery Worker (async task executor) ─────────────────────────────────
   celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     image: akshaydeepakm/opendb:backend
     container_name: opendb_celery
     restart: unless-stopped
@@ -148,8 +154,11 @@ services:
       minio-init:
         condition: service_completed_successfully
 
-  # ─── Frontend UI (from Docker Hub) ───────────────────────────────────────
+  # ─── Frontend UI ──────────────────────────────────────────────────────────
   frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
     image: akshaydeepakm/opendb:frontend
     container_name: opendb_frontend
     restart: unless-stopped
