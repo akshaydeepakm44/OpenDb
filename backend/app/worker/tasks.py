@@ -22,22 +22,27 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
 
+from app.config import settings
 from app.worker.celery_app import celery_app
 from app.persistence.database import SessionLocal
 from app.persistence.repositories import repo
 from app.persistence.models import (
     SearchHistory, Document, UniversalRecord, DomainRecord,
     VerificationRecord, ExtractedFact, BatchResult, CrawlError,
-    CrawlActivityLog, utc_now,
+    CrawlActivityLog, GlobalLead, ArtifactOutbox, utc_now,
 )
 
 from app.crawler.searxng_service import searxng_service
 from app.crawler.crawler_service import crawler_service
 from app.crawler.listing_detector import listing_detector
 from app.crawler.quality_filter import quality_filter
+from app.crawler.url_discovery import url_discovery
+from app.crawler.distributed_slot_manager import slot_manager
+from app.safety.resource_governor import governor
 from app.storage.file_storage import file_storage
 from app.extraction.extractor import extraction_pipeline
 from app.normalization.normalizer import normalizer
+from app.cache.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -431,11 +436,29 @@ def search_and_discover_task(
         if not search_results:
             return {"keyword": keyword, "sources_found": 0, "enqueued_crawls": 0}
 
-        # Process each search result URL
+        # Process each search result URL with deduplication and backpressure
         enqueued = 0
+        max_cycle_results = getattr(settings, "MAX_DISCOVERY_RESULTS_PER_CYCLE", 10)
+        high_watermark = getattr(settings, "DISCOVERY_QUEUE_HIGH_WATERMARK", 100)
+        r = get_redis()
+
         for res in search_results:
+            if enqueued >= max_cycle_results:
+                logger.info(f"[Worker A] Reached max discovery limit ({max_cycle_results}) for cycle.")
+                break
+
+            # Queue Backpressure Check
+            if r is not None:
+                try:
+                    current_crawl_q = r.llen("crawl") + r.llen("celery")
+                    if current_crawl_q >= high_watermark:
+                        logger.warning(f"[Worker A] Crawl queue at capacity ({current_crawl_q}>={high_watermark}). Pausing enqueue.")
+                        break
+                except Exception:
+                    pass
+
             target_url = res.get("url")
-            # Stage 1: Pre-crawl qualification (focus on 1-200 employee startups/SMBs, allow UNKNOWN)
+            # Stage 1: Pre-crawl qualification
             qual = quality_filter.qualify_company_candidate(
                 title=res.get("title", ""),
                 snippet=res.get("snippet", ""),
@@ -445,6 +468,35 @@ def search_and_discover_task(
                 _log_activity(db, url=target_url, stage="FILTER", domain=domain,
                               status="FILTERED", message=f"Candidate filtered ({qual.get('priority')}): {qual['reason']}", batch_id=batch_id)
                 continue
+
+            # Canonical Domain Deduplication Check
+            reg_domain = url_discovery.get_canonical_registrable_domain(target_url)
+            if reg_domain:
+                if r is not None:
+                    try:
+                        if r.get(f"opendb:domain:active:{reg_domain}") or r.get(f"opendb:domain:crawled:{reg_domain}"):
+                            _log_activity(db, url=target_url, stage="FILTER", domain=domain,
+                                          status="DUPLICATE", message=f"Domain '{reg_domain}' already active/crawled (Redis lock)", batch_id=batch_id)
+                            continue
+                    except Exception:
+                        pass
+
+                # Check PostgreSQL authoritative lake
+                try:
+                    exists_lead = db.query(GlobalLead).filter(GlobalLead.domain == reg_domain).first()
+                    if exists_lead:
+                        _log_activity(db, url=target_url, stage="FILTER", domain=domain,
+                                      status="DUPLICATE", message=f"Domain '{reg_domain}' already exists in PostgreSQL lake", batch_id=batch_id)
+                        continue
+                except Exception:
+                    pass
+
+                # Mark active in Redis temporary lock (5 minutes)
+                if r is not None:
+                    try:
+                        r.set(f"opendb:domain:active:{reg_domain}", "1", ex=300)
+                    except Exception:
+                        pass
 
             # Stage 2: Classify listing vs entity
             classification = listing_detector.classify_url(target_url)
@@ -459,7 +511,7 @@ def search_and_discover_task(
                 parsed_u = urlparse(target_url)
                 entity_root_url = f"{parsed_u.scheme}://{parsed_u.netloc}/" if parsed_u.netloc else target_url
                 _log_activity(db, url=entity_root_url, stage="CRAWL", domain=domain,
-                              status="QUEUED", message=f"Qualified ({qual['company_size']}) — queuing root entity crawl ({parsed_u.netloc})",
+                              status="QUEUED", message=f"Qualified ({qual['company_size']}) — queuing root entity crawl ({reg_domain or parsed_u.netloc})",
                               batch_id=batch_id)
                 _safe_dispatch(crawl_entity_task, url=entity_root_url, domain=domain, batch_id=batch_id)
                 enqueued += 1
@@ -628,21 +680,23 @@ def crawl_entity_task(
     finally:
         db.close()
 
-    # ── Stage 1: Crawl homepage (outside DB transaction) ─────────────────────
+    # ── Stage 1: Intelligent Single-Session Crawl (outside DB transaction) ──
+    max_pages = getattr(settings, "MAX_PAGES_PER_DOMAIN_AGENT1", 4)
     try:
         crawled_items = run_async(
             crawler_service.crawl_site(
                 starting_url=url,
-                max_depth=2,
-                max_pages=MAX_ENTITY_PAGES,
+                max_depth=1,
+                max_pages=max_pages,
+                slot_type="standard"
             )
         )
     except Exception as crawl_err:
-        logger.error(f"[Worker B] Homepage crawl failed for {url}: {crawl_err}")
+        logger.error(f"[Worker B] Intelligent crawl failed for {url}: {crawl_err}")
         db = SessionLocal()
         try:
             _log_activity(db, url=url, stage="CRAWL", domain=domain,
-                          status="ERROR", message=f"Homepage crawl failed: {crawl_err}",
+                          status="ERROR", message=f"Intelligent crawl failed: {crawl_err}",
                           batch_id=batch_id)
         finally:
             db.close()
@@ -660,17 +714,61 @@ def crawl_entity_task(
 
     item = crawled_items[0]
     word_count = item.metadata.get("word_count", 0) if item.metadata else 0
+    clean_domain = base_host.replace("www.", "").lower()
 
-    # ── Stage 1.5: Reject HTTP error status codes (403 Forbidden, 404, 500, etc.) ──
+    # ── Stage 1.5: Nuanced HTTP error / 403 WAF Handling ──
     if item.http_status and item.http_status >= 400:
-        logger.warning(f"[Worker B] HTTP error/blocked ({item.http_status}) for {url} — skipping storage.")
-        db = SessionLocal()
-        try:
-            _log_activity(db, url=url, stage="CRAWL", domain=domain,
-                          status="FILTERED", message=f"HTTP {item.http_status} error/blocked", batch_id=batch_id)
-        finally:
-            db.close()
-        return {"status": "http_error", "http_status": item.http_status, "url": url}
+        if item.http_status in (403, 429):
+            # Nuanced 403 / 429 handling: Bot protection or WAF does NOT mean non-existent company!
+            logger.warning(f"[Worker B] HTTP {item.http_status} WAF/bot-protection for {url} — preserving for Agent 2 SERP verification.")
+            db = SessionLocal()
+            try:
+                doc = db.query(Document).filter(Document.url == url).first()
+                if not doc:
+                    derived_waf_title = clean_domain.split(".")[0].replace("-", " ").title()
+                    doc = repo.create_document(
+                        db=db,
+                        crawl_job_id=None,
+                        source_id=source_id,
+                        url=url,
+                        canonical_url=url,
+                        title=derived_waf_title,
+                        content_type="text/html",
+                        http_status=item.http_status,
+                        content_hash=f"waf_{item.http_status}_{clean_domain}",
+                        raw_path=None,
+                        markdown_path=None,
+                        text_path=None,
+                        word_count=0,
+                        links_count=0,
+                        images_count=0
+                    )
+                doc.lifecycle_state = "BLOCKED_NEEDS_ALTERNATIVE_EVIDENCE"
+                doc.http_status = item.http_status
+                db.commit()
+                doc_id_val = str(doc.id)
+                _log_activity(db, url=url, stage="CRAWL", domain=domain,
+                              status="BLOCKED", message=f"HTTP {item.http_status} bot-protection -> Route to Agent 2 for search evidence verification", batch_id=batch_id)
+                _safe_dispatch(agent2_process_card_task, document_id=doc_id_val)
+            finally:
+                db.close()
+            return {
+                "status": "blocked",
+                "http_status": item.http_status,
+                "lifecycle_state": "BLOCKED_NEEDS_ALTERNATIVE_EVIDENCE",
+                "url": url,
+                "domain": clean_domain
+            }
+        else:
+            # 404 or server 500 permanent error
+            logger.warning(f"[Worker B] Permanent HTTP error ({item.http_status}) for {url} — skipping storage.")
+            db = SessionLocal()
+            try:
+                _log_activity(db, url=url, stage="CRAWL", domain=domain,
+                              status="FILTERED", message=f"HTTP {item.http_status} error", batch_id=batch_id)
+            finally:
+                db.close()
+            return {"status": "http_error", "http_status": item.http_status, "url": url}
 
     # ── Stage 2: Content quality filter (MUST pass before persisting document) ──
     keep, reason = quality_filter.filter_content(
@@ -690,8 +788,7 @@ def crawl_entity_task(
             db.close()
         return {"status": "filtered", "reason": reason, "url": url}
 
-    # ── Stage 3: Save to MinIO raw storage & persist Document Record in SQLite ───────────
-    clean_domain = base_host.replace("www.", "").lower()
+    # ── Stage 3: Save to MinIO raw storage (with durable outbox fallback) ───────
     raw_artifacts_list = []
     crawl_ts = datetime.now(timezone.utc).isoformat()
 
@@ -736,44 +833,28 @@ def crawl_entity_task(
     if not derived_title:
         derived_title = "Unknown"
 
-    # ── Stage 4: Crawl prioritized subpages (strictly evidence-based, 404/error = skip) ──
-    base = urlparse(url)
-    base_url = f"{base.scheme}://{base.netloc}"
+    # ── Stage 4: Single-Session Subpage Artifacts (NO extra browser launches!) ──
     additional_text = []
     subpages_crawled_urls = []
-    seen_subpaths = set()
 
-    for subpath in ENTITY_SUBPAGES:
-        subpage_url = f"{base_url}{subpath}"
-        if subpage_url in seen_subpaths:
-            continue
-        seen_subpaths.add(subpage_url)
-        try:
-            sub_items = run_async(
-                crawler_service.crawl_site(
-                    starting_url=subpage_url, max_depth=1, max_pages=1
-                )
+    for sub_item in crawled_items[1:]:
+        if sub_item.text and (sub_item.http_status or 200) < 400:
+            additional_text.append(sub_item.text)
+            subpages_crawled_urls.append(sub_item.url)
+            sub_slug = urlparse(sub_item.url).path.strip("/").replace("/", "_") or "subpage"
+            _, sub_md_path = file_storage.save_company_page_artifact(
+                domain=clean_domain,
+                page_slug=sub_slug,
+                content=sub_item.markdown or sub_item.text or "",
+                ext="md",
+                metadata={
+                    "source_url": sub_item.url,
+                    "page_type": sub_slug,
+                    "crawl_timestamp": crawl_ts,
+                    "crawl_job_id": batch_id or ""
+                }
             )
-            if sub_items and sub_items[0] and sub_items[0].text and sub_items[0].http_status == 200:
-                sub_item = sub_items[0]
-                additional_text.append(sub_item.text)
-                subpages_crawled_urls.append(subpage_url)
-                sub_slug = subpath.strip("/").replace("/", "_") or "subpage"
-                _, sub_md_path = file_storage.save_company_page_artifact(
-                    domain=clean_domain,
-                    page_slug=sub_slug,
-                    content=sub_item.markdown or sub_item.text or "",
-                    ext="md",
-                    metadata={
-                        "source_url": subpage_url,
-                        "page_type": sub_slug,
-                        "crawl_timestamp": crawl_ts,
-                        "crawl_job_id": batch_id or ""
-                    }
-                )
-                raw_artifacts_list.append(sub_md_path)
-        except Exception:
-            pass  # Non-existing subpages are cleanly skipped without guessing
+            raw_artifacts_list.append(sub_md_path)
 
     # Combine crawled evidence text for fact extraction
     enriched_text = item.text or ""
@@ -803,7 +884,7 @@ def crawl_entity_task(
         "crawl_job_id": batch_id or "",
     }
 
-    # ── Stage 6: Persist SQLite Staging Document Record & STOP ──────────────────────────
+    # ── Stage 6: Persist Staging Document Record & Enqueue to Agent 2 ────────────
     db = SessionLocal()
     try:
         if existing_doc_id:
@@ -849,24 +930,33 @@ def crawl_entity_task(
             doc.raw_metadata = raw_metadata_payload
             db.commit()
 
-        doc_id = doc.id
+        doc_id = str(doc.id)
         _log_activity(
             db, url=url, stage="CRAWL", domain=domain,
             status="OK",
-            message=f"Agent 1 Crawled OK — Staging Card recorded [CRAWLED_PENDING_AGENT_2] with {len(raw_artifacts_list)} MinIO artifacts. AGENT 1 STOPS.",
+            message=f"Agent 1 Crawled OK — Single-session ({len(crawled_items)} pages) recorded [CRAWLED_PENDING_AGENT_2].",
             batch_id=batch_id
         )
 
-        logger.info(f"[Agent 1] Successfully crawled and stored {clean_domain}. Staging record {doc_id} created. AGENT 1 STOPS.")
+        logger.info(f"[Agent 1] Successfully crawled {clean_domain} in single browser session. Staging record {doc_id} created.")
 
-        # STRICT AGENT 1 BOUNDARY: Stop here. Do not call extraction, people search, or Postgres verified lake.
+        # Agent 1 -> Agent 2 handoff (respecting verification queue watermarks)
+        r = get_redis()
+        verif_q = r.llen("verification") if r is not None else 0
+        max_verif_q = getattr(settings, "VERIFICATION_QUEUE_HIGH_WATERMARK", 50)
+        if verif_q < max_verif_q:
+            _safe_dispatch(agent2_process_card_task, document_id=doc_id)
+            logger.info(f"[Worker B] Automatically enqueued card {doc_id} ({clean_domain}) to Agent 2 verification queue.")
+        else:
+            logger.info(f"[Worker B] Verification queue at high watermark ({verif_q}>={max_verif_q}). Card {doc_id} ready in PostgreSQL for Agent 2.")
+
         return {
             "status": "success",
             "lifecycle_state": "CRAWLED_PENDING_AGENT_2",
             "document_id": doc_id,
             "domain": clean_domain,
             "url": url,
-            "pages_crawled": 1 + len(subpages_crawled_urls),
+            "pages_crawled": len(crawled_items),
             "minio_artifacts": raw_artifacts_list,
             "raw_metadata": raw_metadata_payload,
         }

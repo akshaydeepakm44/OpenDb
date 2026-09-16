@@ -114,19 +114,85 @@ class StorageManager:
     def calculate_hash(content: bytes) -> str:
         return hashlib.sha256(content).hexdigest()
 
-    def _put_object(self, object_name: str, content_bytes: bytes, content_type: str = "application/octet-stream") -> str:
+    def _stage_to_outbox(self, object_name: str, content_bytes: bytes, content_type: str, domain: str = "") -> str:
+        """Stage file locally and register in durable PostgreSQL ArtifactOutbox table."""
+        staging_dir = Path(settings.RAW_STORAGE_DIR) / "staging"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        sha256 = self.calculate_hash(content_bytes)
+        local_file = staging_dir / f"{sha256}.bin"
+        local_file.write_bytes(content_bytes)
+
+        try:
+            from app.persistence.database import SessionLocal
+            from app.persistence.models import ArtifactOutbox, utc_now
+            with SessionLocal() as db:
+                outbox_rec = ArtifactOutbox(
+                    domain=domain,
+                    object_name=object_name,
+                    bucket_name=self.bucket_name,
+                    content_type=content_type,
+                    file_size_bytes=len(content_bytes),
+                    sha256_hash=sha256,
+                    local_staging_path=str(local_file),
+                    status="PENDING",
+                    retry_count=0,
+                    created_at=utc_now(),
+                )
+                db.add(outbox_rec)
+                db.commit()
+                logger.info(f"[StorageManager] MinIO degraded: staged {object_name} ({len(content_bytes)} bytes) to durable ArtifactOutbox.")
+        except Exception as db_err:
+            logger.warning(f"[StorageManager] Failed to write to ArtifactOutbox: {db_err}")
+
+        return f"s3://{self.bucket_name}/{object_name}"
+
+    def process_artifact_outbox(self, db, limit: int = 20) -> int:
+        """Flush durable pending artifacts to MinIO when connection is restored."""
+        if self.client is None:
+            return 0
+        from app.persistence.models import ArtifactOutbox, utc_now
+        pending = db.query(ArtifactOutbox).filter(
+            ArtifactOutbox.status.in_(["PENDING", "RETRY"]),
+            ArtifactOutbox.retry_count < ArtifactOutbox.max_retries
+        ).limit(limit).all()
+
+        uploaded = 0
+        for item in pending:
+            item.status = "UPLOADING"
+            db.commit()
+            try:
+                local_p = Path(item.local_staging_path)
+                if local_p.exists():
+                    data = local_p.read_bytes()
+                    self.client.put_object(
+                        item.bucket_name,
+                        item.object_name,
+                        io.BytesIO(data),
+                        len(data),
+                        content_type=item.content_type
+                    )
+                    item.status = "COMPLETED"
+                    item.uploaded_at = utc_now()
+                    uploaded += 1
+                    try:
+                        local_p.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                else:
+                    item.status = "FAILED"
+                    item.last_error = "Staging file missing on disk"
+            except Exception as err:
+                item.retry_count += 1
+                item.status = "RETRY" if item.retry_count < item.max_retries else "FAILED"
+                item.last_error = str(err)
+            db.commit()
+        return uploaded
+
+    def _put_object(self, object_name: str, content_bytes: bytes, content_type: str = "application/octet-stream", domain: str = "") -> str:
         t0 = time.time()
         if settings.STORAGE_BACKEND == "minio":
             if self.client is None or self.is_degraded:
-                msg = f"STORAGE_FAILED: MinIO object storage unreachable. Refusing silent fallback for {object_name}"
-                tracer.log_event(
-                    level="ERROR",
-                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
-                    event="PUT_OBJECT_REFUSED",
-                    message=msg,
-                    status="FAILED"
-                )
-                raise RuntimeError(msg)
+                return self._stage_to_outbox(object_name, content_bytes, content_type, domain=domain)
             try:
                 self.client.put_object(
                     self.bucket_name,
@@ -147,17 +213,9 @@ class StorageManager:
                 )
                 return f"s3://{self.bucket_name}/{object_name}"
             except Exception as e:
-                dur = time.time() - t0
-                tracer.log_event(
-                    level="ERROR",
-                    checkpoint=Checkpoint.CP26_OBJECT_STORAGE,
-                    event="PUT_OBJECT_FAILED",
-                    message=f"STORAGE_FAILED: MinIO put error for {object_name}: {e}",
-                    duration=dur,
-                    status="FAILED",
-                    exc_info=True
-                )
-                raise RuntimeError(f"STORAGE_FAILED: MinIO put operation failed for {object_name}: {e}")
+                self.is_degraded = True
+                logger.warning(f"[StorageManager] MinIO put error for {object_name}: {e}. Staging to durable ArtifactOutbox.")
+                return self._stage_to_outbox(object_name, content_bytes, content_type, domain=domain)
 
         # Local storage mode (only when explicitly configured STORAGE_BACKEND=local)
         local_path = self.local_dir / object_name

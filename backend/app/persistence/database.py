@@ -21,6 +21,21 @@ def get_database_status() -> dict:
 def mark_postgres_degraded():
     global DATABASE_MODE, IS_FALLBACK_ACTIVE
     from app.audit.tracer import tracer, Checkpoint
+
+    is_prod = (getattr(settings, "OPENDB_ENV", "").lower() == "production" or getattr(settings, "APP_ENV", "").lower() == "production")
+    if is_prod:
+        DATABASE_MODE = "POSTGRESQL_DOWN"
+        IS_FALLBACK_ACTIVE = False
+        tracer.log_event(
+            level="CRITICAL",
+            checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
+            event="POSTGRESQL_DOWN_PRODUCTION",
+            message="POSTGRESQL_CONNECTION_LOST in PRODUCTION mode. Refusing SQLite fallback.",
+            status="FAILED"
+        )
+        logger.critical("[Database] PostgreSQL connection lost in PRODUCTION mode. SQLite fallback strictly prohibited.")
+        return
+
     tracer.log_event(
         level="ERROR",
         checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
@@ -84,6 +99,7 @@ def create_db_engine():
     global DATABASE_MODE, IS_FALLBACK_ACTIVE
     from app.audit.tracer import tracer, Checkpoint
     db_url = settings.DATABASE_URL.replace("localhost", "127.0.0.1")
+    is_prod = (getattr(settings, "OPENDB_ENV", "").lower() == "production" or getattr(settings, "APP_ENV", "").lower() == "production")
     
     if "postgresql" in db_url:
         parsed = urlparse(db_url)
@@ -99,15 +115,18 @@ def create_db_engine():
                     password=parsed.password,
                     host=host,
                     port=port,
-                    connect_timeout=1,
+                    connect_timeout=2,
                     gssencmode="disable"
                 )
                 conn.close()
+                pool_sz = getattr(settings, "DB_POOL_SIZE", 10)
+                max_ovf = getattr(settings, "DB_MAX_OVERFLOW", 10)
                 eng = create_engine(
                     db_url,
                     pool_pre_ping=True,
-                    pool_size=5,
-                    max_overflow=10,
+                    pool_size=pool_sz,
+                    max_overflow=max_ovf,
+                    pool_recycle=300,
                     echo=False,
                     connect_args={"connect_timeout": 2}
                 )
@@ -117,7 +136,7 @@ def create_db_engine():
                     level="INFO",
                     checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
                     event="DATABASE_CONNECTED",
-                    message=f"PostgreSQL PRIMARY connected successfully ({host}:{port})",
+                    message=f"PostgreSQL PRIMARY connected successfully ({host}:{port}, pool={pool_sz}+{max_ovf})",
                     status="ONLINE"
                 )
                 return eng
@@ -130,18 +149,21 @@ def create_db_engine():
                     status="DEGRADED"
                 )
 
-        if settings.OPENDB_ENV.lower() == "production":
+        if is_prod:
             tracer.log_event(
                 level="CRITICAL",
                 checkpoint=Checkpoint.CP25_DATABASE_PERSISTENCE,
                 event="POSTGRESQL_FATAL_PRODUCTION",
-                message="POSTGRES_CONNECTION_FAILED in PRODUCTION mode. Refusing fallback.",
+                message="POSTGRES_CONNECTION_FAILED in PRODUCTION mode. Refusing SQLite fallback.",
                 status="FAILED"
             )
-            raise RuntimeError("PostgreSQL connection failed in PRODUCTION mode.")
+            raise RuntimeError("PostgreSQL connection failed in PRODUCTION mode. Refusing SQLite fallback.")
 
         mark_postgres_degraded()
         return _create_sqlite_fallback_engine()
+
+    if is_prod:
+        raise RuntimeError("DATABASE_URL is not PostgreSQL in PRODUCTION mode.")
 
     DATABASE_MODE = "SQLITE_FALLBACK"
     IS_FALLBACK_ACTIVE = True

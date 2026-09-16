@@ -217,16 +217,18 @@ class Agent2Orchestrator:
         if not text_corpus and doc.markdown_path:
             text_corpus = file_storage.read_file_content(doc.markdown_path) or ""
 
-        # ── Coordinated Single Crawl Session for Agent 2 ─────────────────────────
-        # Per §8-§15 of Verification Contract: Run ONE controlled crawl session,
-        # discover/crawl target subpages (/about, /contact, /team, etc.), save to MinIO,
-        # register in GlobalLeadSubpage, and aggregate text for investigators.
+        # ── Selective Field-Level Requirement Check for Agent 2 ─────────────────
+        # Only trigger deep crawling if existing text corpus and metadata lack sufficient evidence.
         subpages_done = metadata.get("subpages_crawled") or []
-        if len(subpages_done) < 2:
+        word_count_existing = len(text_corpus.split())
+        needs_deep_crawl = word_count_existing < 150 or not metadata.get("detected_emails")
+
+        if len(subpages_done) < 2 and needs_deep_crawl:
             try:
                 target_url = doc.url or f"https://{domain}"
                 logger.info(f"AGENT2_BROWSER_CREATED run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
-                crawl_items = await crawler_service.crawl_site(target_url, max_depth=1, max_pages=4)
+                max_deep_pages = getattr(settings, "MAX_PAGES_PER_DOMAIN_AGENT2", 4)
+                crawl_items = await crawler_service.crawl_site(target_url, max_depth=1, max_pages=max_deep_pages, slot_type="deep")
                 for item in crawl_items:
                     logger.info(f"AGENT2_PAGE_CRAWLED url={item.url} run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
                     try:

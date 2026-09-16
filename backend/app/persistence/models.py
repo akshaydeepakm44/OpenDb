@@ -545,6 +545,32 @@ class PostgresSyncOutbox(Base):
     synced_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class ArtifactOutbox(Base):
+    """
+    Durable Outbox Table for Raw Crawl Artifact Uploads to MinIO.
+    Ensures raw HTML, markdown, screenshots, and brand assets survive worker/MinIO outages
+    with bounded retry state, exponential backoff, and idempotency.
+    """
+    __tablename__ = "artifact_outbox"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    domain = Column(String(255), nullable=True, index=True)
+    object_name = Column(String(512), nullable=False, index=True)
+    bucket_name = Column(String(100), default="opendb")
+    content_type = Column(String(100), default="application/octet-stream")
+    file_size_bytes = Column(BigInteger, default=0)
+    sha256_hash = Column(String(64), nullable=True)
+    local_staging_path = Column(Text, nullable=True)
+    status = Column(String(50), default="PENDING", index=True)  # PENDING, UPLOADING, COMPLETED, FAILED
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=5)
+    last_error = Column(Text, nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), default=utc_now)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    uploaded_at = Column(DateTime(timezone=True), nullable=True)
+
+
 
 class Agent2VerificationSession(Base):
     """

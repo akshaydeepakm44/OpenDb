@@ -75,8 +75,13 @@ def _quick_port_check(url_or_endpoint: str, default_port: int) -> bool:
 
 @router.get("/health/services")
 def services_health_check(db: Session = Depends(get_db)):
-    """Sanitized non-blocking infrastructure services health check."""
+    """Sanitized non-blocking infrastructure services health check with truthful telemetry."""
     from app.persistence.database import get_database_status
+    from app.crawler.distributed_slot_manager import slot_manager
+    from app.crawler.crawler_service import get_active_browser_contexts_count
+    from app.safety.resource_governor import governor
+    from app.persistence.models import AgentState, Document, Agent2VerificationSession
+
     db_status_info = get_database_status()
 
     redis_state = _check_redis()
@@ -88,7 +93,39 @@ def services_health_check(db: Session = Depends(get_db)):
     searxng_online = _quick_port_check(settings.SEARXNG_URL, 8080) or _quick_port_check(settings.SEARXNG_URL, 9090)
     searxng_status = "CONNECTED" if searxng_online else "UNAVAILABLE"
 
+    # Fetch live telemetry from governor & slot manager
+    metrics = governor.get_system_metrics()
+    circuit = governor.evaluate_circuit_breaker()
+    slots_info = slot_manager.get_total_active_crawls()
+
+    # Agent states
+    agent1_status = "UNKNOWN"
+    pause_reason = circuit.get("reason")
+    try:
+        ag_state = db.query(AgentState).first()
+        if ag_state:
+            agent1_status = ag_state.status
+            if ag_state.state_data and ag_state.state_data.get("pause_reason"):
+                pause_reason = ag_state.state_data.get("pause_reason")
+    except Exception:
+        pass
+
+    agent2_queued = 0
+    agent2_verified = 0
+    try:
+        agent2_queued = db.query(Document).filter(Document.lifecycle_state == "CRAWLED_PENDING_AGENT_2").count()
+        agent2_verified = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.status.in_(["VERIFIED", "POSTGRES_VERIFIED"])).count()
+    except Exception:
+        pass
+
+    overall_status = "healthy"
+    if circuit["level"] == "EMERGENCY" or redis_status == "UNAVAILABLE" or db_status_info["status"] != "CONNECTED":
+        overall_status = "unhealthy"
+    elif circuit["level"] in ("PAUSED", "PRESSURE") or minio_status == "UNAVAILABLE" or searxng_status == "UNAVAILABLE":
+        overall_status = "degraded"
+
     return {
+        "status": overall_status,
         "database": {
             "mode": db_status_info["mode"],
             "status": db_status_info["status"],
@@ -106,7 +143,30 @@ def services_health_check(db: Session = Depends(get_db)):
         "crawler": {
             "status": "READY",
             "browser_engine": "Playwright",
-            "crawl4ai_status": "READY"
+            "crawl4ai_status": "READY",
+            "active_crawls": slots_info["total_active"],
+            "active_standard_slots": slots_info["standard_active"],
+            "active_deep_slots": slots_info["deep_active"],
+            "active_browser_contexts": get_active_browser_contexts_count(),
+            "max_concurrent_crawls": getattr(settings, "MAX_CONCURRENT_CRAWLS", 2),
+            "max_concurrent_deep_crawls": getattr(settings, "MAX_CONCURRENT_DEEP_CRAWLS", 1),
+        },
+        "governor": {
+            "level": circuit["level"],
+            "pause_reason": pause_reason,
+            "cpu_percent": metrics["cpu_percent"],
+            "memory_percent": metrics["memory_percent"],
+            "chromium_process_count": metrics["chromium_process_count"]
+        },
+        "queues": {
+            "discovery_queue": metrics["discovery_queue_depth"],
+            "verification_queue": metrics["verification_queue_depth"],
+            "agent2_pending_cards": agent2_queued,
+            "agent2_verified_cards": agent2_verified
+        },
+        "agent1": {
+            "status": agent1_status,
+            "pause_reason": pause_reason
         }
     }
 

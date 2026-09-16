@@ -41,9 +41,44 @@ class Settings(BaseSettings):
     QWEN_API_KEY: Optional[str] = "sk-datai2i-a100-qwen35-27b-8x3f9z"
     OPENAI_BASE_URL: str = "http://115.244.46.68:8000/v1"
     LLM_MODEL: str = "current-model"
+    QWEN_MODEL_NAME: str = "current-model"
     LLM_PROVIDER: str = "openai"  # 'ollama', 'openai', 'qwen_local', 'heuristics'
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    QWEN_MODEL_NAME: str = "current-model"
+    # Production Hardening & Autonomous Concurrency Controls
+    AGENT_LOOP_PACE_SECONDS: int = 20
+    MAX_DISCOVERY_RESULTS_PER_CYCLE: int = 10
+    MAX_CONCURRENT_CRAWLS: int = 2
+    MAX_CONCURRENT_DEEP_CRAWLS: int = 1
+    MAX_BROWSER_CONTEXTS: int = 2
+    SAFE_BROWSER_PROCESS_LIMIT: int = 4
+
+    # Queue Watermarks (Hysteresis)
+    DISCOVERY_QUEUE_HIGH_WATERMARK: int = 100
+    DISCOVERY_QUEUE_LOW_WATERMARK: int = 60
+    VERIFICATION_QUEUE_HIGH_WATERMARK: int = 50
+    VERIFICATION_QUEUE_LOW_WATERMARK: int = 25
+
+    # Timeouts & Retries
+    CRAWL_TIMEOUT_SECONDS: int = 60
+    MAX_CRAWL_RETRIES: int = 2
+    TASK_LEASE_TIMEOUT_SECONDS: int = 300
+    STALE_TASK_TIMEOUT_SECONDS: int = 300
+
+    # Resource Governor & Circuit Breaker
+    RESOURCE_PAUSE_MEMORY_PERCENT: float = 85.0
+    RESOURCE_EMERGENCY_MEMORY_PERCENT: float = 95.0
+    RESOURCE_PAUSE_CPU_PERCENT: float = 90.0
+    RESOURCE_EMERGENCY_CPU_PERCENT: float = 95.0
+    GOVERNOR_CACHE_TTL_SECONDS: float = 5.0
+
+    # Crawler Depth Limits
+    MAX_PAGES_PER_DOMAIN_AGENT1: int = 4
+    MAX_PAGES_PER_DOMAIN_AGENT2: int = 10
+
+    # Database Pool Configuration
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    MAX_TASKS_PER_WORKER: int = 50
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),

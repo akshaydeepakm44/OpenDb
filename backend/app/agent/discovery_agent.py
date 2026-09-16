@@ -31,7 +31,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-LOOP_PACE_SECONDS = 4
+LOOP_PACE_SECONDS = getattr(settings, "AGENT_LOOP_PACE_SECONDS", 20)
 BATCH_SIZE = 50
 
 # ─── Agent Tools ─────────────────────────────────────────────────────────────
@@ -250,6 +250,25 @@ class AutonomousDiscoveryAgent:
         )
 
         while self.is_running_loop:
+            # 0. Resource Governor Safety & Circuit Breaker Check
+            from app.safety.resource_governor import governor
+            can_discover, pause_reason = governor.can_start_discovery()
+            if not can_discover:
+                logger.info(f"[DiscoveryAgent] Discovery loop paused by governor: {pause_reason}")
+                db = SessionLocal()
+                try:
+                    state = self._get_or_create_state(db)
+                    state_data = state.state_data or {}
+                    state_data["pause_reason"] = pause_reason
+                    state.state_data = state_data
+                    db.commit()
+                except Exception:
+                    pass
+                finally:
+                    db.close()
+                await asyncio.sleep(LOOP_PACE_SECONDS)
+                continue
+
             db = SessionLocal()
             try:
                 state = self._get_or_create_state(db)
@@ -259,8 +278,13 @@ class AutonomousDiscoveryAgent:
                     await asyncio.sleep(3)
                     continue
 
-                batch = self._get_or_create_batch(db, state)
                 state_data = state.state_data or {}
+                if "pause_reason" in state_data:
+                    state_data.pop("pause_reason", None)
+                    state.state_data = state_data
+                    db.commit()
+
+                batch = self._get_or_create_batch(db, state)
                 batch_id_str = str(batch.id)
                 current_domain = state.current_domain
 

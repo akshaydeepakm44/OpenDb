@@ -119,15 +119,83 @@ services:
       minio-init:
         condition: service_completed_successfully
 
-  # ─── Celery Worker (async task executor) ─────────────────────────────────
-  celery_worker:
+  # ─── Celery Workers (Dedicated Queues) ─────────────────────────────────
+  celery_discovery:
     build:
       context: ./backend
       dockerfile: Dockerfile
     image: akshaydeepakm/opendb:backend
-    container_name: opendb_celery
+    container_name: opendb_celery_discovery
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4 -Q celery,default
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q discovery
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_SECURE=false
+      - STORAGE_BACKEND=minio
+      - SEARXNG_URL=http://searxng:8080
+      - SCHEMAS_DIR=/app/schemas
+    volumes:
+      - ./schemas:/app/schemas:ro
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  celery_crawler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: akshaydeepakm/opendb:backend
+    container_name: opendb_celery_crawler
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2 --max-tasks-per-child=50 -Q crawl
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD:-opendb_redis_secret}@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_SECURE=false
+      - STORAGE_BACKEND=minio
+      - SEARXNG_URL=http://searxng:8080
+      - SCHEMAS_DIR=/app/schemas
+    volumes:
+      - ./schemas:/app/schemas:ro
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  celery_verification:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: akshaydeepakm/opendb:backend
+    container_name: opendb_celery_verification
+    restart: unless-stopped
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q verification
     env_file: .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}

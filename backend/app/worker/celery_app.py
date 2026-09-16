@@ -43,6 +43,24 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     task_time_limit=300,  # 5 minutes max per task
+    # Worker recycling & memory bounds
+    worker_max_tasks_per_child=getattr(settings, "MAX_TASKS_PER_WORKER", 50),
+    worker_prefetch_multiplier=1,
+    # Dedicated Queue Routing (§3 of Hardening Master Prompt)
+    task_routes={
+        "tasks.search_and_discover": {"queue": "discovery"},
+        "tasks.crawl_source": {"queue": "crawl"},
+        "tasks.crawl_entity": {"queue": "crawl"},
+        "tasks.enrich_and_verify": {"queue": "verification"},
+        "tasks.search_company_people": {"queue": "verification"},
+        "tasks.agent2_rank_cards": {"queue": "verification"},
+        "tasks.agent2_process_card": {"queue": "verification"},
+        "tasks.agent2_verify_phase1": {"queue": "verification"},
+        "tasks.agent2_synthesize_business": {"queue": "verification"},
+        "tasks.agent2_search_linkedin": {"queue": "verification"},
+        "tasks.agent2_finalize_verification": {"queue": "verification"},
+        "tasks.agent2_sync_postgres": {"queue": "verification"},
+    },
     # ---- Dead-letter queue hardening ----
     # Acknowledge only after the task has run, so a worker crash re-queues
     # in-flight work instead of silently losing it.

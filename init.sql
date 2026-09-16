@@ -325,6 +325,30 @@ CREATE INDEX IF NOT EXISTS idx_key_person_company_id ON key_person_candidates (c
 CREATE INDEX IF NOT EXISTS idx_key_person_company_name ON key_person_candidates (company_name);
 CREATE INDEX IF NOT EXISTS idx_key_person_verification_status ON key_person_candidates (verification_status);
 
+-- ─── Artifact Outbox Table (Durable MinIO Upload Retry) ───────────────────────
+
+CREATE TABLE IF NOT EXISTS artifact_outbox (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    domain VARCHAR(255),
+    object_name VARCHAR(512) NOT NULL,
+    bucket_name VARCHAR(100) DEFAULT 'opendb',
+    content_type VARCHAR(100) DEFAULT 'application/octet-stream',
+    file_size_bytes BIGINT DEFAULT 0,
+    sha256_hash VARCHAR(64),
+    local_staging_path TEXT,
+    status VARCHAR(50) DEFAULT 'PENDING',
+    retry_count INT DEFAULT 0,
+    max_retries INT DEFAULT 5,
+    last_error TEXT,
+    next_retry_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    uploaded_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifact_outbox_domain ON artifact_outbox (domain);
+CREATE INDEX IF NOT EXISTS idx_artifact_outbox_status ON artifact_outbox (status);
+
+
 
 -- ─── Seed Domains ─────────────────────────────────────────────────────────────
 

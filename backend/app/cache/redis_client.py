@@ -33,17 +33,20 @@ def get_redis() -> Optional[redis.Redis]:
         if _client is not None and _redis_available is True:
             return _client
         try:
-            # Fast 0.02s socket test on initial connect
-            with socket.create_connection(("127.0.0.1", 6379), timeout=0.02):
-                pass
             from urllib.parse import urlparse
-            p = urlparse(settings.REDIS_URL.replace("localhost", "127.0.0.1"))
+            p = urlparse(settings.REDIS_URL)
+            target_host = p.hostname or "127.0.0.1"
+            if target_host == "localhost":
+                target_host = "127.0.0.1"
+            target_port = p.port or 6379
+            with socket.create_connection((target_host, target_port), timeout=1.0):
+                pass
             _client = redis.Redis(
-                host=p.hostname or "127.0.0.1",
-                port=p.port or 6379,
+                host=target_host,
+                port=target_port,
                 password=p.password,
-                socket_connect_timeout=1.0,
-                socket_timeout=1.0,
+                socket_connect_timeout=2.0,
+                socket_timeout=2.0,
                 decode_responses=True,
             )
             _redis_available = True
