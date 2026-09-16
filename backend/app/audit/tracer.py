@@ -273,6 +273,9 @@ class Tracer:
 
     # ── Context Management ────────────────────────────────────────────────────
 
+    def get_run_id(self) -> str:
+        return _current_run_id.get() or "RUN-NONE"
+
     def new_run_id(self) -> str:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         short_u = uuid.uuid4().hex[:6].upper()

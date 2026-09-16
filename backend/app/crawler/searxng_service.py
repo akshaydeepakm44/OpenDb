@@ -135,22 +135,75 @@ class SearXNGService:
                     message=f"SearXNG attempt {attempt}/{max_retries} failed for query '{query}': {e}",
                     extra={"attempt": attempt, "error": str(e)}
                 )
+                err_str = str(e).lower()
+                if "connection" in err_str or "connect" in err_str or "refused" in err_str:
+                    logger.info(f"SearXNG endpoint unreachable ({e}). Switching immediately to search fallback.")
+                    break
             if attempt < max_retries:
                 import asyncio
                 await asyncio.sleep(0.5 * attempt)
 
         dur = time.time() - t0
         tracer.log_event(
-            level="ERROR",
+            level="WARNING",
             checkpoint=Checkpoint.CP30_FAILURE_RECOVERY,
-            event="SEARCH_FAILED",
-            message=f"SearXNG query completely failed after {max_retries} retries for '{query}': {last_err}",
+            event="SEARCH_FALLBACK_TRIGGERED",
+            message=f"SearXNG unavailable after {max_retries} retries ({last_err}). Invoking live web search fallback for '{query}'...",
             duration=dur,
-            status="FAILED",
-            extra={"query": query, "retries_exhausted": True, "error": str(last_err)},
-            exc_info=True
+            status="DEGRADED",
+            extra={"query": query, "retries_exhausted": True, "error": str(last_err)}
         )
+
+        # Automatic live web search fallback (essential for local dev where Docker SearXNG isn't running)
+        fb_results, is_fb, fb_log = await self._duckduckgo_fallback(query, max_results)
+        if fb_results:
+            cache_set("search", query, clean_category, max_results, value=(fb_results, True, fb_log), ttl=SEARCH_CACHE_TTL)
+            return fb_results, True, fb_log
+
         return [], False, f"SearXNG failed after retries: {last_err} (DEGRADED)"
+
+    async def _duckduckgo_fallback(self, query: str, max_results: int = 20) -> Tuple[List[Dict[str, Any]], bool, str]:
+        """Direct web search fallback when self-hosted SearXNG is unavailable (e.g. local dev)."""
+        try:
+            from bs4 import BeautifulSoup
+            from urllib.parse import unquote
+            url = "https://html.duckduckgo.com/html/"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+                resp = await client.post(url, data={"q": query}, headers=headers)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    cleaned = []
+                    for result in soup.select(".result"):
+                        link_el = result.select_one(".result__title a")
+                        snippet_el = result.select_one(".result__snippet")
+                        if link_el:
+                            raw_href = link_el.get("href", "")
+                            if "uddg=" in raw_href:
+                                actual_url = unquote(raw_href.split("uddg=")[1].split("&")[0])
+                            else:
+                                actual_url = raw_href
+                            title = link_el.get_text(strip=True)
+                            snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+                            if actual_url.startswith("http") and "duckduckgo.com" not in actual_url:
+                                cleaned.append({
+                                    "title": title or "B2B Organization",
+                                    "url": actual_url,
+                                    "snippet": snippet,
+                                    "engine": "web_search_fallback",
+                                    "score": 1.0,
+                                })
+                                if len(cleaned) >= max_results:
+                                    break
+                    if cleaned:
+                        logger.info(f"🌐 [WebSearchFallback] Recovered {len(cleaned)} live search results via web search fallback for '{query}'")
+                        return cleaned, True, f"Web Search Fallback ({len(cleaned)} URLs found)"
+        except Exception as ddg_err:
+            logger.warning(f"Web search fallback failed for '{query}': {ddg_err}")
+        return [], True, "Web search fallback returned 0 results"
 
     async def search(
         self, query: str, category: str = "general", max_results: int = 20
