@@ -90,6 +90,7 @@ services:
       dockerfile: Dockerfile
     image: akshaydeepakm/opendb:backend
     container_name: opendb_backend
+    init: true
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -126,6 +127,7 @@ services:
       dockerfile: Dockerfile
     image: akshaydeepakm/opendb:backend
     container_name: opendb_celery_discovery
+    init: true
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q discovery
     env_file: .env
@@ -160,6 +162,7 @@ services:
       dockerfile: Dockerfile
     image: akshaydeepakm/opendb:backend
     container_name: opendb_celery_crawler
+    init: true
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2 --max-tasks-per-child=50 -Q crawl
     env_file: .env
@@ -194,6 +197,7 @@ services:
       dockerfile: Dockerfile
     image: akshaydeepakm/opendb:backend
     container_name: opendb_celery_verification
+    init: true
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q verification
     env_file: .env

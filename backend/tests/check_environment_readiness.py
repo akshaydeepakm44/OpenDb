@@ -147,8 +147,10 @@ async def check_readiness() -> Dict[str, Any]:
     # 7. Host Chromium Processes
     chrom_count = 0
     chrom_procs = []
-    for p in psutil.process_iter(['pid', 'name', 'memory_info']):
+    for p in psutil.process_iter(['pid', 'name', 'memory_info', 'status']):
         try:
+            if p.info.get('status') == psutil.STATUS_ZOMBIE:
+                continue
             name = (p.info.get('name') or '').lower()
             if 'chromium' in name or 'chrome' in name or 'playwright' in name:
                 chrom_count += 1

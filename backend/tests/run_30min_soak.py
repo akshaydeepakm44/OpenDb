@@ -51,8 +51,10 @@ logger = logging.getLogger(__name__)
 
 def count_chromium_processes() -> int:
     count = 0
-    for p in psutil.process_iter(['name', 'cmdline']):
+    for p in psutil.process_iter(['name', 'cmdline', 'status']):
         try:
+            if p.info.get('status') == psutil.STATUS_ZOMBIE:
+                continue
             name = (p.info.get('name') or '').lower()
             cmd = ' '.join(p.info.get('cmdline') or []).lower()
             if 'chromium' in name or 'chrome' in name or 'playwright' in cmd:
