@@ -535,10 +535,11 @@ export default function App() {
     ];
 
     return badges.map(b => {
-      const color = b.isOk ? '#10b981' : b.isDegraded ? '#fbbf24' : '#ef4444';
-      const bg = b.isOk ? 'rgba(16, 185, 129, 0.15)' : b.isDegraded ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.15)';
+      const color = b.isOk ? '#059669' : b.isDegraded ? '#d97706' : '#dc2626';
+      const bg = b.isOk ? '#ecfdf5' : b.isDegraded ? '#fffbeb' : '#fef2f2';
+      const border = b.isOk ? '#a7f3d0' : b.isDegraded ? '#fde68a' : '#fecaca';
       return (
-        <div key={b.key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: bg, padding: '0.35rem 0.75rem', borderRadius: '0.5rem', border: `1px solid ${color}` }}>
+        <div key={b.key} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: bg, padding: '0.35rem 0.75rem', borderRadius: '0.5rem', border: `1px solid ${border}` }}>
           <span style={{ height: '8px', width: '8px', borderRadius: '50%', backgroundColor: color }} />
           <span style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: color }}>
             {b.label}
@@ -551,9 +552,9 @@ export default function App() {
   return (
     <div className="app-container" style={{ maxWidth: '1400px' }}>
       {/* 1. TOP OPERATIONS STATUS BAR (REAL SERVICE HEALTH) */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', background: '#0f172a', padding: '0.75rem 1.25rem', borderRadius: '0.75rem', border: '1px solid #334155', marginBottom: '1.5rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', background: '#ffffff', padding: '0.75rem 1.25rem', borderRadius: '0.75rem', border: '1px solid #e2e8f0', marginBottom: '1.5rem', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Infrastructure Status:
           </span>
           {renderInfrastructureStatus()}
@@ -561,11 +562,11 @@ export default function App() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           {servicesHealth?.database?.mode === 'SQLITE_FALLBACK' && (
-            <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#fbbf24', background: 'rgba(245, 158, 11, 0.2)', padding: '0.35rem 0.75rem', borderRadius: '0.5rem', border: '1px solid #f59e0b', textTransform: 'uppercase' }}>
+            <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#d97706', background: '#fffbeb', padding: '0.35rem 0.75rem', borderRadius: '0.5rem', border: '1px solid #fde68a', textTransform: 'uppercase' }}>
               ⚠️ SQLITE FALLBACK ACTIVE
             </span>
           )}
-          <div style={{ fontSize: '0.8rem', color: '#60a5fa', fontWeight: 600 }}>
+          <div style={{ fontSize: '0.8rem', color: '#2563eb', fontWeight: 700 }}>
             OpenDB v2.4 Autonomous Lead Engine
           </div>
         </div>
@@ -596,9 +597,9 @@ export default function App() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: '#1e293b', padding: '0.6rem 1.2rem', borderRadius: '9999px', border: '1px solid #334155' }}>
-              <span style={{ height: '10px', width: '10px', borderRadius: '50%', backgroundColor: isRunning ? '#10b981' : '#f59e0b', boxShadow: isRunning ? '0 0 10px #10b981' : 'none' }} />
-              <span style={{ fontWeight: 800, letterSpacing: '0.05em', color: isRunning ? '#34d399' : '#fbbf24' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: isRunning ? '#ecfdf5' : '#fffbeb', padding: '0.6rem 1.2rem', borderRadius: '9999px', border: isRunning ? '1px solid #a7f3d0' : '1px solid #fde68a' }}>
+              <span style={{ height: '10px', width: '10px', borderRadius: '50%', backgroundColor: isRunning ? '#059669' : '#d97706', boxShadow: isRunning ? '0 0 8px rgba(5, 150, 105, 0.4)' : 'none' }} />
+              <span style={{ fontWeight: 800, letterSpacing: '0.05em', color: isRunning ? '#059669' : '#d97706' }}>
                 {isRunning ? 'RUNNING' : 'PAUSED'}
               </span>
             </div>
@@ -610,14 +611,17 @@ export default function App() {
               style={{
                 padding: '0.8rem 1.4rem',
                 borderRadius: '9999px',
-                border: '1px solid #475569',
-                background: '#0f172a',
-                color: '#cbd5e1',
+                border: '1px solid #cbd5e1',
+                background: '#ffffff',
+                color: '#475569',
                 fontSize: '0.9rem',
                 fontWeight: 700,
                 cursor: loading ? 'not-allowed' : 'pointer',
-                transition: 'all 0.3s ease'
+                boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                transition: 'all 0.2s ease'
               }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = '#dc2626'; e.currentTarget.style.color = '#dc2626'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = '#cbd5e1'; e.currentTarget.style.color = '#475569'; }}
             >
               🗑️ CLEAN DATA
             </button>
@@ -648,36 +652,36 @@ export default function App() {
 
       {/* 2. REAL STAT CARDS (TOP ROW) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1.25rem', marginBottom: '2rem' }}>
-        <div style={{ background: '#1e293b', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #334155', borderTop: '4px solid #059669', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>VERIFIED LEADS</span>
-          <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#6ee7b7', marginBottom: '0.2rem', lineHeight: '1' }}>
+        <div style={{ background: '#ffffff', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #e2e8f0', borderTop: '4px solid #059669', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)' }}>
+          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>VERIFIED LEADS</span>
+          <div style={{ fontSize: '2.2rem', fontWeight: 900, color: '#059669', marginBottom: '0.2rem', lineHeight: '1', letterSpacing: '-0.02em' }}>
             {(operationsData?.stat_cards?.verified_leads ?? verifiedTotalCount ?? entitiesList.length ?? 0).toLocaleString()}
           </div>
-          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Audited Company Leads</span>
+          <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Audited Company Leads</span>
         </div>
 
-        <div style={{ background: '#1e293b', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #334155', borderTop: '4px solid #3b82f6', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>ACTIVE CRAWL QUEUE</span>
-          <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#60a5fa', marginBottom: '0.2rem', lineHeight: '1' }}>
+        <div style={{ background: '#ffffff', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #e2e8f0', borderTop: '4px solid #2563eb', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)' }}>
+          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>ACTIVE CRAWL QUEUE</span>
+          <div style={{ fontSize: '2.2rem', fontWeight: 900, color: '#2563eb', marginBottom: '0.2rem', lineHeight: '1', letterSpacing: '-0.02em' }}>
             {(operationsData?.stat_cards?.active_crawl_queue || 0).toLocaleString()}
           </div>
-          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Celery Redis Queue Depth</span>
+          <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Celery Redis Queue Depth</span>
         </div>
 
-        <div style={{ background: '#1e293b', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #334155', borderTop: '4px solid #a78bfa', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>RAW DOCUMENTS</span>
-          <div style={{ fontSize: '2.2rem', fontWeight: 800, color: '#c084fc', marginBottom: '0.2rem', lineHeight: '1' }}>
+        <div style={{ background: '#ffffff', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #e2e8f0', borderTop: '4px solid #7c3aed', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)' }}>
+          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>RAW DOCUMENTS</span>
+          <div style={{ fontSize: '2.2rem', fontWeight: 900, color: '#7c3aed', marginBottom: '0.2rem', lineHeight: '1', letterSpacing: '-0.02em' }}>
             {(operationsData?.stat_cards?.crawled_documents || crawledMeta.total || crawledDocs.length || 0).toLocaleString()}
           </div>
-          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>Ingested Page Documents</span>
+          <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Ingested Page Documents</span>
         </div>
 
-        <div style={{ background: '#1e293b', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #334155', borderTop: '4px solid #f59e0b', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.2)' }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>STORAGE USAGE</span>
-          <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#f59e0b', textShadow: '0 0 10px rgba(245, 158, 11, 0.25)', marginBottom: '0.4rem', marginTop: '0.5rem', lineHeight: '1.2' }}>
+        <div style={{ background: '#ffffff', borderRadius: '1rem', padding: '1.25rem', border: '1px solid #e2e8f0', borderTop: '4px solid #d97706', boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)' }}>
+          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#64748b', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>STORAGE USAGE</span>
+          <div style={{ fontSize: '1.1rem', fontWeight: 900, color: '#d97706', marginBottom: '0.4rem', marginTop: '0.5rem', lineHeight: '1.2' }}>
             {operationsData?.stat_cards?.storage_usage?.formatted || `MinIO S3: ${(crawledMeta.total || 3183).toLocaleString()} objects / Postgres: 9.1 MB`}
           </div>
-          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>S3 Object Count & DB Size</span>
+          <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>S3 Object Count & DB Size</span>
         </div>
       </div>
 
@@ -809,14 +813,17 @@ export default function App() {
           </div>
 
           {/* Tab toggle: 3-way Agent 1 / Agent 2 / PostgreSQL */}
-          <div style={{ display: 'flex', gap: '0.5rem', background: '#0f172a', padding: '0.3rem', borderRadius: '0.65rem', border: '1px solid #334155' }}>
+          <div style={{ display: 'flex', gap: '0.35rem', background: '#f1f5f9', padding: '0.35rem', borderRadius: '0.65rem', border: '1px solid #e2e8f0' }}>
             <button
               onClick={() => { setLeadView('crawled'); setCrawledPage(1); }}
               style={{
-                padding: '0.45rem 1.1rem', borderRadius: '0.5rem', border: 'none', cursor: 'pointer',
+                padding: '0.45rem 1.1rem', borderRadius: '0.5rem',
+                border: leadView === 'crawled' ? '1px solid #fde68a' : '1px solid transparent',
+                cursor: 'pointer',
                 fontWeight: 800, fontSize: '0.82rem',
-                background: leadView === 'crawled' ? '#f59e0b' : 'transparent',
-                color: leadView === 'crawled' ? '#000' : '#94a3b8',
+                background: leadView === 'crawled' ? '#ffffff' : 'transparent',
+                color: leadView === 'crawled' ? '#b45309' : '#64748b',
+                boxShadow: leadView === 'crawled' ? '0 1px 3px rgba(0,0,0,0.06)' : 'none',
                 transition: 'all 0.2s'
               }}
             >
@@ -825,10 +832,13 @@ export default function App() {
             <button
               onClick={() => { setLeadView('agent2'); setAgent2Page(1); }}
               style={{
-                padding: '0.45rem 1.1rem', borderRadius: '0.5rem', border: 'none', cursor: 'pointer',
+                padding: '0.45rem 1.1rem', borderRadius: '0.5rem',
+                border: leadView === 'agent2' ? '1px solid #bfdbfe' : '1px solid transparent',
+                cursor: 'pointer',
                 fontWeight: 800, fontSize: '0.82rem',
-                background: leadView === 'agent2' ? '#38bdf8' : 'transparent',
-                color: leadView === 'agent2' ? '#000' : '#94a3b8',
+                background: leadView === 'agent2' ? '#ffffff' : 'transparent',
+                color: leadView === 'agent2' ? '#2563eb' : '#64748b',
+                boxShadow: leadView === 'agent2' ? '0 1px 3px rgba(0,0,0,0.06)' : 'none',
                 transition: 'all 0.2s'
               }}
             >
@@ -837,10 +847,13 @@ export default function App() {
             <button
               onClick={() => { setLeadView('verified'); setCurrentPage(1); }}
               style={{
-                padding: '0.45rem 1.1rem', borderRadius: '0.5rem', border: 'none', cursor: 'pointer',
+                padding: '0.45rem 1.1rem', borderRadius: '0.5rem',
+                border: leadView === 'verified' ? '1px solid #a7f3d0' : '1px solid transparent',
+                cursor: 'pointer',
                 fontWeight: 800, fontSize: '0.82rem',
-                background: leadView === 'verified' ? '#10b981' : 'transparent',
-                color: leadView === 'verified' ? '#000' : '#94a3b8',
+                background: leadView === 'verified' ? '#ffffff' : 'transparent',
+                color: leadView === 'verified' ? '#059669' : '#64748b',
+                boxShadow: leadView === 'verified' ? '0 1px 3px rgba(0,0,0,0.06)' : 'none',
                 transition: 'all 0.2s'
               }}
             >
@@ -861,16 +874,17 @@ export default function App() {
                   disabled={isPrevDisabled}
                   style={{
                     padding: '0.4rem 1rem',
-                    background: isPrevDisabled ? '#0f172a' : '#1e293b',
-                    color: isPrevDisabled ? '#475569' : 'white',
-                    border: '1px solid #334155',
+                    background: isPrevDisabled ? '#f8fafc' : '#ffffff',
+                    color: isPrevDisabled ? '#94a3b8' : '#0f172a',
+                    border: '1px solid #cbd5e1',
                     borderRadius: '0.375rem',
                     cursor: isPrevDisabled ? 'not-allowed' : 'pointer',
                     fontWeight: 700,
-                    opacity: isPrevDisabled ? 0.5 : 1
+                    opacity: isPrevDisabled ? 0.5 : 1,
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
                   }}
                 >◀ Prev</button>
-                <span style={{ color: '#94a3b8', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>
+                <span style={{ color: '#64748b', fontSize: '0.9rem', whiteSpace: 'nowrap', fontWeight: 600 }}>
                   Page {activePage} of {maxPages}
                 </span>
                 <button
@@ -878,13 +892,14 @@ export default function App() {
                   disabled={isNextDisabled}
                   style={{
                     padding: '0.4rem 1rem',
-                    background: isNextDisabled ? '#0f172a' : '#3b82f6',
-                    color: isNextDisabled ? '#475569' : 'white',
-                    border: '1px solid #334155',
+                    background: isNextDisabled ? '#f8fafc' : '#2563eb',
+                    color: isNextDisabled ? '#94a3b8' : 'white',
+                    border: isNextDisabled ? '1px solid #cbd5e1' : 'none',
                     borderRadius: '0.375rem',
                     cursor: isNextDisabled ? 'not-allowed' : 'pointer',
                     fontWeight: 700,
-                    opacity: isNextDisabled ? 0.5 : 1
+                    opacity: isNextDisabled ? 0.5 : 1,
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.05)'
                   }}
                 >Next ▶</button>
               </div>
@@ -920,9 +935,9 @@ export default function App() {
             </select>
           </div>
           <div>
-            <label className="data-label" style={{ color: '#38bdf8' }}>Filter Company Tier & Level</label>
+            <label className="data-label" style={{ color: '#2563eb' }}>Filter Company Tier & Level</label>
             <select className="search-input"
-              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem', background: '#0f172a', color: '#38bdf8', border: '1px solid #0284c7', fontWeight: 700 }}
+              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem', background: '#ffffff', color: '#1d4ed8', border: '1px solid #93c5fd', fontWeight: 700 }}
               value={selectedCompanyTier} onChange={(e) => { setSelectedCompanyTier(e.target.value); setCurrentPage(1); }}>
               <option value="All">🏢 All Company Tiers & Ranges</option>
               <option value="Early-Stage Startups (1-20)">🌱 Early-Stage Startups (1-20)</option>
@@ -939,9 +954,9 @@ export default function App() {
                   height: '42px',
                   padding: '0 1rem',
                   borderRadius: '0.5rem',
-                  border: '1px solid #ef4444',
-                  background: 'rgba(239, 68, 68, 0.15)',
-                  color: '#f87171',
+                  border: '1px solid #fca5a5',
+                  background: '#fef2f2',
+                  color: '#dc2626',
                   fontWeight: 700,
                   fontSize: '0.85rem',
                   cursor: 'pointer',
@@ -977,26 +992,27 @@ export default function App() {
                     key={doc.id}
                     onClick={() => setSelectedDocumentId(doc.id)}
                     style={{
-                      background: '#0a101d',
-                      border: '1px solid #1e293b',
+                      background: '#ffffff',
+                      border: '1px solid #e2e8f0',
                       borderRadius: '0.875rem',
-                      padding: '1.15rem',
+                      padding: '1.25rem',
                       cursor: 'pointer',
-                      transition: 'all 0.25s ease',
+                      transition: 'all 0.2s ease',
                       position: 'relative',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '0.75rem'
+                      gap: '0.75rem',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                     }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#f59e0b'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 25px -5px rgba(245, 158, 11, 0.15)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#1e293b'; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#f59e0b'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 12px 24px -6px rgba(245, 158, 11, 0.18)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.05)'; }}
                   >
                     {/* Top Right Status Badge: Agent 1 Output */}
                     <div style={{
                       position: 'absolute', top: '0.85rem', right: '0.85rem',
                       fontSize: '0.68rem', fontWeight: 800, padding: '0.2rem 0.55rem', borderRadius: '0.375rem',
-                      background: 'rgba(245, 158, 11, 0.12)', color: '#f59e0b',
-                      border: '1px solid rgba(245, 158, 11, 0.35)', display: 'flex', alignItems: 'center', gap: '0.25rem'
+                      background: '#fffbeb', color: '#b45309',
+                      border: '1px solid #fde68a', display: 'flex', alignItems: 'center', gap: '0.25rem'
                     }}>
                       ⚡ CRAWLED_PENDING_AGENT_2
                     </div>
@@ -1005,57 +1021,57 @@ export default function App() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingRight: '12rem' }}>
                       {doc.logo_url ? (
                         <img src={doc.logo_url} alt="Logo" onError={(e) => { e.target.style.display = 'none'; }}
-                          style={{ width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0, objectFit: 'contain', background: '#0f172a', padding: '2px', border: '1px solid #334155' }} />
+                          style={{ width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0, objectFit: 'contain', background: '#f8fafc', padding: '2px', border: '1px solid #e2e8f0' }} />
                       ) : (
                         <div style={{
                           width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0,
-                          background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontWeight: 900, fontSize: '1.1rem', color: '#f59e0b', border: '1px solid #334155'
+                          background: '#fffbeb', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontWeight: 900, fontSize: '1.1rem', color: '#b45309', border: '1px solid #fde68a'
                         }}>{initial}</div>
                       )}
                       <div style={{ overflow: 'hidden' }}>
-                        <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontWeight: 800, fontSize: '0.98rem', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {doc.canonical_name || doc.domain}
                         </div>
                         <a href={doc.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                          style={{ fontSize: '0.72rem', color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                          style={{ fontSize: '0.75rem', color: '#2563eb', fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
                           🌐 {doc.domain} ↗
                         </a>
                       </div>
                     </div>
 
                     {/* 2. Crawl Metrics Pills (HTTP, Pages Crawled, Artifacts, Words) */}
-                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.68rem', fontWeight: 600 }}>
-                      <span style={{ background: 'rgba(16, 185, 129, 0.12)', color: '#34d399', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
+                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.72rem', fontWeight: 600 }}>
+                      <span style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         ✓ HTTP {doc.http_status || 200} OK
                       </span>
-                      <span style={{ background: '#111827', color: '#93c5fd', border: '1px solid #1e293b', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
-                        📄 {pagesCrawled} Pages Crawled
+                      <span style={{ background: '#f8fafc', color: '#1e40af', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
+                        📄 {pagesCrawled} Pages
                       </span>
-                      <span style={{ background: '#111827', color: '#c084fc', border: '1px solid #1e293b', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
+                      <span style={{ background: '#f8fafc', color: '#6d28d9', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         📦 {artifactCount} MinIO Artifacts
                       </span>
-                      <span style={{ background: '#111827', color: '#94a3b8', border: '1px solid #1e293b', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
+                      <span style={{ background: '#f8fafc', color: '#475569', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         📝 {(doc.word_count || 0).toLocaleString()} words
                       </span>
                       {detectedEmails && (
-                        <span style={{ background: 'rgba(56, 189, 248, 0.12)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
-                          ✉️ {detectedEmails.length} Email{detectedEmails.length > 1 ? 's' : ''} Discovered
+                        <span style={{ background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
+                          ✉️ {detectedEmails.length} Email{detectedEmails.length > 1 ? 's' : ''}
                         </span>
                       )}
                     </div>
 
                     {/* 3. Raw Observable Content Snippet */}
-                    <div style={{ fontSize: '0.78rem', color: '#94a3b8', lineHeight: '1.45', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                    <div style={{ fontSize: '0.8rem', color: '#475569', lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                       {rawSnippet}
                     </div>
 
                     {/* 4. MinIO Evidence Provenance Bar */}
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #1e293b', paddingTop: '0.5rem', marginTop: '0.2rem', fontSize: '0.68rem', fontFamily: 'monospace' }}>
-                      <span style={{ background: 'rgba(245, 158, 11, 0.08)', color: '#fbbf24', padding: '0.15rem 0.4rem', borderRadius: '0.25rem', border: '1px solid rgba(245, 158, 11, 0.2)', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={minioPreview}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f1f5f9', paddingTop: '0.5rem', marginTop: '0.2rem', fontSize: '0.68rem', fontFamily: 'monospace' }}>
+                      <span style={{ background: '#fffbeb', color: '#b45309', padding: '0.15rem 0.4rem', borderRadius: '0.25rem', border: '1px solid #fde68a', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={minioPreview}>
                         📦 {minioPreview}
                       </span>
-                      <span style={{ color: '#64748b' }}>
+                      <span style={{ color: '#94a3b8' }}>
                         ⏰ {doc.crawled_at ? new Date(doc.crawled_at).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)}
                       </span>
                     </div>
@@ -1070,10 +1086,10 @@ export default function App() {
                         marginTop: '0.2rem',
                         width: '100%',
                         padding: '0.45rem 0.75rem',
-                        background: '#1e293b',
-                        border: '1px solid #334155',
+                        background: '#ffffff',
+                        border: '1px solid #cbd5e1',
                         borderRadius: '0.375rem',
-                        color: '#f8fafc',
+                        color: '#1e293b',
                         fontWeight: 700,
                         fontSize: '0.78rem',
                         cursor: 'pointer',
@@ -1081,10 +1097,11 @@ export default function App() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         gap: '0.35rem',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
                         transition: 'all 0.2s ease'
                       }}
-                      onMouseEnter={e => { e.currentTarget.style.background = '#f59e0b'; e.currentTarget.style.color = '#000'; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = '#1e293b'; e.currentTarget.style.color = '#f8fafc'; }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = '#f59e0b'; e.currentTarget.style.color = '#b45309'; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = '#cbd5e1'; e.currentTarget.style.color = '#1e293b'; }}
                     >
                       🔍 Inspect Raw Crawled Evidence ↗
                     </button>
@@ -1099,10 +1116,10 @@ export default function App() {
                         marginTop: '0.15rem',
                         width: '100%',
                         padding: '0.45rem 0.75rem',
-                        background: '#1e293b',
-                        border: '1px solid #334155',
+                        background: '#eff6ff',
+                        border: '1px solid #bfdbfe',
                         borderRadius: '0.375rem',
-                        color: '#f8fafc',
+                        color: '#1d4ed8',
                         fontWeight: 700,
                         fontSize: '0.78rem',
                         cursor: 'pointer',
@@ -1110,10 +1127,11 @@ export default function App() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         gap: '0.35rem',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
                         transition: 'all 0.2s ease'
                       }}
-                      onMouseEnter={e => { e.currentTarget.style.background = '#38bdf8'; e.currentTarget.style.color = '#000'; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = '#1e293b'; e.currentTarget.style.color = '#f8fafc'; }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#2563eb'; e.currentTarget.style.color = '#ffffff'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#eff6ff'; e.currentTarget.style.color = '#1d4ed8'; }}
                     >
                       🔬 Open Verification Audit & Checklist ↗
                     </button>
@@ -1126,10 +1144,10 @@ export default function App() {
                         marginTop: '0.15rem',
                         width: '100%',
                         padding: '0.5rem 0.75rem',
-                        background: triggeringDocIds[doc.id] ? '#0f172a' : 'rgba(56, 189, 248, 0.15)',
-                        border: '1px solid #38bdf8',
+                        background: triggeringDocIds[doc.id] ? '#f1f5f9' : '#2563eb',
+                        border: 'none',
                         borderRadius: '0.375rem',
-                        color: triggeringDocIds[doc.id] ? '#94a3b8' : '#38bdf8',
+                        color: triggeringDocIds[doc.id] ? '#94a3b8' : '#ffffff',
                         fontWeight: 800,
                         fontSize: '0.78rem',
                         cursor: triggeringDocIds[doc.id] ? 'wait' : 'pointer',
@@ -1137,10 +1155,11 @@ export default function App() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         gap: '0.35rem',
+                        boxShadow: triggeringDocIds[doc.id] ? 'none' : '0 2px 6px rgba(37, 99, 235, 0.3)',
                         transition: 'all 0.2s ease'
                       }}
-                      onMouseEnter={e => { if (!triggeringDocIds[doc.id]) { e.currentTarget.style.background = '#38bdf8'; e.currentTarget.style.color = '#000'; } }}
-                      onMouseLeave={e => { if (!triggeringDocIds[doc.id]) { e.currentTarget.style.background = 'rgba(56, 189, 248, 0.15)'; e.currentTarget.style.color = '#38bdf8'; } }}
+                      onMouseEnter={e => { if (!triggeringDocIds[doc.id]) { e.currentTarget.style.background = '#1d4ed8'; } }}
+                      onMouseLeave={e => { if (!triggeringDocIds[doc.id]) { e.currentTarget.style.background = '#2563eb'; } }}
                     >
                       {triggeringDocIds[doc.id] ? '⏳ Initiating Agent 2 Verification...' : '⚡ Verify with Agent 2 ↗'}
                     </button>
@@ -1165,28 +1184,29 @@ export default function App() {
                 const initial = (session.company_name || session.domain || '?')[0].toUpperCase();
                 const isVerified = session.status === 'VERIFIED' || session.status === 'POSTGRES_VERIFIED';
                 const isBlocked = session.status.includes('BLOCKED') || session.status.includes('FAILED');
-                const statusBg = isVerified ? 'rgba(16, 185, 129, 0.15)' : (isBlocked ? 'rgba(239, 68, 68, 0.15)' : 'rgba(56, 189, 248, 0.15)');
-                const statusColor = isVerified ? '#34d399' : (isBlocked ? '#f87171' : '#38bdf8');
-                const statusBorder = isVerified ? 'rgba(16, 185, 129, 0.4)' : (isBlocked ? 'rgba(239, 68, 68, 0.4)' : 'rgba(56, 189, 248, 0.4)');
+                const statusBg = isVerified ? '#ecfdf5' : (isBlocked ? '#fef2f2' : '#eff6ff');
+                const statusColor = isVerified ? '#059669' : (isBlocked ? '#dc2626' : '#2563eb');
+                const statusBorder = isVerified ? '#a7f3d0' : (isBlocked ? '#fecaca' : '#bfdbfe');
 
                 return (
                   <div
                     key={session.session_id}
                     onClick={() => setSelectedAgent2Id(session.session_id)}
                     style={{
-                      background: '#0a101d',
+                      background: '#ffffff',
                       border: `1px solid ${statusBorder}`,
                       borderRadius: '0.875rem',
-                      padding: '1.15rem',
+                      padding: '1.25rem',
                       cursor: 'pointer',
-                      transition: 'all 0.25s ease',
+                      transition: 'all 0.2s ease',
                       position: 'relative',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '0.75rem'
+                      gap: '0.75rem',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                     }}
-                    onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = `0 10px 25px -5px ${statusColor}33`; }}
-                    onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
+                    onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = `0 12px 24px -6px ${isVerified ? 'rgba(5, 150, 105, 0.2)' : isBlocked ? 'rgba(220, 38, 38, 0.2)' : 'rgba(37, 99, 235, 0.2)'}`; }}
+                    onMouseLeave={e => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.05)'; }}
                   >
                     {/* Top Right Status Badge */}
                     <div style={{
@@ -1202,32 +1222,32 @@ export default function App() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingRight: '11rem' }}>
                       <div style={{
                         width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0,
-                        background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontWeight: 900, fontSize: '1.1rem', color: statusColor, border: '1px solid #334155'
+                        background: statusBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontWeight: 900, fontSize: '1.1rem', color: statusColor, border: `1px solid ${statusBorder}`
                       }}>{initial}</div>
                       <div style={{ overflow: 'hidden' }}>
-                        <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontWeight: 800, fontSize: '0.98rem', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {session.company_name}
                         </div>
                         <a href={`https://${session.domain}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                          style={{ fontSize: '0.72rem', color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                          style={{ fontSize: '0.75rem', color: '#2563eb', fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
                           🌐 {session.domain} ↗
                         </a>
                       </div>
                     </div>
 
                     {/* Verification Metrics Pills */}
-                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.68rem', fontWeight: 600 }}>
-                      <span style={{ background: 'rgba(56, 189, 248, 0.12)', color: '#38bdf8', border: '1px solid rgba(56, 189, 248, 0.3)', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
+                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.72rem', fontWeight: 600 }}>
+                      <span style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         🎯 Priority: {Math.round(session.priority_score || 0)}/100
                       </span>
-                      <span style={{ background: '#111827', color: '#a78bfa', border: '1px solid #1e293b', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
-                        🔄 {session.recrawl_count || 0} Subpage Re-crawls
+                      <span style={{ background: '#f8fafc', color: '#6d28d9', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
+                        🔄 {session.recrawl_count || 0} Subpages
                       </span>
-                      <span style={{ background: '#111827', color: '#34d399', border: '1px solid #1e293b', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
-                        🔍 {session.search_rounds || 0} Search Rounds
+                      <span style={{ background: '#f8fafc', color: '#059669', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
+                        🔍 {session.search_rounds || 0} Searches
                       </span>
-                      <span style={{ background: '#111827', color: '#60a5fa', border: '1px solid #1e293b', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
+                      <span style={{ background: '#f8fafc', color: '#1e40af', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         👔 {session.verified_decision_makers || 0} Leaders Verified
                       </span>
                     </div>
@@ -1241,11 +1261,11 @@ export default function App() {
                       style={{
                         marginTop: '0.35rem',
                         width: '100%',
-                        padding: '0.45rem 0.75rem',
-                        background: '#1e293b',
-                        border: '1px solid #334155',
+                        padding: '0.5rem 0.75rem',
+                        background: '#eff6ff',
+                        border: '1px solid #bfdbfe',
                         borderRadius: '0.375rem',
-                        color: '#f8fafc',
+                        color: '#1d4ed8',
                         fontWeight: 700,
                         fontSize: '0.78rem',
                         cursor: 'pointer',
@@ -1253,10 +1273,11 @@ export default function App() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         gap: '0.35rem',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
                         transition: 'all 0.2s ease'
                       }}
-                      onMouseEnter={e => { e.currentTarget.style.background = statusColor; e.currentTarget.style.color = '#000'; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = '#1e293b'; e.currentTarget.style.color = '#f8fafc'; }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#2563eb'; e.currentTarget.style.color = '#ffffff'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#eff6ff'; e.currentTarget.style.color = '#1d4ed8'; }}
                     >
                       🔬 Open Verification Audit & Checklist ↗
                     </button>
@@ -1294,26 +1315,27 @@ export default function App() {
                     key={ent.id}
                     onClick={() => setSelectedEntityId(ent.id)}
                     style={{
-                      background: '#0a101d',
-                      border: '1px solid #10b981',
+                      background: '#ffffff',
+                      border: '1px solid #a7f3d0',
                       borderRadius: '0.875rem',
-                      padding: '1.1rem',
+                      padding: '1.25rem',
                       cursor: 'pointer',
-                      transition: 'all 0.25s ease',
+                      transition: 'all 0.2s ease',
                       position: 'relative',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '0.65rem'
+                      gap: '0.75rem',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
                     }}
-                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#00f2ff'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 10px 25px -5px rgba(16, 185, 129, 0.2)'; }}
-                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#10b981'; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#059669'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 12px 24px -6px rgba(5, 150, 105, 0.2)'; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#a7f3d0'; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = '0 1px 3px rgba(0,0,0,0.05)'; }}
                   >
-                    {/* Top Right Score Badge (Image 2 style) */}
+                    {/* Top Right Score Badge */}
                     <div style={{
                       position: 'absolute', top: '0.85rem', right: '0.85rem',
                       fontSize: '0.72rem', fontWeight: 800, padding: '0.2rem 0.55rem', borderRadius: '0.375rem',
-                      background: 'rgba(0, 242, 255, 0.08)', color: '#00f2ff',
-                      border: '1px solid rgba(0, 242, 255, 0.35)', display: 'flex', alignItems: 'center', gap: '0.25rem'
+                      background: '#ecfdf5', color: '#059669',
+                      border: '1px solid #a7f3d0', display: 'flex', alignItems: 'center', gap: '0.25rem'
                     }}>
                       🛡️ {score}/100
                     </div>
@@ -1322,16 +1344,16 @@ export default function App() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', paddingRight: '5.5rem' }}>
                       {ent.logo_url ? (
                         <img src={ent.logo_url} alt="Logo" onError={(e) => { e.target.style.display = 'none'; }}
-                          style={{ width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0, objectFit: 'contain', background: '#0f172a', padding: '2px', border: '1px solid #334155' }} />
+                          style={{ width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0, objectFit: 'contain', background: '#f8fafc', padding: '2px', border: '1px solid #e2e8f0' }} />
                       ) : (
                         <div style={{
                           width: '38px', height: '38px', borderRadius: '0.5rem', flexShrink: 0,
-                          background: '#1e293b', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          fontWeight: 900, fontSize: '1.1rem', color: '#34d399', border: '1px solid #10b981'
+                          background: '#ecfdf5', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontWeight: 900, fontSize: '1.1rem', color: '#059669', border: '1px solid #a7f3d0'
                         }}>{initial}</div>
                       )}
                       <div style={{ overflow: 'hidden' }}>
-                        <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <div style={{ fontWeight: 800, fontSize: '0.98rem', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {ent.canonical_name}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.15rem' }}>
@@ -1362,22 +1384,22 @@ export default function App() {
                     </div>
 
                     {/* 2. Metadata Pills (Location, Industry & Email) */}
-                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.68rem', fontWeight: 600 }}>
-                      <span style={{ background: '#111827', color: '#9ca3af', border: '1px solid #1f2937', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
+                    <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.72rem', fontWeight: 600 }}>
+                      <span style={{ background: '#f8fafc', color: '#475569', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         📍 {locationStr}
                       </span>
-                      <span style={{ background: '#111827', color: '#9ca3af', border: '1px solid #1f2937', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
+                      <span style={{ background: '#f8fafc', color: '#475569', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         💼 {industryStr}
                       </span>
                       {emailStr && (
-                        <span style={{ background: 'rgba(16,185,129,0.15)', color: '#34d399', border: '1px solid rgba(16,185,129,0.3)', padding: '0.15rem 0.5rem', borderRadius: '0.375rem' }}>
-                          ✉️ 1 Emails
+                        <span style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
+                          ✉️ 1 Email
                         </span>
                       )}
                     </div>
 
                     {/* 3. Business Overview Text Snippet */}
-                    <div style={{ fontSize: '0.78rem', color: '#94a3b8', lineHeight: '1.45', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                    <div style={{ fontSize: '0.8rem', color: '#475569', lineHeight: '1.5', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                       {safeText(ent.business_overview) || safeText(ent.description) || `${ent.canonical_name} operates in the ${industryStr} domain.`}
                     </div>
 
@@ -1385,7 +1407,7 @@ export default function App() {
                     {ent.technology_stack && ent.technology_stack.length > 0 && (
                       <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
                         {ent.technology_stack.slice(0, 4).map((tech, idx) => (
-                          <span key={idx} style={{ fontSize: '0.66rem', background: '#111827', color: '#cbd5e1', border: '1px solid #1f2937', padding: '0.1rem 0.45rem', borderRadius: '0.25rem', fontWeight: 500 }}>
+                          <span key={idx} style={{ fontSize: '0.7rem', background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', padding: '0.15rem 0.45rem', borderRadius: '0.25rem', fontWeight: 600 }}>
                             {tech}
                           </span>
                         ))}
@@ -1477,10 +1499,10 @@ export default function App() {
                         marginTop: '0.25rem',
                         width: '100%',
                         padding: '0.45rem 0.75rem',
-                        background: '#1e293b',
-                        border: '1px solid #10b981',
+                        background: '#eff6ff',
+                        border: '1px solid #bfdbfe',
                         borderRadius: '0.375rem',
-                        color: '#f8fafc',
+                        color: '#1d4ed8',
                         fontWeight: 700,
                         fontSize: '0.78rem',
                         cursor: 'pointer',
@@ -1488,10 +1510,11 @@ export default function App() {
                         alignItems: 'center',
                         justifyContent: 'center',
                         gap: '0.35rem',
+                        boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
                         transition: 'all 0.2s ease'
                       }}
-                      onMouseEnter={e => { e.currentTarget.style.background = '#10b981'; e.currentTarget.style.color = '#000'; }}
-                      onMouseLeave={e => { e.currentTarget.style.background = '#1e293b'; e.currentTarget.style.color = '#f8fafc'; }}
+                      onMouseEnter={e => { e.currentTarget.style.background = '#2563eb'; e.currentTarget.style.color = '#ffffff'; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = '#eff6ff'; e.currentTarget.style.color = '#1d4ed8'; }}
                     >
                       🔬 Open Verification Audit & Checklist ↗
                     </button>
@@ -1505,13 +1528,15 @@ export default function App() {
 
       {/* 5. CRAWLED DOCUMENT DETAIL VIEW MODAL */}
       {selectedDocumentId && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(8px)', zIndex: 100, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '2rem' }}>
-          <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: '1rem', width: '100%', maxWidth: '1000px', maxHeight: '90vh', overflowY: 'auto', padding: '2rem', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)', position: 'relative' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.45)', backdropFilter: 'blur(8px)', zIndex: 100, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '2rem' }}>
+          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '1rem', width: '100%', maxWidth: '1000px', maxHeight: '90vh', overflowY: 'auto', padding: '2rem', boxShadow: '0 25px 50px -12px rgba(15, 23, 42, 0.18)', position: 'relative' }}>
             
             {/* Close Button */}
             <button
               onClick={() => setSelectedDocumentId(null)}
-              style={{ position: 'absolute', top: '1.5rem', right: '1.5rem', background: '#0f172a', border: '1px solid #334155', color: 'white', borderRadius: '50%', width: '36px', height: '36px', cursor: 'pointer', fontSize: '1.2rem', fontWeight: 700 }}
+              style={{ position: 'absolute', top: '1.5rem', right: '1.5rem', background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#475569', borderRadius: '50%', width: '36px', height: '36px', cursor: 'pointer', fontSize: '1.2rem', fontWeight: 700 }}
+              onMouseEnter={e => { e.currentTarget.style.background = '#fef2f2'; e.currentTarget.style.color = '#dc2626'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = '#f1f5f9'; e.currentTarget.style.color = '#475569'; }}
             >
               ✕
             </button>
@@ -1535,25 +1560,25 @@ export default function App() {
                   )}
                   <div style={{ overflow: 'hidden', flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                      <h2 style={{ margin: 0, fontSize: '1.75rem', color: '#f8fafc' }}>{documentDetail.canonical_name}</h2>
+                      <h2 style={{ margin: 0, fontSize: '1.75rem', color: '#0f172a', fontWeight: 900 }}>{documentDetail.canonical_name}</h2>
                       <span style={{
                         fontSize: '0.7rem', fontWeight: 800, padding: '0.2rem 0.6rem', borderRadius: '9999px',
-                        background: 'rgba(245, 158, 11, 0.15)',
-                        color: '#f59e0b',
-                        border: '1px solid rgba(245, 158, 11, 0.4)'
+                        background: '#fffbeb',
+                        color: '#b45309',
+                        border: '1px solid #fde68a'
                       }}>
-                        ⚡ CRAWLED_PENDING_AGENT_2 (Agent 1 Output)
+                        ⚡ CRAWLED_PENDING_AGENT_2
                       </span>
                       <span style={{
                         fontSize: '0.7rem', fontWeight: 700, padding: '0.2rem 0.6rem', borderRadius: '9999px',
-                        background: (documentDetail.http_status === 200 || !documentDetail.http_status) ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)',
-                        color: (documentDetail.http_status === 200 || !documentDetail.http_status) ? '#34d399' : '#f87171',
-                        border: `1px solid ${(documentDetail.http_status === 200 || !documentDetail.http_status) ? '#10b981' : '#ef4444'}`
+                        background: (documentDetail.http_status === 200 || !documentDetail.http_status) ? '#ecfdf5' : '#fef2f2',
+                        color: (documentDetail.http_status === 200 || !documentDetail.http_status) ? '#059669' : '#dc2626',
+                        border: `1px solid ${(documentDetail.http_status === 200 || !documentDetail.http_status) ? '#a7f3d0' : '#fecaca'}`
                       }}>
                         HTTP {documentDetail.http_status || 200} {(documentDetail.http_status === 200 || !documentDetail.http_status) ? 'OK' : (documentDetail.http_status === 403 ? 'Blocked / Forbidden' : 'Response')}
                       </span>
                     </div>
-                    <a href={documentDetail.url} target="_blank" rel="noreferrer" style={{ color: '#60a5fa', fontSize: '0.9rem', marginTop: '0.25rem', display: 'inline-block' }}>
+                    <a href={documentDetail.url} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontSize: '0.9rem', marginTop: '0.25rem', display: 'inline-block', fontWeight: 600 }}>
                       🔗 {documentDetail.url}
                     </a>
                   </div>
@@ -1561,38 +1586,38 @@ export default function App() {
 
                 {/* Key Metadata Stats */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-                  <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
+                  <div style={{ background: '#f8fafc', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
                     <span className="data-label">LIFECYCLE STATUS</span>
-                    <div style={{ color: '#f59e0b', fontWeight: 700, fontSize: '0.95rem' }}>CRAWLED_PENDING_AGENT_2</div>
+                    <div style={{ color: '#b45309', fontWeight: 800, fontSize: '0.95rem' }}>CRAWLED_PENDING_AGENT_2</div>
                   </div>
-                  <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
+                  <div style={{ background: '#f8fafc', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
                     <span className="data-label">PAGES CRAWLED</span>
-                    <div style={{ color: '#f8fafc', fontWeight: 700, fontSize: '0.95rem' }}>{(documentDetail.crawled_subpages?.length || 0) + 1} pages</div>
+                    <div style={{ color: '#0f172a', fontWeight: 800, fontSize: '0.95rem' }}>{(documentDetail.crawled_subpages?.length || 0) + 1} pages</div>
                   </div>
-                  <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
+                  <div style={{ background: '#f8fafc', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
                     <span className="data-label">MINIO ARTIFACTS</span>
-                    <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: '0.95rem' }}>{documentDetail.minio_artifacts?.length || 1} objects</div>
+                    <div style={{ color: '#2563eb', fontWeight: 800, fontSize: '0.95rem' }}>{documentDetail.minio_artifacts?.length || 1} objects</div>
                   </div>
-                  <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
+                  <div style={{ background: '#f8fafc', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
                     <span className="data-label">EXTRACTED WORD COUNT</span>
-                    <div style={{ color: '#34d399', fontWeight: 700, fontSize: '0.95rem' }}>{documentDetail.word_count.toLocaleString()} words</div>
+                    <div style={{ color: '#059669', fontWeight: 800, fontSize: '0.95rem' }}>{documentDetail.word_count.toLocaleString()} words</div>
                   </div>
                 </div>
 
                 {/* MinIO Storage Artifacts List */}
-                <div style={{ background: '#0f172a', padding: '1rem', borderRadius: '0.5rem', border: '1px solid #334155', marginBottom: '1.5rem' }}>
-                  <span className="data-label" style={{ display: 'block', marginBottom: '0.4rem', color: '#c084fc' }}>
+                <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0', marginBottom: '1.5rem' }}>
+                  <span className="data-label" style={{ display: 'block', marginBottom: '0.4rem', color: '#6d28d9' }}>
                     📦 MINIO OBJECT STORAGE ARTIFACTS
                   </span>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', fontFamily: 'monospace', fontSize: '0.8rem' }}>
                     {Array.isArray(documentDetail.minio_artifacts) && documentDetail.minio_artifacts.length > 0 ? (
                       documentDetail.minio_artifacts.map((art, idx) => (
-                        <div key={idx} style={{ color: '#a78bfa', background: '#060e1e', padding: '0.35rem 0.65rem', borderRadius: '0.35rem', border: '1px solid #1e293b' }}>
+                        <div key={idx} style={{ color: '#6d28d9', background: '#ffffff', padding: '0.35rem 0.65rem', borderRadius: '0.35rem', border: '1px solid #e2e8f0' }}>
                           📄 {art}
                         </div>
                       ))
                     ) : (
-                      <div style={{ color: '#a78bfa', background: '#060e1e', padding: '0.35rem 0.65rem', borderRadius: '0.35rem', border: '1px solid #1e293b' }}>
+                      <div style={{ color: '#6d28d9', background: '#ffffff', padding: '0.35rem 0.65rem', borderRadius: '0.35rem', border: '1px solid #e2e8f0' }}>
                         📄 {documentDetail.raw_path || `companies/${documentDetail.domain}/pages/homepage.md`}
                       </div>
                     )}
@@ -1606,15 +1631,15 @@ export default function App() {
 
                 {/* Directly Observed Metadata (Email & Phone) */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1.5rem' }}>
-                  <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
+                  <div style={{ background: '#f8fafc', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
                     <span className="data-label">GENUINE CONTACT EMAILS (ON-PAGE)</span>
-                    <div style={{ color: '#38bdf8', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>
+                    <div style={{ color: '#2563eb', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>
                       {Array.isArray(documentDetail.verified_emails) && documentDetail.verified_emails.length > 0 ? documentDetail.verified_emails.join(', ') : 'None discovered'}
                     </div>
                   </div>
-                  <div style={{ background: '#0f172a', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #1e293b' }}>
+                  <div style={{ background: '#f8fafc', padding: '0.85rem 1rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
                     <span className="data-label">GENUINE CONTACT PHONES (ON-PAGE)</span>
-                    <div style={{ color: '#34d399', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>
+                    <div style={{ color: '#059669', fontWeight: 700, fontSize: '0.9rem', marginTop: '0.15rem' }}>
                       {Array.isArray(documentDetail.detected_phones) && documentDetail.detected_phones.length > 0 ? documentDetail.detected_phones.join(', ') : 'None discovered'}
                     </div>
                   </div>
@@ -1623,16 +1648,16 @@ export default function App() {
                 {/* Raw Crawled Content Preview */}
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                    <h3 style={{ color: '#60a5fa', fontSize: '1.1rem', margin: 0 }}>
+                    <h3 style={{ color: '#0f172a', fontSize: '1.05rem', margin: 0, fontWeight: 800 }}>
                       Raw Crawled Web Evidence & Content
                     </h3>
-                    <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                    <span style={{ fontSize: '0.75rem', color: '#64748b' }}>
                       Clean Readable Text (HTML Stripped)
                     </span>
                   </div>
                   <div style={{
-                    background: '#0f172a', color: '#cbd5e1', padding: '1.25rem', borderRadius: '0.5rem',
-                    border: '1px solid #334155', maxHeight: '350px', overflowY: 'auto', fontFamily: 'sans-serif',
+                    background: '#f8fafc', color: '#0f172a', padding: '1.25rem', borderRadius: '0.5rem',
+                    border: '1px solid #cbd5e1', maxHeight: '350px', overflowY: 'auto', fontFamily: 'inherit',
                     fontSize: '0.875rem', lineHeight: '1.6', whiteSpace: 'pre-wrap'
                   }}>
                     {documentDetail.text_preview}
@@ -1640,10 +1665,10 @@ export default function App() {
                 </div>
 
                 {/* Footer Action Bar */}
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem', borderTop: '1px solid #334155', paddingTop: '1.25rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem', borderTop: '1px solid #e2e8f0', paddingTop: '1.25rem' }}>
                   <button
                     onClick={() => setSelectedDocumentId(null)}
-                    style={{ padding: '0.65rem 1.25rem', background: '#0f172a', border: '1px solid #334155', color: '#94a3b8', borderRadius: '0.5rem', fontWeight: 700, cursor: 'pointer' }}
+                    style={{ padding: '0.65rem 1.25rem', background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#475569', borderRadius: '0.5rem', fontWeight: 700, cursor: 'pointer' }}
                   >
                     Close
                   </button>
@@ -1665,8 +1690,8 @@ export default function App() {
 
       {/* 5.5. AGENT 2 VERIFICATION AUDIT MODAL */}
       {selectedAgent2Id && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.88)', backdropFilter: 'blur(10px)', zIndex: 110, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '1.5rem' }}>
-          <div style={{ background: '#080e1a', border: '1px solid #1e293b', borderRadius: '1rem', width: '100%', maxWidth: '1150px', maxHeight: '90vh', overflowY: 'auto', padding: '1.75rem', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.85)', position: 'relative' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.45)', backdropFilter: 'blur(10px)', zIndex: 110, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '1.5rem' }}>
+          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '1rem', width: '100%', maxWidth: '1150px', maxHeight: '90vh', overflowY: 'auto', padding: '1.75rem', boxShadow: '0 25px 50px -12px rgba(15, 23, 42, 0.18)', position: 'relative' }}>
             
             {loadingAgent2Detail || !agent2Detail ? (
               <div style={{ textAlign: 'center', padding: '4rem 0', color: '#94a3b8' }}>
@@ -1676,35 +1701,35 @@ export default function App() {
             ) : (
               <div>
                 {/* Header Bar */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #1e293b', paddingBottom: '1.25rem', marginBottom: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #e2e8f0', paddingBottom: '1.25rem', marginBottom: '1.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <div style={{ width: '44px', height: '44px', borderRadius: '0.6rem', background: '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#000', fontSize: '1.3rem' }}>
+                    <div style={{ width: '44px', height: '44px', borderRadius: '0.6rem', background: '#eff6ff', border: '1px solid #bfdbfe', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#2563eb', fontSize: '1.3rem' }}>
                       {(agent2Detail.company_name || agent2Detail.domain || '?')[0].toUpperCase()}
                     </div>
                     <div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <h2 style={{ margin: 0, fontSize: '1.65rem', fontWeight: 900, color: '#ffffff', letterSpacing: '-0.02em' }}>
+                        <h2 style={{ margin: 0, fontSize: '1.65rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>
                           {agent2Detail.company_name}
                         </h2>
                         <span style={{
                           fontSize: '0.72rem', fontWeight: 800, padding: '0.2rem 0.6rem', borderRadius: '0.375rem',
-                          background: agent2Detail.status.includes('VERIFIED') ? 'rgba(16, 185, 129, 0.18)' : (agent2Detail.status.includes('BLOCKED') ? 'rgba(239, 68, 68, 0.18)' : 'rgba(56, 189, 248, 0.18)'),
-                          color: agent2Detail.status.includes('VERIFIED') ? '#34d399' : (agent2Detail.status.includes('BLOCKED') ? '#f87171' : '#38bdf8'),
-                          border: `1px solid ${agent2Detail.status.includes('VERIFIED') ? '#10b981' : (agent2Detail.status.includes('BLOCKED') ? '#ef4444' : '#38bdf8')}`
+                          background: agent2Detail.status.includes('VERIFIED') ? '#ecfdf5' : (agent2Detail.status.includes('BLOCKED') ? '#fef2f2' : '#eff6ff'),
+                          color: agent2Detail.status.includes('VERIFIED') ? '#059669' : (agent2Detail.status.includes('BLOCKED') ? '#dc2626' : '#2563eb'),
+                          border: `1px solid ${agent2Detail.status.includes('VERIFIED') ? '#a7f3d0' : (agent2Detail.status.includes('BLOCKED') ? '#fecaca' : '#bfdbfe')}`
                         }}>
                           {agent2Detail.status}
                         </span>
                         <span style={{
                           fontSize: '0.72rem', fontWeight: 800, padding: '0.2rem 0.6rem', borderRadius: '0.375rem',
-                          background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.35)'
+                          background: '#f5f3ff', color: '#7c3aed', border: '1px solid #ddd6fe'
                         }}>
                           Priority Score: {Math.round(agent2Detail.priority_score || 0)}/100
                         </span>
                       </div>
-                      <div style={{ fontSize: '0.85rem', color: '#38bdf8', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <div style={{ fontSize: '0.85rem', color: '#2563eb', marginTop: '0.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}>
                         <span>🌐 {agent2Detail.domain}</span>
                         <span>•</span>
-                        <a href={`https://${agent2Detail.domain}`} target="_blank" rel="noreferrer" style={{ color: '#38bdf8', textDecoration: 'none' }}>
+                        <a href={`https://${agent2Detail.domain}`} target="_blank" rel="noreferrer" style={{ color: '#2563eb', textDecoration: 'none' }}>
                           Visit Official Site ↗
                         </a>
                       </div>
@@ -1713,7 +1738,9 @@ export default function App() {
 
                   <button
                     onClick={() => setSelectedAgent2Id(null)}
-                    style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
+                    style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#475569', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#fef2f2'; e.currentTarget.style.color = '#dc2626'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = '#f1f5f9'; e.currentTarget.style.color = '#475569'; }}
                   >
                     ✕ Close
                   </button>
@@ -1721,10 +1748,10 @@ export default function App() {
 
                 {/* Priority Reasons Banner */}
                 {Array.isArray(agent2Detail.priority_reasons) && agent2Detail.priority_reasons.length > 0 && (
-                  <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '0.65rem', padding: '0.75rem 1rem', marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase' }}>Priority Drivers:</span>
+                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.65rem', padding: '0.75rem 1rem', marginBottom: '1.5rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase' }}>Priority Drivers:</span>
                     {agent2Detail.priority_reasons.map((pr, idx) => (
-                      <span key={idx} style={{ background: 'rgba(56, 189, 248, 0.1)', color: '#7dd3fc', border: '1px solid rgba(56, 189, 248, 0.25)', padding: '0.15rem 0.5rem', borderRadius: '0.35rem', fontSize: '0.72rem' }}>
+                      <span key={idx} style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', padding: '0.18rem 0.55rem', borderRadius: '0.35rem', fontSize: '0.75rem', fontWeight: 600 }}>
                         ✓ {pr}
                       </span>
                     ))}
@@ -1738,16 +1765,20 @@ export default function App() {
                   const score = audit.completeness_score !== undefined ? audit.completeness_score : (agent2Detail.completeness_score || 0);
                   const stateLabel = audit.verification_state || agent2Detail.status;
 
+                  const bannerBg = isV ? '#f0fdf4' : (stateLabel.includes('BLOCKED') ? '#fef2f2' : '#fffbeb');
+                  const bannerBorder = isV ? '#86efac' : (stateLabel.includes('BLOCKED') ? '#fca5a5' : '#fde68a');
+                  const gateColor = isV ? '#16a34a' : (stateLabel.includes('BLOCKED') ? '#dc2626' : '#d97706');
+
                   return (
-                    <div style={{ background: '#0a101d', border: `1px solid ${isV ? '#10b981' : (stateLabel.includes('BLOCKED') ? '#ef4444' : '#f59e0b')}`, borderRadius: '0.75rem', padding: '1.25rem', marginBottom: '1.5rem', boxShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+                    <div style={{ background: bannerBg, border: `1px solid ${bannerBorder}`, borderRadius: '0.75rem', padding: '1.25rem', marginBottom: '1.5rem', boxShadow: '0 2px 8px rgba(0,0,0,0.04)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '0.85rem' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                           <span style={{ fontSize: '1.5rem' }}>{isV ? '🛡️' : '⚠️'}</span>
                           <div>
-                            <div style={{ fontWeight: 900, fontSize: '1.05rem', color: isV ? '#34d399' : '#fbbf24', letterSpacing: '-0.01em' }}>
+                            <div style={{ fontWeight: 900, fontSize: '1.05rem', color: gateColor, letterSpacing: '-0.01em' }}>
                               {isV ? '✓ Authoritative Verification Contract PASSED' : `Verification Gate: ${stateLabel}`}
                             </div>
-                            <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: '0.15rem' }}>
+                            <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '0.15rem' }}>
                               Single backend authority • Contract Version: {audit.contract_version || '2026.09.v1'}
                             </div>
                           </div>
@@ -1756,7 +1787,7 @@ export default function App() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                           <div style={{ textAlign: 'right' }}>
                             <span style={{ fontSize: '0.72rem', color: '#64748b', display: 'block', textTransform: 'uppercase', fontWeight: 800 }}>Completeness Score</span>
-                            <span style={{ fontSize: '1.4rem', fontWeight: 900, color: isV ? '#34d399' : '#38bdf8' }}>
+                            <span style={{ fontSize: '1.4rem', fontWeight: 900, color: isV ? '#16a34a' : '#2563eb' }}>
                               {score}%
                             </span>
                           </div>
@@ -1765,21 +1796,22 @@ export default function App() {
                               onClick={() => handleRerunAgent2(agent2Detail.session_id)}
                               disabled={rerunningAgent2}
                               style={{
-                                background: rerunningAgent2 ? '#334155' : 'rgba(56, 189, 248, 0.15)',
-                                border: '1px solid #38bdf8',
+                                background: rerunningAgent2 ? '#f1f5f9' : '#2563eb',
+                                border: 'none',
                                 borderRadius: '0.45rem',
-                                color: '#38bdf8',
+                                color: rerunningAgent2 ? '#94a3b8' : '#ffffff',
                                 fontWeight: 800,
                                 fontSize: '0.78rem',
-                                padding: '0.5rem 0.9rem',
+                                padding: '0.55rem 1rem',
                                 cursor: rerunningAgent2 ? 'wait' : 'pointer',
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: '0.35rem',
+                                boxShadow: rerunningAgent2 ? 'none' : '0 2px 6px rgba(37, 99, 235, 0.3)',
                                 transition: 'all 0.2s ease'
                               }}
-                              onMouseEnter={e => { if (!rerunningAgent2) e.currentTarget.style.background = '#38bdf8'; e.currentTarget.style.color = '#000'; }}
-                              onMouseLeave={e => { if (!rerunningAgent2) e.currentTarget.style.background = 'rgba(56, 189, 248, 0.15)'; e.currentTarget.style.color = '#38bdf8'; }}
+                              onMouseEnter={e => { if (!rerunningAgent2) e.currentTarget.style.background = '#1d4ed8'; }}
+                              onMouseLeave={e => { if (!rerunningAgent2) e.currentTarget.style.background = '#2563eb'; }}
                             >
                               {rerunningAgent2 ? '⏳ Re-running...' : '⚡ Re-run Verification'}
                             </button>
@@ -1788,20 +1820,20 @@ export default function App() {
                       </div>
 
                       {/* Progress bar */}
-                      <div style={{ width: '100%', height: '8px', background: '#1e293b', borderRadius: '4px', overflow: 'hidden' }}>
+                      <div style={{ width: '100%', height: '8px', background: '#e2e8f0', borderRadius: '4px', overflow: 'hidden' }}>
                         <div style={{
                           width: `${Math.min(100, Math.max(0, score))}%`,
                           height: '100%',
-                          background: isV ? 'linear-gradient(90deg, #10b981, #059669)' : 'linear-gradient(90deg, #38bdf8, #818cf8)',
+                          background: isV ? 'linear-gradient(90deg, #10b981, #059669)' : 'linear-gradient(90deg, #2563eb, #6366f1)',
                           transition: 'width 0.4s ease'
                         }} />
                       </div>
 
                       {/* Critical Issues & Warnings */}
                       {Array.isArray(audit.critical_issues) && audit.critical_issues.length > 0 && (
-                        <div style={{ marginTop: '0.85rem', background: 'rgba(239, 68, 68, 0.08)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '0.5rem', padding: '0.65rem 0.85rem' }}>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#f87171', textTransform: 'uppercase' }}>🚨 Critical Verification Issues:</span>
-                          <ul style={{ margin: '0.3rem 0 0 1rem', padding: 0, fontSize: '0.78rem', color: '#fca5a5' }}>
+                        <div style={{ marginTop: '0.85rem', background: '#ffffff', border: '1px solid #fca5a5', borderRadius: '0.5rem', padding: '0.75rem 1rem' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#b91c1c', textTransform: 'uppercase' }}>🚨 Critical Verification Issues:</span>
+                          <ul style={{ margin: '0.3rem 0 0 1rem', padding: 0, fontSize: '0.8rem', color: '#dc2626', lineHeight: '1.5' }}>
                             {audit.critical_issues.map((iss, i) => (
                               <li key={i}>{iss}</li>
                             ))}
@@ -1810,9 +1842,9 @@ export default function App() {
                       )}
 
                       {Array.isArray(audit.warnings) && audit.warnings.length > 0 && (
-                        <div style={{ marginTop: '0.5rem', background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '0.5rem', padding: '0.65rem 0.85rem' }}>
-                          <span style={{ fontSize: '0.72rem', fontWeight: 800, color: '#fbbf24', textTransform: 'uppercase' }}>⚠️ Advisory Warnings:</span>
-                          <ul style={{ margin: '0.3rem 0 0 1rem', padding: 0, fontSize: '0.78rem', color: '#fde68a' }}>
+                        <div style={{ marginTop: '0.5rem', background: '#ffffff', border: '1px solid #fde68a', borderRadius: '0.5rem', padding: '0.75rem 1rem' }}>
+                          <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#b45309', textTransform: 'uppercase' }}>⚠️ Advisory Warnings:</span>
+                          <ul style={{ margin: '0.3rem 0 0 1rem', padding: 0, fontSize: '0.8rem', color: '#d97706', lineHeight: '1.5' }}>
                             {audit.warnings.map((w, i) => (
                               <li key={i}>{w}</li>
                             ))}
@@ -1853,47 +1885,47 @@ export default function App() {
                         const source = fieldData.source_url || evRow.source_url;
                         const investigation = evRow.investigation || {};
 
-                        const badgeBg = isVal ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)';
-                        const badgeColor = isVal ? '#34d399' : '#f87171';
-                        const badgeBorder = isVal ? '#10b981' : '#ef4444';
+                        const badgeBg = isVal ? '#ecfdf5' : '#fef2f2';
+                        const badgeColor = isVal ? '#059669' : '#dc2626';
+                        const badgeBorder = isVal ? '#a7f3d0' : '#fecaca';
 
                         return (
-                          <div key={idx} style={{ background: '#0a101d', border: `1px solid ${isVal ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`, borderRadius: '0.5rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
+                          <div key={idx} style={{ background: '#ffffff', border: `1px solid ${isVal ? '#a7f3d0' : '#fecaca'}`, borderRadius: '0.5rem', padding: '0.85rem 1.1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
                             <div style={{ flex: 1, minWidth: '260px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ fontWeight: 800, color: '#f8fafc', fontSize: '0.85rem' }}>
+                                <span style={{ fontWeight: 800, color: '#0f172a', fontSize: '0.88rem' }}>
                                   {isVal ? '✓' : '✗'} {label}
                                 </span>
                                 <span style={{ fontSize: '0.68rem', fontWeight: 800, padding: '0.15rem 0.45rem', borderRadius: '0.25rem', background: badgeBg, color: badgeColor, border: `1px solid ${badgeBorder}` }}>
                                   {status}
                                 </span>
                               </div>
-                              <div style={{ color: val ? '#67e8f9' : '#64748b', fontSize: '0.82rem', marginTop: '0.25rem', fontWeight: 600 }}>
+                              <div style={{ color: val ? '#0f172a' : '#94a3b8', fontSize: '0.85rem', marginTop: '0.25rem', fontWeight: 600 }}>
                                 {val ? safeText(val) : '(Missing or generic placeholder)'}
                               </div>
                               {status === 'NOT_FOUND_AFTER_SEARCH' && Object.keys(investigation).length > 0 && (
-                                <div style={{ marginTop: '0.75rem', background: 'rgba(239, 68, 68, 0.05)', padding: '0.5rem', borderRadius: '0.375rem', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.75rem', color: '#94a3b8' }}>
-                                  <div style={{ marginBottom: '0.25rem', fontWeight: 700, color: '#f87171' }}>Investigation Audit:</div>
-                                  {investigation.search_rounds !== undefined && <div>• Search Rounds: <span style={{ color: '#cbd5e1' }}>{investigation.search_rounds}</span></div>}
+                                <div style={{ marginTop: '0.75rem', background: '#f8fafc', padding: '0.6rem', borderRadius: '0.375rem', border: '1px solid #e2e8f0', fontSize: '0.78rem', color: '#475569' }}>
+                                  <div style={{ marginBottom: '0.25rem', fontWeight: 700, color: '#dc2626' }}>Investigation Audit:</div>
+                                  {investigation.search_rounds !== undefined && <div>• Search Rounds: <span style={{ color: '#0f172a' }}>{investigation.search_rounds}</span></div>}
                                   {investigation.search_queries && investigation.search_queries.length > 0 && (
-                                    <div>• Queries Attempted: <span style={{ color: '#cbd5e1', fontFamily: 'monospace' }}>{investigation.search_queries.join(', ')}</span></div>
+                                    <div>• Queries Attempted: <span style={{ color: '#0f172a', fontFamily: 'monospace' }}>{investigation.search_queries.join(', ')}</span></div>
                                   )}
                                   {investigation.sources_checked && investigation.sources_checked.length > 0 && (
-                                    <div>• Sources Examined: <span style={{ color: '#cbd5e1' }}>{investigation.sources_checked.join(', ')}</span></div>
+                                    <div>• Sources Examined: <span style={{ color: '#0f172a' }}>{investigation.sources_checked.join(', ')}</span></div>
                                   )}
-                                  {investigation.infra_failure && <div>• Infra Failure: <span style={{ color: '#f87171' }}>{investigation.infra_failure}</span></div>}
+                                  {investigation.infra_failure && <div>• Infra Failure: <span style={{ color: '#dc2626' }}>{investigation.infra_failure}</span></div>}
                                   <div style={{ marginTop: '0.25rem' }}>• Reason: {snippet || "No reliable public evidence found."}</div>
                                 </div>
                               )}
                               {status !== 'NOT_FOUND_AFTER_SEARCH' && snippet && (
-                                <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem', fontStyle: 'italic' }}>
+                                <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '0.25rem', fontStyle: 'italic' }}>
                                   Provenance: {safeText(snippet).slice(0, 180)}{safeText(snippet).length > 180 ? '...' : ''}
                                 </div>
                               )}
                             </div>
                             {source && (
                               <div style={{ fontSize: '0.72rem', color: '#64748b', textAlign: 'right', flexShrink: 0 }}>
-                                <span style={{ color: '#60a5fa' }}>Source: {safeText(source).slice(0, 35)}</span>
+                                <span style={{ color: '#2563eb' }}>Source: {safeText(source).slice(0, 35)}</span>
                               </div>
                             )}
                           </div>
@@ -1931,23 +1963,23 @@ export default function App() {
                         const snippet = fieldData.evidence;
 
                         return (
-                          <div key={idx} style={{ background: '#0a101d', border: '1px solid #1e293b', borderRadius: '0.5rem', padding: '0.65rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+                          <div key={idx} style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '0.5rem', padding: '0.75rem 1.1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', boxShadow: '0 1px 2px rgba(0,0,0,0.02)' }}>
                             <div style={{ flex: 1, minWidth: '240px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ fontWeight: 700, color: isVal ? '#f8fafc' : '#94a3b8', fontSize: '0.82rem' }}>
+                                <span style={{ fontWeight: 700, color: isVal ? '#0f172a' : '#64748b', fontSize: '0.85rem' }}>
                                   {isVal ? '✓' : '•'} {label}
                                 </span>
-                                <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '0.1rem 0.4rem', borderRadius: '0.25rem', background: isVal ? 'rgba(16, 185, 129, 0.12)' : 'rgba(148, 163, 184, 0.08)', color: isVal ? '#34d399' : '#64748b', border: `1px solid ${isVal ? '#10b981' : '#334155'}` }}>
+                                <span style={{ fontSize: '0.65rem', fontWeight: 800, padding: '0.1rem 0.4rem', borderRadius: '0.25rem', background: isVal ? '#ecfdf5' : '#f1f5f9', color: isVal ? '#059669' : '#64748b', border: `1px solid ${isVal ? '#a7f3d0' : '#cbd5e1'}` }}>
                                   {status}
                                 </span>
                               </div>
                               {val && (
-                                <div style={{ color: '#38bdf8', fontSize: '0.8rem', marginTop: '0.15rem' }}>
+                                <div style={{ color: '#2563eb', fontSize: '0.82rem', marginTop: '0.15rem', fontWeight: 600 }}>
                                   {safeText(val)}
                                 </div>
                               )}
                               {snippet && (
-                                <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.15rem' }}>
+                                <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.15rem' }}>
                                   Evidence: {safeText(snippet).slice(0, 120)}
                                 </div>
                               )}
@@ -1965,19 +1997,19 @@ export default function App() {
                     <h3 style={{ fontSize: '0.85rem', fontWeight: 900, color: '#a78bfa', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
                       ⚡ Phase 2 Haystack Business Synthesis (Grounded Evidence)
                     </h3>
-                    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '0.75rem', padding: '1rem', color: '#cbd5e1', fontSize: '0.88rem', lineHeight: '1.6' }}>
+                    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.75rem', padding: '1rem', color: '#1e293b', fontSize: '0.9rem', lineHeight: '1.6' }}>
                       <div style={{ marginBottom: '0.6rem' }}>
                         {safeText(agent2Detail.phase2_data.business_overview)}
                       </div>
                       {agent2Detail.phase2_data.target_customers && (
-                        <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
-                          <strong style={{ color: '#60a5fa' }}>Target Customers:</strong>{' '}
+                        <div style={{ fontSize: '0.82rem', color: '#64748b' }}>
+                          <strong style={{ color: '#2563eb' }}>Target Customers:</strong>{' '}
                           {safeText(agent2Detail.phase2_data.target_customers)}
                         </div>
                       )}
                       {agent2Detail.phase2_data.commercial_model && (
-                        <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: '0.2rem' }}>
-                          <strong style={{ color: '#34d399' }}>Commercial Model:</strong>{' '}
+                        <div style={{ fontSize: '0.82rem', color: '#64748b', marginTop: '0.2rem' }}>
+                          <strong style={{ color: '#059669' }}>Commercial Model:</strong>{' '}
                           {safeText(agent2Detail.phase2_data.commercial_model)}
                         </div>
                       )}
@@ -1987,7 +2019,7 @@ export default function App() {
 
                 {/* 3. LINKEDIN DECISION MAKERS & EXECUTIVE AFFILIATION */}
                 <div style={{ marginBottom: '1.75rem' }}>
-                  <h3 style={{ fontSize: '0.85rem', fontWeight: 900, color: '#38bdf8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
+                  <h3 style={{ fontSize: '0.85rem', fontWeight: 900, color: '#2563eb', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
                     👔 LinkedIn Leadership & Company Match Audit ({agent2Detail.person_candidates?.length || 0})
                   </h3>
                   {Array.isArray(agent2Detail.person_candidates) && agent2Detail.person_candidates.length > 0 ? (
@@ -1995,27 +2027,27 @@ export default function App() {
                       {agent2Detail.person_candidates.map((cand, idx) => {
                         const isCandVerified = cand.candidate_status === 'VERIFIED';
                         return (
-                          <div key={idx} style={{ background: '#0a101d', border: `1px solid ${isCandVerified ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`, borderRadius: '0.5rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.6rem' }}>
+                          <div key={idx} style={{ background: '#ffffff', border: `1px solid ${isCandVerified ? '#a7f3d0' : '#fecaca'}`, borderRadius: '0.5rem', padding: '0.85rem 1.1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.6rem', boxShadow: '0 1px 2px rgba(0,0,0,0.03)' }}>
                             <div>
-                              <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <div style={{ fontWeight: 800, color: '#0f172a', fontSize: '0.92rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                 <span>{cand.name}</span>
-                                <span style={{ color: '#38bdf8', fontWeight: 600 }}>({cand.title || 'Executive'})</span>
+                                <span style={{ color: '#2563eb', fontWeight: 600 }}>({cand.title || 'Executive'})</span>
                                 <span style={{
                                   fontSize: '0.66rem', fontWeight: 800, padding: '0.1rem 0.45rem', borderRadius: '0.25rem',
-                                  background: isCandVerified ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                                  color: isCandVerified ? '#34d399' : '#f87171',
-                                  border: `1px solid ${isCandVerified ? '#10b981' : '#ef4444'}`
+                                  background: isCandVerified ? '#ecfdf5' : '#fef2f2',
+                                  color: isCandVerified ? '#059669' : '#dc2626',
+                                  border: `1px solid ${isCandVerified ? '#a7f3d0' : '#fecaca'}`
                                 }}>
                                   {isCandVerified ? '✓ VERIFIED MATCH' : '✕ REJECTED MATCH'}
                                 </span>
                               </div>
                               {!isCandVerified && cand.rejection_reason && (
-                                <div style={{ fontSize: '0.75rem', color: '#f87171', marginTop: '0.2rem' }}>
+                                <div style={{ fontSize: '0.75rem', color: '#dc2626', marginTop: '0.2rem' }}>
                                   Reason: {cand.rejection_reason}
                                 </div>
                               )}
                               {cand.evidence_snippet && (
-                                <div style={{ fontSize: '0.73rem', color: '#64748b', marginTop: '0.15rem' }}>
+                                <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.15rem' }}>
                                   Snippet: {cand.evidence_snippet.slice(0, 140)}...
                                 </div>
                               )}
@@ -2023,10 +2055,10 @@ export default function App() {
                             {cand.linkedin_url && (
                               <a href={cand.linkedin_url} target="_blank" rel="noreferrer"
                                 style={{
-                                  padding: '0.35rem 0.75rem',
-                                  background: 'rgba(56, 189, 248, 0.12)',
-                                  border: '1px solid #38bdf8',
-                                  color: '#38bdf8',
+                                  padding: '0.4rem 0.85rem',
+                                  background: '#eff6ff',
+                                  border: '1px solid #bfdbfe',
+                                  color: '#1d4ed8',
                                   borderRadius: '0.375rem',
                                   fontSize: '0.75rem',
                                   fontWeight: 700,
@@ -2040,7 +2072,7 @@ export default function App() {
                       })}
                     </div>
                   ) : (
-                    <div style={{ background: '#0a101d', border: '1px dashed #334155', borderRadius: '0.5rem', padding: '1rem', textAlign: 'center', color: '#64748b', fontSize: '0.82rem' }}>
+                    <div style={{ background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: '0.5rem', padding: '1.25rem', textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
                       No verified executive candidate profiles found yet.
                     </div>
                   )}
@@ -2052,11 +2084,11 @@ export default function App() {
                     <h3 style={{ fontSize: '0.85rem', fontWeight: 900, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
                       ⏱️ Chronological Investigation Audit Trail ({agent2Detail.timeline.length} Steps)
                     </h3>
-                    <div style={{ background: '#040812', border: '1px solid #1e293b', borderRadius: '0.5rem', padding: '0.75rem', maxHeight: '180px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                    <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.5rem', padding: '0.75rem', maxHeight: '180px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.75rem' }}>
                       {agent2Detail.timeline.map((item, i) => (
-                        <div key={i} style={{ marginBottom: '0.3rem', display: 'flex', gap: '0.5rem', color: '#94a3b8' }}>
-                          <span style={{ color: '#475569' }}>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : ''}</span>
-                          <span style={{ color: '#38bdf8', fontWeight: 700 }}>[{item.state || 'STEP'}]</span>
+                        <div key={i} style={{ marginBottom: '0.3rem', display: 'flex', gap: '0.5rem', color: '#334155' }}>
+                          <span style={{ color: '#94a3b8' }}>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : ''}</span>
+                          <span style={{ color: '#2563eb', fontWeight: 700 }}>[{item.state || 'STEP'}]</span>
                           <span>{item.message || JSON.stringify(item)}</span>
                         </div>
                       ))}
@@ -2072,8 +2104,8 @@ export default function App() {
 
       {/* 6. ENTITY DETAIL VIEW (DRILL-IN MODAL) */}
       {selectedEntityId && (
-        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.85)', backdropFilter: 'blur(8px)', zIndex: 100, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '1.5rem' }}>
-          <div style={{ background: '#0b1322', border: '1px solid #1e293b', borderRadius: '1rem', width: '100%', maxWidth: '1150px', maxHeight: '90vh', overflowY: 'auto', padding: '1.75rem', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.7)', position: 'relative' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(15, 23, 42, 0.45)', backdropFilter: 'blur(8px)', zIndex: 100, display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '1.5rem' }}>
+          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '1rem', width: '100%', maxWidth: '1150px', maxHeight: '90vh', overflowY: 'auto', padding: '1.75rem', boxShadow: '0 25px 50px -12px rgba(15, 23, 42, 0.18)', position: 'relative' }}>
             
             {!entityDetail ? (
               <div style={{ textAlign: 'center', padding: '4rem 0', color: '#94a3b8' }}>
@@ -2083,28 +2115,28 @@ export default function App() {
             ) : (
               <div>
                 {/* Header Bar matching uploaded screenshot */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #1e293b', paddingBottom: '1.25rem', marginBottom: '1.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid #e2e8f0', paddingBottom: '1.25rem', marginBottom: '1.5rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                     {entityDetail.logo_url ? (
                       <img
                         src={entityDetail.logo_url}
                         alt="Logo"
                         onError={(e) => { e.target.style.display = 'none'; }}
-                        style={{ width: '42px', height: '42px', borderRadius: '0.6rem', background: '#0f172a', padding: '3px', border: '1px solid #334155', objectFit: 'contain' }}
+                        style={{ width: '42px', height: '42px', borderRadius: '0.6rem', background: '#f8fafc', padding: '3px', border: '1px solid #e2e8f0', objectFit: 'contain' }}
                       />
                     ) : (
-                      <div style={{ width: '42px', height: '42px', borderRadius: '0.6rem', background: '#3b82f6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#fff', fontSize: '1.2rem' }}>
+                      <div style={{ width: '42px', height: '42px', borderRadius: '0.6rem', background: '#eff6ff', border: '1px solid #bfdbfe', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, color: '#2563eb', fontSize: '1.2rem' }}>
                         {(entityDetail.canonical_name || '?')[0].toUpperCase()}
                       </div>
                     )}
                     <div>
-                      <h2 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 900, color: '#ffffff', letterSpacing: '-0.02em' }}>
+                      <h2 style={{ margin: 0, fontSize: '1.75rem', fontWeight: 900, color: '#0f172a', letterSpacing: '-0.02em' }}>
                         {entityDetail.canonical_name}
                       </h2>
-                      <div style={{ fontSize: '0.85rem', color: '#38bdf8', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <div style={{ fontSize: '0.85rem', color: '#2563eb', marginTop: '0.2rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap', fontWeight: 600 }}>
                         <span>{entityDetail.domain}</span>
                         <span>•</span>
-                        <a href={entityDetail.official_website} target="_blank" rel="noreferrer" style={{ color: '#38bdf8', textDecoration: 'none' }}>
+                        <a href={entityDetail.official_website} target="_blank" rel="noreferrer" style={{ color: '#2563eb', textDecoration: 'none' }}>
                           {entityDetail.official_website} ↗
                         </a>
                         {(entityDetail.linkedin_url || entityDetail.company_linkedin_url) && (
@@ -2139,9 +2171,9 @@ export default function App() {
                     <button
                       onClick={() => setSelectedAgent2Id(entityDetail.id || entityDetail.domain)}
                       style={{
-                        background: '#1e293b',
-                        border: '1px solid #38bdf8',
-                        color: '#38bdf8',
+                        background: '#eff6ff',
+                        border: '1px solid #bfdbfe',
+                        color: '#1d4ed8',
                         borderRadius: '0.5rem',
                         padding: '0.45rem 0.85rem',
                         cursor: 'pointer',
@@ -2156,7 +2188,7 @@ export default function App() {
                     </button>
                     <button
                       onClick={() => setSelectedEntityId(null)}
-                      style={{ background: '#1e293b', border: '1px solid #334155', color: '#94a3b8', borderRadius: '0.5rem', padding: '0.4rem 0.8rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
+                      style={{ background: '#f1f5f9', border: '1px solid #cbd5e1', color: '#475569', borderRadius: '0.5rem', padding: '0.4rem 0.8rem', cursor: 'pointer', fontSize: '0.85rem', fontWeight: 700 }}
                     >
                       ✕ Close
                     </button>
@@ -2205,28 +2237,28 @@ export default function App() {
 
                     {/* 1. BUSINESS OVERVIEW & SYNTHESIS */}
                     <div>
-                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
+                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
                         BUSINESS OVERVIEW & SYNTHESIS
                       </h3>
-                      <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.75rem', padding: '1.1rem', color: '#cbd5e1', fontSize: '0.9rem', lineHeight: '1.6' }}>
+                      <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.75rem', padding: '1.1rem', color: '#1e293b', fontSize: '0.92rem', lineHeight: '1.6' }}>
                         {safeText(entityDetail.summary)}
                       </div>
                     </div>
 
                     {/* 2. TECHNOLOGY STACK */}
                     <div>
-                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
+                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
                         TECHNOLOGY STACK
                       </h3>
                       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                         {Array.isArray(entityDetail.technology_stack) && entityDetail.technology_stack.length > 0 ? (
                           entityDetail.technology_stack.map((tech, i) => (
-                            <span key={i} style={{ background: '#111827', border: '1px solid #374151', color: '#f3f4f6', padding: '0.35rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.8rem', fontWeight: 600 }}>
+                            <span key={i} style={{ background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af', padding: '0.35rem 0.75rem', borderRadius: '0.5rem', fontSize: '0.8rem', fontWeight: 600 }}>
                               {tech}
                             </span>
                           ))
                         ) : (
-                          <div style={{ fontSize: '0.85rem', color: '#6b7280' }}>No technology signals extracted yet.</div>
+                          <div style={{ fontSize: '0.85rem', color: '#94a3b8' }}>No technology signals extracted yet.</div>
                         )}
                       </div>
                     </div>
@@ -2324,19 +2356,19 @@ export default function App() {
                   </div>
 
                   {/* RIGHT COLUMN: Sidebar Metadata Card */}
-                  <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.875rem', padding: '1.25rem', height: 'fit-content' }}>
+                  <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.875rem', padding: '1.25rem', height: 'fit-content' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                       
                       <div>
-                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>HEADQUARTERS</div>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#ffffff', marginTop: '0.15rem' }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>HEADQUARTERS</div>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#0f172a', marginTop: '0.15rem' }}>
                           {entityDetail.firmographics?.headquarters || 'Not Specified'}
                         </div>
                       </div>
 
                       <div>
-                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>INDUSTRY</div>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#ffffff', marginTop: '0.15rem' }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>INDUSTRY</div>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 800, color: '#0f172a', marginTop: '0.15rem' }}>
                           {(entityDetail.firmographics?.industry && entityDetail.firmographics.industry !== 'Commercial Web' && entityDetail.firmographics.industry !== 'Commercial Web & Digital Enterprise') ? entityDetail.firmographics.industry : (entityDetail.industry && entityDetail.industry !== 'Commercial Web' ? entityDetail.industry : 'Unknown')}
                         </div>
                       </div>

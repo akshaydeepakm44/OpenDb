@@ -473,6 +473,26 @@ class StorageManager:
             if self.use_local or object_path.startswith("local://"):
                 return {"exists": False, "size_bytes": 0, "content_hash": None, "backend": "local", "error": "file_not_found"}
 
+        if not self.client:
+            target = self.local_dir / clean_path
+            if target.exists() and target.is_file():
+                data = target.read_bytes()
+                return {
+                    "exists": True,
+                    "size_bytes": len(data),
+                    "content_hash": self.calculate_hash(data),
+                    "backend": "local",
+                    "error": None
+                }
+            return {
+                "exists": False,
+                "size_bytes": 0,
+                "content_hash": None,
+                "backend": "minio",
+                "error": "minio_client_uninitialized",
+                "is_infra_error": False
+            }
+
         try:
             stat = self.client.stat_object(self.bucket_name, clean_path)
             return {
