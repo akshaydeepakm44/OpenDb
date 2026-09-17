@@ -2280,32 +2280,32 @@ export default function App() {
 
                     {/* 3. DECISION MAKERS & LEADERSHIP */}
                     <div>
-                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
+                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
                         DECISION MAKERS & LEADERSHIP ({Array.isArray(entityDetail.decision_makers) ? entityDetail.decision_makers.filter(isPersonVerified).length : 0})
                       </h3>
                       {Array.isArray(entityDetail.decision_makers) && entityDetail.decision_makers.filter(isPersonVerified).length > 0 ? (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
                           {entityDetail.decision_makers.filter(isPersonVerified).map((p, idx) => (
-                            <div key={idx} style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.85rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.6rem' }}>
+                            <div key={idx} style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '0.65rem', padding: '0.85rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.6rem', boxShadow: '0 1px 3px rgba(0,0,0,0.04)' }}>
                               <div>
-                                <div style={{ fontWeight: 800, color: '#ffffff', fontSize: '0.92rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                <div style={{ fontWeight: 800, color: '#0f172a', fontSize: '0.92rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                                   <span>{p.name}</span>
-                                  <span style={{ color: '#22d3ee', fontWeight: 600 }}>({p.title || 'Director'})</span>
+                                  <span style={{ color: '#2563eb', fontWeight: 600 }}>({p.title || 'Director'})</span>
                                   <span style={{
                                     fontSize: '0.66rem',
                                     fontWeight: 700,
-                                    color: '#10b981',
-                                    background: 'rgba(16, 185, 129, 0.12)',
-                                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                                    color: '#059669',
+                                    background: '#ecfdf5',
+                                    border: '1px solid #a7f3d0',
                                     padding: '0.1rem 0.45rem',
                                     borderRadius: '0.25rem'
                                   }}>
                                     ✓ Company Match: Verified ({Math.round((p.match_score || p.confidence || 0.95) * 100)}%)
                                   </span>
                                 </div>
-                                <div style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: '0.2rem' }}>
+                                <div style={{ fontSize: '0.78rem', color: '#64748b', marginTop: '0.2rem' }}>
                                   {p.evidence ? (
-                                    <span style={{ color: '#94a3b8' }}>Evidence: {p.evidence.slice(0, 120)}{p.evidence.length > 120 ? '...' : ''}</span>
+                                    <span style={{ color: '#64748b' }}>Evidence: {p.evidence.slice(0, 120)}{p.evidence.length > 120 ? '...' : ''}</span>
                                   ) : (
                                     <span>Contact Person • Economic Buyer</span>
                                   )}
@@ -2314,9 +2314,9 @@ export default function App() {
                               <a href={getLinkedInProfileOrSearch(p, entityDetail.canonical_name)} target="_blank" rel="noreferrer"
                                 style={{
                                   padding: '0.35rem 0.75rem',
-                                  background: isLinkedInProfile(p) ? 'rgba(56, 189, 248, 0.15)' : '#1e293b',
-                                  border: isLinkedInProfile(p) ? '1px solid #38bdf8' : '1px solid #374151',
-                                  color: isLinkedInProfile(p) ? '#38bdf8' : '#9ca3af',
+                                  background: isLinkedInProfile(p) ? '#eff6ff' : '#f8fafc',
+                                  border: isLinkedInProfile(p) ? '1px solid #bfdbfe' : '1px solid #e2e8f0',
+                                  color: isLinkedInProfile(p) ? '#2563eb' : '#64748b',
                                   borderRadius: '0.375rem',
                                   fontSize: '0.75rem',
                                   fontWeight: 600,
@@ -2328,13 +2328,13 @@ export default function App() {
                           ))}
                         </div>
                       ) : (
-                        <div style={{ background: '#111827', border: '1px dashed #374151', borderRadius: '0.65rem', padding: '1.25rem', textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>
-                          <div style={{ fontWeight: 600, color: '#cbd5e1' }}>No verified decision makers discovered on public profile registries yet.</div>
+                        <div style={{ background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: '0.65rem', padding: '1.25rem', textAlign: 'center', color: '#64748b', fontSize: '0.85rem' }}>
+                          <div style={{ fontWeight: 600, color: '#334155' }}>No verified decision makers discovered on public profile registries yet.</div>
                           <a
                             href={`https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(getCleanBrandName(entityDetail.canonical_name) + ' people')}`}
                             target="_blank"
                             rel="noreferrer"
-                            style={{ display: 'inline-block', marginTop: '0.6rem', padding: '0.35rem 0.85rem', background: '#1e293b', border: '1px solid #374151', color: '#38bdf8', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}
+                            style={{ display: 'inline-block', marginTop: '0.6rem', padding: '0.35rem 0.85rem', background: '#eff6ff', border: '1px solid #bfdbfe', color: '#2563eb', borderRadius: '0.375rem', fontSize: '0.75rem', fontWeight: 600, textDecoration: 'none' }}
                           >
                             Search Company Leadership on LinkedIn ↗
                           </a>
@@ -2344,23 +2344,23 @@ export default function App() {
 
                     {/* 4. CRAWLED SUBPAGES & MARKDOWN VAULT */}
                     <div>
-                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
+                      <h3 style={{ fontSize: '0.8rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.6rem' }}>
                         CRAWLED SUBPAGES & MARKDOWN VAULT ({Array.isArray(entityDetail.crawled_subpages) && entityDetail.crawled_subpages.length > 0 ? entityDetail.crawled_subpages.length : 1})
                       </h3>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                         {Array.isArray(entityDetail.crawled_subpages) && entityDetail.crawled_subpages.length > 0 ? (
                           entityDetail.crawled_subpages.map((sp, idx) => (
-                            <div key={idx} style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                              <div style={{ fontWeight: 700, color: '#f3f4f6', fontSize: '0.85rem' }}>/ • {sp.title || entityDetail.canonical_name}</div>
-                              <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#34d399', background: 'rgba(16,185,129,0.08)', padding: '0.2rem 0.55rem', borderRadius: '0.25rem' }}>
+                            <div key={idx} style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '0.65rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                              <div style={{ fontWeight: 700, color: '#0f172a', fontSize: '0.85rem' }}>/ • {sp.title || entityDetail.canonical_name}</div>
+                              <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#059669', background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '0.2rem 0.55rem', borderRadius: '0.25rem' }}>
                                 MinIO: companies/{entityDetail.domain || 'domain'}/pages/{sp.path || 'homepage.md'}
                               </div>
                             </div>
                           ))
                         ) : (
-                          <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.65rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                            <div style={{ fontWeight: 700, color: '#f3f4f6', fontSize: '0.85rem' }}>/ • {entityDetail.canonical_name}</div>
-                            <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#34d399', background: 'rgba(16,185,129,0.08)', padding: '0.2rem 0.55rem', borderRadius: '0.25rem' }}>
+                          <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '0.65rem', padding: '0.75rem 1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div style={{ fontWeight: 700, color: '#0f172a', fontSize: '0.85rem' }}>/ • {entityDetail.canonical_name}</div>
+                            <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#059669', background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '0.2rem 0.55rem', borderRadius: '0.25rem' }}>
                               MinIO: companies/{entityDetail.domain || 'domain'}/pages/homepage.md
                             </div>
                           </div>
@@ -2388,25 +2388,23 @@ export default function App() {
                         </div>
                       </div>
 
-
-
                       <div>
-                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em' }}>VERIFIED EMAILS</div>
-                        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#38bdf8', marginTop: '0.15rem' }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>VERIFIED EMAILS</div>
+                        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#2563eb', marginTop: '0.15rem' }}>
                           {Array.isArray(entityDetail.firmographics?.verified_emails) && entityDetail.firmographics.verified_emails.length > 0
                             ? entityDetail.firmographics.verified_emails.join(', ')
                             : (entityDetail.verified_contact || entityDetail.verified_contact_email || 'Not Found')}
                         </div>
                       </div>
 
-                      <div style={{ borderTop: '1px solid #1f2937', paddingTop: '1rem', marginTop: '0.5rem' }}>
-                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
+                      <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '1rem', marginTop: '0.5rem' }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.4rem' }}>
                           EXTRACTION AUDIT & SOURCE
                         </div>
-                        <div style={{ display: 'inline-block', fontFamily: 'monospace', fontSize: '0.75rem', fontWeight: 800, color: '#38bdf8', background: 'rgba(56,189,248,0.1)', padding: '0.25rem 0.55rem', borderRadius: '0.375rem', border: '1px solid rgba(56,189,248,0.2)' }}>
+                        <div style={{ display: 'inline-block', fontFamily: 'monospace', fontSize: '0.75rem', fontWeight: 800, color: '#2563eb', background: '#eff6ff', padding: '0.25rem 0.55rem', borderRadius: '0.375rem', border: '1px solid #bfdbfe' }}>
                           {entityDetail.provenance?.source_type || '🚀 OPEN_DATASET:OPEN_PAGERANK_10M'}
                         </div>
-                        <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#9ca3af', marginTop: '0.4rem' }}>
+                        <div style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: '#64748b', marginTop: '0.4rem' }}>
                           🕒 {entityDetail.provenance?.extracted_at ? new Date(entityDetail.provenance.extracted_at).toLocaleString() : '2026-09-03 12:00:00'}
                         </div>
                       </div>
