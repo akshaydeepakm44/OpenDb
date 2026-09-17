@@ -1,4 +1,4 @@
-.PHONY: up down backend frontend test clean
+.PHONY: up down restart logs prune clean
 
 up:
 	docker compose up -d
@@ -6,14 +6,14 @@ up:
 down:
 	docker compose down
 
-backend:
-	cd backend && uvicorn app.main:app --reload --port 8000
+restart:
+	docker compose restart backend celery_discovery
 
-frontend:
-	cd frontend && npm run dev
+logs:
+	docker compose logs -f --tail=100 backend celery_discovery
 
-test:
-	$env:PYTHONPATH="backend"; .\venv\Scripts\pytest backend/tests/test_pipeline.py
+prune:
+	docker system prune -f && docker image prune -a
 
 clean:
-	rm -rf data/raw/* data/processed/* data/manifests/*
+	rm -rf data/staging/*
