@@ -16,7 +16,7 @@ from app.config import settings
 
 from app.persistence.database import SessionLocal
 from app.persistence.models import (
-    Document, Agent2VerificationSession, Agent2Evidence, Agent2PersonCandidate, utc_now
+    Document, Company, Agent2VerificationSession, Agent2Evidence, Agent2PersonCandidate, utc_now
 )
 from app.agent.agent2_investigation import investigation_engine, can_mark_not_found
 from app.agent.agent2_haystack_components import (
@@ -624,7 +624,7 @@ class Agent2Orchestrator:
         """
         from app.verification.verification_contract import verification_contract
         from app.audit.tracer import tracer, Checkpoint
-        from app.persistence.models import UniversalRecord
+        from app.persistence.models import UniversalRecord, Company
 
         session.status = "FINAL_VERIFICATION"
         db.commit()
