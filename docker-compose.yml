@@ -138,6 +138,7 @@ services:
       - SEARXNG_URL=http://searxng:8080
       - SCHEMAS_DIR=/app/schemas
     volumes:
+      - ./backend/app:/app/app
       - ./schemas:/app/schemas:ro
       - ./data:/app/data
     depends_on:
@@ -172,6 +173,7 @@ services:
       - SEARXNG_URL=http://searxng:8080
       - SCHEMAS_DIR=/app/schemas
     volumes:
+      - ./backend/app:/app/app
       - ./schemas:/app/schemas:ro
       - ./data:/app/data
     depends_on:
@@ -205,6 +207,7 @@ services:
       - SEARXNG_URL=http://searxng:8080
       - SCHEMAS_DIR=/app/schemas
     volumes:
+      - ./backend/app:/app/app
       - ./schemas:/app/schemas:ro
       - ./data:/app/data
     depends_on:
@@ -238,6 +241,7 @@ services:
       - SEARXNG_URL=http://searxng:8080
       - SCHEMAS_DIR=/app/schemas
     volumes:
+      - ./backend/app:/app/app
       - ./schemas:/app/schemas:ro
       - ./data:/app/data
     depends_on:

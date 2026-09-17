@@ -15,9 +15,9 @@ from app.config import settings
 from app.persistence.database import get_db
 from app.agent.discovery_agent import discovery_agent
 from app.persistence.models import (
-    BatchResult, KeywordPerformance, UniversalRecord, DomainRecord,
-    Document, ExtractedFact, Evidence, VerificationRecord, CrawlError,
-    SearchHistory, CrawlActivityLog
+    BatchResult, KeywordPerformance, Company, Domain,
+    Document, CanonicalEvidence, VerificationSession, CrawlError,
+    SearchHistory, CrawlActivityLog, KeyPerson
 )
 from app.storage.file_storage import file_storage
 from app.cache.redis_cache import cache_get, cache_set
@@ -307,14 +307,10 @@ def reset_database_data(db: Session = Depends(get_db)):
         discovery_agent.is_running_loop = False
 
         from app.persistence.models import (
-            Agent2PersonCandidate, Agent2Evidence, Agent2VerificationSession, PostgresSyncOutbox,
-            GlobalLeadSubpage, GlobalLeadPerson, GlobalLead, OpenLakeRecord,
-            KeyPersonCandidate, ManualReviewQueue,
-            ResourceLink, Resource, ExtractionRun, DocumentVersion,
-            Evidence, ExtractedFact, VerificationRecord, DomainRecord,
-            UniversalRecord, Document, CrawlJob, CrawlError,
-            CrawlActivityLog, SearchHistory, BatchResult, AgentState
-        )
+    BatchResult, KeywordPerformance, Company, Domain,
+    Document, CanonicalEvidence, VerificationSession, CrawlError,
+    SearchHistory, CrawlActivityLog, KeyPerson
+)
 
         try:
             db.execute(text("PRAGMA foreign_keys = OFF;"))
@@ -323,12 +319,12 @@ def reset_database_data(db: Session = Depends(get_db)):
 
         # Foreign-key ordered: children and dependents first, parents last
         models_to_clear = [
-            Agent2PersonCandidate, Agent2Evidence, Agent2VerificationSession, PostgresSyncOutbox,
+            Agent2PersonCandidate, Agent2CanonicalEvidence, Agent2VerificationSession, PostgresSyncOutbox,
             GlobalLeadSubpage, GlobalLeadPerson, GlobalLead, OpenLakeRecord,
-            KeyPersonCandidate, ManualReviewQueue,
+            KeyPerson, ManualReviewQueue,
             ResourceLink, Resource, ExtractionRun, DocumentVersion,
-            Evidence, ExtractedFact, VerificationRecord, DomainRecord,
-            UniversalRecord, Document, CrawlJob, CrawlError,
+            CanonicalEvidence, CanonicalEvidence, VerificationRecord, Domain,
+            Company, Document, CrawlJob, CrawlError,
             CrawlActivityLog, SearchHistory, BatchResult, AgentState
         ]
         for m in models_to_clear:
@@ -403,9 +399,9 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     persisted_companies_count = 0
     verified_leads_count = 0
     try:
-        persisted_companies_count = db.query(UniversalRecord).count()
-        verified_leads_count = db.query(UniversalRecord).filter(
-            UniversalRecord.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
+        persisted_companies_count = db.query(Company).count()
+        verified_leads_count = db.query(Company).filter(
+            Company.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
         ).count()
     except Exception:
         db.rollback()
@@ -450,12 +446,12 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     # 3. Decision Makers Identified
     people_facts = 0
     try:
-        people_facts = db.query(ExtractedFact).filter(
+        people_facts = db.query(CanonicalEvidence).filter(
             or_(
-                ExtractedFact.field_name.like("%people%"),
-                ExtractedFact.field_name.like("%founder%"),
-                ExtractedFact.field_name.like("%ceo%"),
-                ExtractedFact.field_name.like("%executive%")
+                CanonicalEvidence.field_name.like("%people%"),
+                CanonicalEvidence.field_name.like("%founder%"),
+                CanonicalEvidence.field_name.like("%ceo%"),
+                CanonicalEvidence.field_name.like("%executive%")
             )
         ).count()
     except Exception:
@@ -495,7 +491,7 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         storage_mode_label = f"OpenDB Storage: {doc_count} files"
 
     # 5. Live Ingestion Stream
-    recent_records = db.query(UniversalRecord).order_by(UniversalRecord.created_at.desc()).limit(15).all()
+    recent_records = db.query(Company).order_by(Company.created_at.desc()).limit(15).all()
     ingestion_stream = [
         {
             "id": r.id,
@@ -629,19 +625,19 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     # 8. Distinct Filter Options dynamically queried from DB
     distinct_domains_ur = []
     try:
-        distinct_domains_ur = [d[0] for d in db.query(UniversalRecord.entity_type).distinct().all() if d[0]]
+        distinct_domains_ur = [d[0] for d in db.query(Company.entity_type).distinct().all() if d[0]]
     except Exception:
         db.rollback()
     all_domains = sorted(list(set(distinct_domains_ur + ["Technology", "Software & SaaS", "Commercial Web", "E-Commerce", "Finance", "Healthcare"])))
 
     distinct_countries_ur = []
     try:
-        distinct_countries_ur = [c[0] for c in db.query(UniversalRecord.country).distinct().all() if c[0]]
+        distinct_countries_ur = [c[0] for c in db.query(Company.country).distinct().all() if c[0]]
     except Exception:
         db.rollback()
     all_countries = sorted(list(set(distinct_countries_ur + ["United States", "India", "Germany", "United Kingdom", "Japan", "Global"])))
 
-    persisted_companies_count = db.query(UniversalRecord).count()
+    persisted_companies_count = db.query(Company).count()
 
     return {
         "stat_cards": {
@@ -674,7 +670,7 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     }
 
 
-def _determine_company_tier(linked: Optional[UniversalRecord]) -> str:
+def _determine_company_tier(linked: Optional[Company]) -> str:
     if not linked:
         return "Growth SMBs (20-100)"
     tier = getattr(linked, "company_tier", None)
@@ -772,7 +768,7 @@ def get_crawled_documents(
         raw_artifacts = getattr(d, 'raw_artifacts', None) or []
         lifecycle = getattr(d, 'lifecycle_state', None) or "CRAWLED_PENDING_AGENT_2"
 
-        # Evidence-based raw fields only
+        # CanonicalEvidence-based raw fields only
         page_title = raw_meta.get("raw_page_title") or d.title or name
         meta_desc = raw_meta.get("meta_description") or ""
         detected_emails = raw_meta.get("detected_emails") or []
@@ -866,9 +862,9 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
             return url, url
 
     name, domain = _parse_url(doc.url or "")
-    linked = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+    linked = db.query(Company).filter(Company.document_id == doc.id).first()
     if not linked and domain:
-        linked = db.query(UniversalRecord).filter(UniversalRecord.url.ilike(f"%{domain}%")).first()
+        linked = db.query(Company).filter(Company.url.ilike(f"%{domain}%")).first()
 
     raw_content = ""
     clean_text = ""
@@ -975,26 +971,26 @@ def get_entities_list(
 ):
     """Search and filter canonical lead entities."""
     # Authoritative Verification Gate: Only VERIFIED or POSTGRES_VERIFIED records
-    q = db.query(UniversalRecord).filter(
-        UniversalRecord.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
+    q = db.query(Company).filter(
+        Company.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
     )
     
     if query:
         search_pattern = f"%{query}%"
         q = q.filter(
             or_(
-                UniversalRecord.canonical_name.ilike(search_pattern),
-                UniversalRecord.description.ilike(search_pattern),
-                UniversalRecord.url.ilike(search_pattern)
+                Company.canonical_name.ilike(search_pattern),
+                Company.description.ilike(search_pattern),
+                Company.url.ilike(search_pattern)
             )
         )
     if domain and domain != "All":
-        q = q.filter(UniversalRecord.entity_type.ilike(f"%{domain}%"))
+        q = q.filter(Company.entity_type.ilike(f"%{domain}%"))
     if country and country != "All":
-        q = q.filter(UniversalRecord.country == country)
+        q = q.filter(Company.country == country)
 
     total_count = q.count()
-    records = q.order_by(UniversalRecord.created_at.desc()).limit(100).all()
+    records = q.order_by(Company.created_at.desc()).limit(100).all()
 
     # Hard Invariant 5: Never fallback to unverified GlobalLead rows
     if not records:
@@ -1002,11 +998,11 @@ def get_entities_list(
 
     rec_ids = [r.id for r in records]
     dom_map = {
-        d.universal_record_id: (d.data or {}) for d in db.query(DomainRecord).filter(DomainRecord.universal_record_id.in_(rec_ids)).all()
+        d.universal_record_id: (d.data or {}) for d in db.query(Domain).filter(Domain.universal_record_id.in_(rec_ids)).all()
     } if rec_ids else {}
 
-    from app.persistence.models import KeyPersonCandidate
-    all_kps = db.query(KeyPersonCandidate).all()
+    from app.persistence.models import KeyPerson
+    all_kps = db.query(KeyPerson).all()
     kp_map = {}
     for kp in all_kps:
         cleaned_kname = _clean_name(kp.company_name or "", kp.source_url or "")
@@ -1140,7 +1136,7 @@ async def _async_background_enrich(domain: str, company_name: str, entity_id: st
     try:
         from app.crawler.realtime_enricher import realtime_enricher
         from app.persistence.database import SessionLocal
-        from app.persistence.models import KeyPersonCandidate, DomainRecord, UniversalRecord
+        from app.persistence.models import KeyPerson, Domain, Company
         from app.cache.redis_cache import cache_set, cache_get
 
         rt_res = await realtime_enricher.enrich_domain_realtime(domain, company_name)
@@ -1154,12 +1150,12 @@ async def _async_background_enrich(domain: str, company_name: str, entity_id: st
                 p_role = p.get("title") or "Leadership"
                 p_url = p.get("linkedin_url") or p.get("linkedin_search_url") or ""
                 if p_name:
-                    existing = s.query(KeyPersonCandidate).filter(
-                        KeyPersonCandidate.company_name == company_name,
-                        KeyPersonCandidate.person_name == p_name
+                    existing = s.query(KeyPerson).filter(
+                        KeyPerson.company_name == company_name,
+                        KeyPerson.person_name == p_name
                     ).first()
                     if not existing:
-                        s.add(KeyPersonCandidate(
+                        s.add(KeyPerson(
                             company_name=company_name,
                             person_name=p_name,
                             role=p_role,
@@ -1167,9 +1163,9 @@ async def _async_background_enrich(domain: str, company_name: str, entity_id: st
                             confidence=0.85
                         ))
 
-            rec = s.query(UniversalRecord).filter(UniversalRecord.id == entity_id).first()
+            rec = s.query(Company).filter(Company.id == entity_id).first()
             if rec:
-                dom_rec = s.query(DomainRecord).filter(DomainRecord.universal_record_id == rec.id).first()
+                dom_rec = s.query(Domain).filter(Domain.universal_record_id == rec.id).first()
                 if dom_rec and isinstance(dom_rec.data, dict):
                     data = dict(dom_rec.data)
                     if rt_res.get("headquarters") and not data.get("headquarters"):
@@ -1224,15 +1220,15 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             v_hq = vault_lead.get("headquarters")
             v_people = vault_lead.get("people") or []
 
-            from app.persistence.models import KeyPersonCandidate
-            from app.persistence.models import KeyPersonCandidate
+            from app.persistence.models import KeyPerson
+            from app.persistence.models import KeyPerson
             from app.extraction.person_verifier import person_verifier
             v_cname = vault_lead.get("company_name", "")
             v_dom = vault_lead.get("domain", "")
-            kp_cands = db.query(KeyPersonCandidate).filter(
-                KeyPersonCandidate.source_domain == v_dom,
-                KeyPersonCandidate.verification_status.in_(["VERIFIED", "HIGH_CONFIDENCE"]),
-                KeyPersonCandidate.confidence_score >= 0.75
+            kp_cands = db.query(KeyPerson).filter(
+                KeyPerson.source_domain == v_dom,
+                KeyPerson.verification_status.in_(["VERIFIED", "HIGH_CONFIDENCE"]),
+                KeyPerson.confidence_score >= 0.75
             ).all()
             existing_names = {p.get("name", "").lower() for p in v_people}
             for kp in kp_cands:
@@ -1328,7 +1324,7 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                 "lead_quality_score": v_score,
                 "quality_score": v_score,
                 "warmth_score": round(v_score / 10.0, 1),
-                "score_methodology": "100-Point Evidence Model (Identity=15, Industry=15, Overview=15, Products=15, HQ=10, Size=10, People=10, Email=10)",
+                "score_methodology": "100-Point CanonicalEvidence Model (Identity=15, Industry=15, Overview=15, Products=15, HQ=10, Size=10, People=10, Email=10)",
                 "provenance": {
                     "source_url": f"https://{vault_lead['domain']}",
                     "source_type": "⚡ MASTER_VAULT_HOT_CACHE",
@@ -1347,7 +1343,7 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             return vault_payload
 
         from sqlalchemy.orm import defer
-        record = db.query(UniversalRecord).filter(UniversalRecord.id == entity_id).first()
+        record = db.query(Company).filter(Company.id == entity_id).first()
         doc = None
         
         if record:
@@ -1356,11 +1352,11 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             # Direct indexed document lookup
             doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.id == entity_id).first()
             if doc:
-                record = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+                record = db.query(Company).filter(Company.document_id == doc.id).first()
 
         if not record and not doc:
             # Secondary check by document ID on record
-            record = db.query(UniversalRecord).filter(UniversalRecord.document_id == entity_id).first()
+            record = db.query(Company).filter(Company.document_id == entity_id).first()
             if record:
                 doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.id == record.document_id).first()
 
@@ -1369,9 +1365,9 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             clean_lookup = entity_id.replace("www.", "").strip()
             doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.url.ilike(f"%{clean_lookup}%")).first()
             if doc:
-                record = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+                record = db.query(Company).filter(Company.document_id == doc.id).first()
             if not record:
-                record = db.query(UniversalRecord).filter(UniversalRecord.url.ilike(f"%{clean_lookup}%")).first()
+                record = db.query(Company).filter(Company.url.ilike(f"%{clean_lookup}%")).first()
                 if record and not doc:
                     doc = db.query(Document).options(defer(Document.content_embedding)).filter(Document.id == record.document_id).first()
 
@@ -1384,11 +1380,11 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         if not record and not doc:
             raise HTTPException(status_code=404, detail="Entity or Document record not found.")
 
-        # If record is missing but document exists, synthesize a lightweight UniversalRecord in memory for viewing
+        # If record is missing but document exists, synthesize a lightweight Company in memory for viewing
         if not record and doc:
             dom_key = urlparse(doc.url or "").netloc.replace("www.", "").lower()
             c_name = _clean_name(doc.title or dom_key, doc.url or "")
-            record = UniversalRecord(
+            record = Company(
                 id=doc.id,
                 document_id=doc.id,
                 canonical_name=c_name,
@@ -1399,15 +1395,15 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             )
 
         doc_id_ref = doc.id if doc else getattr(record, "document_id", None)
-        dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == record.id).first() if (record and getattr(record, "id", None)) else None
+        dom_rec = db.query(Domain).filter(Domain.universal_record_id == record.id).first() if (record and getattr(record, "id", None)) else None
         if not dom_rec and doc and doc.url:
             clean_net = urlparse(doc.url).netloc.replace("www.", "").lower()
-            sim_univ = db.query(UniversalRecord).filter(UniversalRecord.url.ilike(f"%{clean_net}%")).first()
+            sim_univ = db.query(Company).filter(Company.url.ilike(f"%{clean_net}%")).first()
             if sim_univ:
-                dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == sim_univ.id).first()
+                dom_rec = db.query(Domain).filter(Domain.universal_record_id == sim_univ.id).first()
 
-        facts = db.query(ExtractedFact).filter(ExtractedFact.document_id == doc_id_ref).all() if doc_id_ref else []
-        evidence_items = db.query(Evidence).filter(Evidence.document_id == doc_id_ref).all() if doc_id_ref else []
+        facts = db.query(CanonicalEvidence).filter(CanonicalEvidence.document_id == doc_id_ref).all() if doc_id_ref else []
+        evidence_items = db.query(CanonicalEvidence).filter(CanonicalEvidence.document_id == doc_id_ref).all() if doc_id_ref else []
 
         domain_data = dom_rec.data if dom_rec else {}
 
@@ -1445,12 +1441,12 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
                     "linkedin_search_url": link_url
                 })
 
-        from app.persistence.models import KeyPersonCandidate
+        from app.persistence.models import KeyPerson
         from app.extraction.person_verifier import person_verifier
-        kp_cands = db.query(KeyPersonCandidate).filter(
-            KeyPersonCandidate.source_domain == clean_domain,
-            KeyPersonCandidate.verification_status.in_(["VERIFIED", "HIGH_CONFIDENCE"]),
-            KeyPersonCandidate.confidence_score >= 0.75
+        kp_cands = db.query(KeyPerson).filter(
+            KeyPerson.source_domain == clean_domain,
+            KeyPerson.verification_status.in_(["VERIFIED", "HIGH_CONFIDENCE"]),
+            KeyPerson.confidence_score >= 0.75
         ).all()
         existing_names = {p["name"].lower() for p in decision_makers}
         for kp in kp_cands:
@@ -1507,7 +1503,7 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         tier_val = determine_company_tier(record, domain_data)
         rev_val = domain_data.get("funding_stage") or domain_data.get("revenue_funding") or domain_data.get("revenue") or "Unknown"
 
-        # Calculate Evidence-Based Quality Score
+        # Calculate CanonicalEvidence-Based Quality Score
         lead_score = calculate_evidence_quality_score(
             canonical_name=clean_c_name,
             domain=clean_domain,
@@ -1605,7 +1601,7 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
             "lead_quality_score": lead_score,
             "quality_score": lead_score,
             "warmth_score": warmth_score,
-            "score_methodology": "100-Point Evidence Model (Identity=15, Industry=15, Overview=15, Products=15, HQ=10, Size=10, People=10, Email=10)",
+            "score_methodology": "100-Point CanonicalEvidence Model (Identity=15, Industry=15, Overview=15, Products=15, HQ=10, Size=10, People=10, Email=10)",
             "provenance": provenance
         }
 
@@ -1631,10 +1627,10 @@ def get_agent_feedback(db: Session = Depends(get_db)):
     
     # Calculate Company Tier breakdown metrics from REAL DB data.
     # Group records by tier, compute avg confidence and count per tier.
-    records = db.query(UniversalRecord).all()
+    records = db.query(Company).all()
     tier_data: dict[str, dict] = {}
     for r in records:
-        dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == r.id).first()
+        dom_rec = db.query(Domain).filter(Domain.universal_record_id == r.id).first()
         dom_data = dom_rec.data if dom_rec else {}
         tier = determine_company_tier(r, dom_data)
         if tier not in tier_data:
@@ -1727,10 +1723,10 @@ def export_verified_leads(
     import io
     from fastapi.responses import StreamingResponse, JSONResponse
 
-    records = db.query(UniversalRecord).order_by(UniversalRecord.created_at.desc()).all()
+    records = db.query(Company).order_by(Company.created_at.desc()).all()
     rec_ids = [r.id for r in records]
     dom_map = {
-        d.universal_record_id: (d.data or {}) for d in db.query(DomainRecord).filter(DomainRecord.universal_record_id.in_(rec_ids)).all()
+        d.universal_record_id: (d.data or {}) for d in db.query(Domain).filter(Domain.universal_record_id.in_(rec_ids)).all()
     } if rec_ids else {}
 
     exported_leads = []
