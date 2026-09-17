@@ -217,50 +217,43 @@ class Agent2Orchestrator:
         if not text_corpus and doc.markdown_path:
             text_corpus = file_storage.read_file_content(doc.markdown_path) or ""
 
-        # ── Selective Field-Level Requirement Check for Agent 2 ─────────────────
-        # Only trigger deep crawling if existing text corpus and metadata lack sufficient evidence.
-        subpages_done = metadata.get("subpages_crawled") or []
+        # [SMART CRAWL REFACTOR] Deferring deep crawl until after SearXNG fast-pass.
+        # We will attempt to resolve fields using existing text and SearXNG first.
+        
+        # ── Phase 2: Lightweight HTTP Fetch ──
+        # If existing text is very sparse, grab /about and /contact using httpx before querying SearXNG.
         word_count_existing = len(text_corpus.split())
-        needs_deep_crawl = word_count_existing < 150 or not metadata.get("detected_emails")
+        if word_count_existing < 150:
+            logger.info(f"[Agent 2] Sparse text for {domain} ({word_count_existing} words). Attempting lightweight HTTP fetch.")
+            import httpx
+            from bs4 import BeautifulSoup
+            
+            async def fetch_text(url: str) -> str:
+                try:
+                    async with httpx.AsyncClient(timeout=5.0, follow_redirects=True, verify=False) as client:
+                        resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"})
+                        if resp.status_code == 200:
+                            soup = BeautifulSoup(resp.text, "html.parser")
+                            for script in soup(["script", "style"]):
+                                script.extract()
+                            return soup.get_text(separator=' ', strip=True)
+                except Exception as e:
+                    logger.debug(f"[Agent 2] Lightweight fetch failed for {url}: {e}")
+                return ""
 
-        if len(subpages_done) < 2 and needs_deep_crawl:
-            try:
-                target_url = doc.url or f"https://{domain}"
-                logger.info(f"AGENT2_BROWSER_CREATED run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
-                max_deep_pages = getattr(settings, "MAX_PAGES_PER_DOMAIN_AGENT2", 4)
-                crawl_items = await crawler_service.crawl_site(target_url, max_depth=1, max_pages=max_deep_pages, slot_type="deep")
-                for item in crawl_items:
-                    logger.info(f"AGENT2_PAGE_CRAWLED url={item.url} run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
-                    try:
-                        slug = re.sub(r"[^a-zA-Z0-9_-]", "_", urlparse(item.url).path.strip("/")) or "index"
-                        md_rel = f"companies/{domain}/pages/{slug}.md"
-                        file_storage.save_file(md_rel, (item.markdown or item.text or "").encode("utf-8"), content_type="text/markdown")
-                        if item.html_content:
-                            html_rel = f"companies/{domain}/pages/{slug}.html"
-                            file_storage.save_file(html_rel, item.html_content.encode("utf-8"), content_type="text/html")
-
-                        from app.persistence.models import GlobalLead, GlobalLeadSubpage
-                        gl = db.query(GlobalLead).filter(GlobalLead.domain == domain).first()
-                        if gl:
-                            existing_sub = db.query(GlobalLeadSubpage).filter(GlobalLeadSubpage.page_url == item.url).first()
-                            if not existing_sub:
-                                db.add(GlobalLeadSubpage(
-                                    global_lead_id=gl.id,
-                                    domain=domain,
-                                    page_url=item.url,
-                                    minio_object_path=md_rel
-                                ))
-                                db.commit()
-                    except Exception as sub_err:
-                        logger.debug(f"[Agent 2] Subpage persist error: {sub_err}")
-
-                    if item.text and item.text not in text_corpus:
-                        text_corpus += "\n\n" + item.text
-            except Exception as crawl_err:
-                logger.warning(f"[Agent 2] Coordinated crawl error for {domain}: {crawl_err}")
-            finally:
-                logger.info(f"AGENT2_BROWSER_CLOSED run_id={session.id} lead_id={domain} task_id={session.document_id} agent_id=AGENT-02")
-
+            base_url = doc.url or f"https://{domain}"
+            urls_to_try = [base_url, f"https://{domain}/about", f"https://{domain}/contact"]
+            
+            fetch_tasks = [fetch_text(u) for u in urls_to_try]
+            import asyncio
+            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            
+            for res in results:
+                if isinstance(res, str) and res:
+                    if res not in text_corpus:
+                        text_corpus += "\n\n" + res
+            logger.info(f"[Agent 2] Lightweight fetch completed for {domain}. New word count: {len(text_corpus.split())}")
+            
         # Protect existing valid company name & title
         if not session.company_name or session.company_name.lower() in ["unknown", "index", "discovered entity"]:
             if doc.title:
@@ -322,6 +315,39 @@ class Agent2Orchestrator:
             searxng_service=searxng_service
         )
         field_results["company_size_tier"] = res_size
+
+        # ── SMART FALLBACK: Deep Crawl only if critical fields are missing ──
+        # Fields that usually warrant a deep crawl if SearXNG/existing text fails:
+        critical_missing = []
+        for f in ["verified_contact_email", "company_size_tier", "location_region", "industry_sector"]:
+            if field_results[f].get("status") in ["UNVERIFIED", "NOT_FOUND_AFTER_SEARCH"]:
+                critical_missing.append(f)
+
+        if critical_missing:
+            logger.info(f"[Agent 2] Fast-pass failed for {critical_missing} on {domain}. Triggering targeted Playwright deep crawl.")
+            try:
+                target_url = doc.url or f"https://{domain}"
+                max_deep_pages = getattr(settings, "MAX_PAGES_PER_DOMAIN_AGENT2", 4)
+                crawl_items = await crawler_service.crawl_site(target_url, max_depth=1, max_pages=max_deep_pages, slot_type="deep")
+                
+                new_text_discovered = False
+                for item in crawl_items:
+                    if item.text and item.text not in text_corpus:
+                        text_corpus += "\n\n" + item.text
+                        new_text_discovered = True
+                
+                # If the deep crawl found new text, re-run investigation for ONLY the missing fields
+                if new_text_discovered:
+                    if "verified_contact_email" in critical_missing:
+                        field_results["verified_contact_email"] = await investigation_engine.investigate_email(domain, text_corpus, metadata, crawler_service, searxng_service)
+                    if "company_size_tier" in critical_missing:
+                        field_results["company_size_tier"] = await investigation_engine.investigate_company_size(domain, company_name, text_corpus, artifacts, crawler_service, searxng_service)
+                    if "location_region" in critical_missing:
+                        field_results["location_region"] = await investigation_engine.investigate_location(domain, company_name, text_corpus, artifacts, crawler_service, searxng_service)
+                    if "industry_sector" in critical_missing:
+                        field_results["industry_sector"] = await investigation_engine.investigate_industry(domain, company_name, text_corpus, artifacts, crawler_service, searxng_service)
+            except Exception as crawl_err:
+                logger.warning(f"[Agent 2] Playwright fallback failed for {domain}: {crawl_err}")
 
         # Persist Agent2Evidence records & log extracted fields at DEBUG level
         for fname, fres in field_results.items():
