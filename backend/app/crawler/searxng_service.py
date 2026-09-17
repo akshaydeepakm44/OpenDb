@@ -48,7 +48,6 @@ class SearXNGService:
             "q": query,
             "format": "json",
             "categories": clean_category,
-            "engines": FAST_ENGINES,
             "safesearch": 2, # 2 = Strict safe search in SearXNG
         }
 
