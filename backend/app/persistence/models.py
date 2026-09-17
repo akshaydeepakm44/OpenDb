@@ -383,15 +383,35 @@ class Source(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True, index=True)
-    url = Column(Text, unique=True, nullable=False)
-    domain = Column(String(255), nullable=False, index=True)
-    discovery_query = Column(Text, nullable=True)
-    search_engine = Column(String(50), default="searxng")
-    rank = Column(Integer, nullable=True)
-    discovered_at = Column(DateTime(timezone=True), default=utc_now)
-    status = Column(String(50), default="discovered")
+    name = Column(String(255), nullable=True)
+    source_type = Column(String(100), default="website")
+    base_url = Column(Text, nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
     documents = relationship("Document", back_populates="source")
+
+    # Seamless backward compatibility hybrid properties
+    @hybrid_property
+    def url(self):
+        return self.base_url
+
+    @url.setter
+    def url(self, val):
+        self.base_url = val
+
+    @hybrid_property
+    def domain(self):
+        return self.name
+
+    @domain.setter
+    def domain(self, val):
+        self.name = val
+
+    @hybrid_property
+    def discovered_at(self):
+        return self.created_at
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -406,14 +426,14 @@ class CrawlActivityLog(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    batch_id = Column(String(36), nullable=True, index=True)
-    timestamp = Column(DateTime(timezone=True), default=utc_now, index=True)
-    stage = Column(String(50), nullable=False, index=True)
-    status = Column(String(50), nullable=False, index=True)
     url = Column(Text, nullable=True)
     domain = Column(String(255), nullable=True, index=True)
+    stage = Column(String(50), nullable=False, index=True)
+    status = Column(String(50), nullable=False, index=True)
     message = Column(Text, nullable=True)
-    extra_metadata = Column(JSONB_TYPE, default=dict)
+    entity_name = Column(Text, nullable=True)
+    batch_id = Column(String(36), nullable=True, index=True)
+    timestamp = Column(DateTime(timezone=True), default=utc_now, index=True)
 
 
 class CrawlError(Base):
@@ -423,14 +443,19 @@ class CrawlError(Base):
     __tablename__ = "crawl_errors"
     __table_args__ = {'extend_existing': True}
 
-    id = Column(Integer, primary_key=True, index=True)
-    crawl_job_id = Column(String(36), nullable=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    crawl_job_id = Column(UUID(as_uuid=True), nullable=True)
+    document_id = Column(UUID(as_uuid=True), nullable=True)
     url = Column(Text, nullable=False)
+    stage = Column(String(100), nullable=True)
     error_type = Column(String(100), nullable=False)
     error_message = Column(Text, nullable=True)
-    status_code = Column(Integer, nullable=True)
-    retry_count = Column(Integer, default=0)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
+    stack_trace = Column(Text, nullable=True)
+    timestamp = Column(DateTime(timezone=True), default=utc_now)
+
+    @hybrid_property
+    def created_at(self):
+        return self.timestamp
 
 
 class BatchResult(Base):
@@ -440,16 +465,59 @@ class BatchResult(Base):
     __tablename__ = "batch_results"
     __table_args__ = {'extend_existing': True}
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    status = Column(String(50), default="RUNNING")
+    searches_planned = Column(Integer, default=0)
+    searches_executed = Column(Integer, default=0)
+    urls_discovered = Column(Integer, default=0)
+    urls_crawled = Column(Integer, default=0)
+    entities_discovered = Column(Integer, default=0)
+    entities_verified = Column(Integer, default=0)
+    duplicates_removed = Column(Integer, default=0)
+    feedback_generated = Column(Boolean, default=False)
     started_at = Column(DateTime(timezone=True), default=utc_now)
     completed_at = Column(DateTime(timezone=True), nullable=True)
-    queries_run = Column(Integer, default=0)
-    sources_discovered = Column(Integer, default=0)
-    domains_processed = Column(Integer, default=0)
-    records_created = Column(Integer, default=0)
-    records_updated = Column(Integer, default=0)
-    errors_count = Column(Integer, default=0)
-    metrics = Column(JSONB_TYPE, default=dict)
+
+    # Seamless backward compatibility hybrid properties
+    @hybrid_property
+    def queries_run(self):
+        return self.searches_executed
+
+    @queries_run.setter
+    def queries_run(self, val):
+        self.searches_executed = val
+
+    @hybrid_property
+    def sources_discovered(self):
+        return self.urls_discovered
+
+    @sources_discovered.setter
+    def sources_discovered(self, val):
+        self.urls_discovered = val
+
+    @hybrid_property
+    def domains_processed(self):
+        return self.urls_crawled
+
+    @domains_processed.setter
+    def domains_processed(self, val):
+        self.urls_crawled = val
+
+    @hybrid_property
+    def records_created(self):
+        return self.entities_discovered
+
+    @records_created.setter
+    def records_created(self, val):
+        self.entities_discovered = val
+
+    @hybrid_property
+    def records_updated(self):
+        return self.entities_verified
+
+    @records_updated.setter
+    def records_updated(self, val):
+        self.entities_verified = val
 
 
 class SearchHistory(Base):
@@ -459,13 +527,45 @@ class SearchHistory(Base):
     __tablename__ = "search_history"
     __table_args__ = {'extend_existing': True}
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    query = Column(Text, nullable=False)
-    search_engine = Column(String(50), default="searxng")
-    searched_at = Column(DateTime(timezone=True), default=utc_now)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    keyword = Column(Text, nullable=False)
+    domain = Column(String(100), nullable=True)
     sources_found = Column(Integer, default=0)
-    sources_new = Column(Integer, default=0)
-    batch_id = Column(String(36), nullable=True, index=True)
+    relevant_sources = Column(Integer, default=0)
+    entities_discovered = Column(Integer, default=0)
+    batch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    is_fallback = Column(Boolean, default=False)
+    log_message = Column(Text, nullable=True)
+    executed_at = Column(DateTime(timezone=True), default=utc_now)
+
+    # Seamless backward compatibility hybrid properties
+    @hybrid_property
+    def query(self):
+        return self.keyword
+
+    @query.setter
+    def query(self, val):
+        self.keyword = val
+
+    @hybrid_property
+    def search_engine(self):
+        return "searxng"
+
+    @hybrid_property
+    def searched_at(self):
+        return self.executed_at
+
+    @searched_at.setter
+    def searched_at(self, val):
+        self.executed_at = val
+
+    @hybrid_property
+    def sources_new(self):
+        return self.relevant_sources
+
+    @sources_new.setter
+    def sources_new(self, val):
+        self.relevant_sources = val
 
 
 class KeywordPerformance(Base):
@@ -475,13 +575,29 @@ class KeywordPerformance(Base):
     __tablename__ = "keyword_performance"
     __table_args__ = {'extend_existing': True}
 
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    keyword = Column(String(255), unique=True, nullable=False)
-    times_used = Column(Integer, default=0)
-    results_found = Column(Integer, default=0)
-    companies_identified = Column(Integer, default=0)
-    success_rate = Column(Float, default=0.0)
-    last_used_at = Column(DateTime(timezone=True), default=utc_now)
+    keyword = Column(Text, primary_key=True)
+    domain = Column(String(100), nullable=True)
+    usage_count = Column(Integer, default=0)
+    success_rate = Column(Numeric, default=0.0)
+    last_used = Column(DateTime(timezone=True), default=utc_now)
+    is_deprecated = Column(Boolean, default=False)
+    feedback_notes = Column(Text, nullable=True)
+
+    @hybrid_property
+    def times_used(self):
+        return self.usage_count
+
+    @times_used.setter
+    def times_used(self, val):
+        self.usage_count = val
+
+    @hybrid_property
+    def last_used_at(self):
+        return self.last_used
+
+    @last_used_at.setter
+    def last_used_at(self, val):
+        self.last_used = val
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -495,13 +611,18 @@ class AgentState(Base):
     __tablename__ = "agent_state"
     __table_args__ = {'extend_existing': True}
 
-    id = Column(String(36), primary_key=True, default="default")
-    status = Column(String(50), default="idle")
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    status = Column(String(50), default="PAUSED")
+    current_domain = Column(String(100), nullable=True)
+    current_subdomain = Column(String(100), nullable=True)
+    current_keyword = Column(Text, nullable=True)
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    state_data = Column(JSONB_TYPE, default=dict)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
     current_batch_id = Column(String(36), nullable=True)
     last_active_at = Column(DateTime(timezone=True), default=utc_now)
     total_runs = Column(Integer, default=0)
     total_records_processed = Column(Integer, default=0)
-    state_data = Column(JSONB_TYPE, default=dict)
 
 
 class ArtifactOutbox(Base):
@@ -540,10 +661,27 @@ class BlockedDomain(Base):
     __tablename__ = "blocked_domains"
     __table_args__ = {'extend_existing': True}
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     domain = Column(String(255), unique=True, nullable=False, index=True)
-    reason = Column(String(255), nullable=False)
-    blocked_at = Column(DateTime(timezone=True), default=utc_now)
+    reason_category = Column(String(255), nullable=True)
+    source = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    @hybrid_property
+    def reason(self):
+        return self.reason_category
+
+    @reason.setter
+    def reason(self, val):
+        self.reason_category = val
+
+    @hybrid_property
+    def blocked_at(self):
+        return self.created_at
+
+    @blocked_at.setter
+    def blocked_at(self, val):
+        self.created_at = val
 
 
 class ManualReviewQueue(Base):
@@ -554,12 +692,13 @@ class ManualReviewQueue(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    entity_type = Column(String(50), nullable=False)
-    entity_id = Column(String(36), nullable=False)
-    reason = Column(String(255), nullable=False)
+    url = Column(Text, nullable=True)
+    domain = Column(String(255), nullable=True)
+    item_type = Column(String(50), nullable=True)
+    content_snippet = Column(Text, nullable=True)
+    score = Column(Numeric, nullable=True)
+    status = Column(String(50), default="PENDING")
     created_at = Column(DateTime(timezone=True), default=utc_now)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    resolution = Column(String(50), nullable=True)
 
 
 class QuarantinedContent(Base):
@@ -570,10 +709,14 @@ class QuarantinedContent(Base):
     __table_args__ = {'extend_existing': True}
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    document_id = Column(String(36), nullable=True)
     url = Column(Text, nullable=False)
-    reason = Column(String(255), nullable=False)
-    content_hash = Column(String(64), nullable=True)
-    quarantined_at = Column(DateTime(timezone=True), default=utc_now)
+    domain = Column(String(255), nullable=True)
+    content_type = Column(String(100), nullable=True)
+    flagged_categories = Column(JSONB_TYPE, default=list)
+    confidence_score = Column(Numeric, nullable=True)
+    reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
