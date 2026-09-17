@@ -220,7 +220,7 @@ def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Di
                 "name": c.person_name,
                 "linkedin_url": c.linkedin_url,
                 "title": c.title,
-                "company": c.company,
+                "company": c.source_domain,
                 "candidate_status": c.candidate_status,
                 "company_match_status": c.company_match_status,
                 "is_leadership": c.is_leadership,

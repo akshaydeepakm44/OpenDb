@@ -108,6 +108,10 @@ def can_mark_not_found(field: str, investigation: Dict[str, Any]) -> Tuple[bool,
 
     if investigation.get("evidence_found"):
         return False, "Evidence was found; field cannot be marked NOT_FOUND_AFTER_SEARCH"
+        
+    urls_crawled = len(investigation.get("urls_crawled") or [])
+    if reqs["min_searches"] > 0 and urls_crawled == 0:
+        return False, "Investigation executed searches but failed to crawl any candidate URLs."
 
     return True, "Investigation legitimately exhausted with zero reliable evidence"
 
@@ -126,7 +130,91 @@ class Agent2InvestigationEngine:
     def __init__(self):
         pass
 
-    # ── 1. INDUSTRY SECTOR ───────────────────────────────────────────────────
+    async def _fetch_and_extract(
+        self,
+        domain: str,
+        query: str,
+        searxng_service,
+        inv: Dict[str, Any],
+        extractor_func,
+        max_urls: int = 3
+    ) -> Optional[Dict[str, Any]]:
+        from app.crawler.lightweight_fetcher import governed_lightweight_fetch
+        
+        # 1. Search for URLs
+        inv["search_queries"].append(query)
+        inv["search_attempts"] += 1
+        results, is_fb, log_msg = await searxng_service.search_with_meta(query, category="general", max_results=max_urls + 2)
+        
+        if is_fb and "All connection attempts failed" in log_msg:
+            # Fallback search is acceptable, proceed.
+            pass
+        elif not results and "error" in log_msg.lower():
+            inv["infra_failure"] = f"SEARCH_UNAVAILABLE: {log_msg}"
+            return None
+
+        urls = []
+        result_map = {}
+        for r in (results or []):
+            u = r.get("url", "")
+            if u and u.startswith("http"):
+                if u not in urls:
+                    urls.append(u)
+                    result_map[u] = r
+        
+        # Rank URLs
+        from app.crawler.crawler_service import _score_link
+        urls.sort(key=lambda u: _score_link(u, u))
+        
+        urls_to_check = urls[:max_urls]
+        # Pass 1: Check ALL candidate snippets first across all returned search results!
+        # (zero-cost, no crawling, no bot-blocks, no memory usage)
+        for url in urls:
+            search_result = result_map.get(url, {})
+            title_text = search_result.get("title", "")
+            content_text = search_result.get("content", "") or search_result.get("snippet", "")
+            snippet = f"{title_text} {content_text}".strip()
+            
+            snippet_result = extractor_func(snippet)
+            if snippet_result:
+                val = snippet_result.get("value") or snippet_result.get("tier") or snippet_result.get("location")
+                if val:
+                    return {
+                        "value": val,
+                        "source_url": url,
+                        "evidence_snippet": snippet_result.get("snippet", snippet[:200]),
+                        "verification_method": "search_snippet_extraction"
+                    }
+
+        # Pass 2: Targeted crawl only if snippets did not contain the answer
+        last_crawl_err = None
+        for url in urls_to_check:
+            # Skip anti-bot domains to save CPU/RAM and avoid headless browser crashes
+            if "linkedin.com" in url or "crunchbase.com" in url:
+                continue
+
+            inv["urls_crawled"].append(url)
+            success, clean_text, msg = await governed_lightweight_fetch(url)
+            if not success:
+                last_crawl_err = msg
+                continue
+            
+            inv["documents_examined"] = inv.get("documents_examined", 0) + 1
+            result = extractor_func(clean_text)
+            if result:
+                val = result.get("value") or result.get("tier") or result.get("location")
+                if val:
+                    return {
+                        "value": val,
+                        "source_url": url,
+                        "evidence_snippet": result.get("snippet", ""),
+                        "verification_method": "scraped_page_extraction"
+                    }
+
+        if last_crawl_err and not inv["urls_crawled"]:
+            inv["infra_failure"] = last_crawl_err
+
+        return None
     async def investigate_industry(
         self,
         domain: str,
@@ -195,59 +283,39 @@ class Agent2InvestigationEngine:
         inv["strategies_completed"].append("search_domain")
         inv["strategies_remaining"].remove("search_domain")
         inv["sources_checked"].append("search_domain")
-
-        try:
-            q1 = f'"{domain}" industry sector what we do'
-            inv["search_queries"].append(q1)
-            inv["search_attempts"] += 1
-            results, is_fallback, log_msg = await searxng_service.search_with_meta(q1, category="general", max_results=5)
-            if is_fallback:
-                inv["infra_failure"] = f"SEARCH_UNAVAILABLE: {log_msg}"
-            elif results:
-                snippets = " ".join([r.get("content", "") for r in results if r.get("content")])
-                c_dom3, _, conf3 = domain_classifier.classify(snippets, title=company_name, url=domain)
-                if conf3 >= 0.60 and c_dom3 != "Unknown":
-                    inv["evidence_found"] = True
-                    inv["completed_at"] = utc_now_iso()
-                    return {
-                        "field": "industry_sector",
-                        "value": c_dom3,
-                        "status": "VERIFIED",
-                        "source_url": results[0].get("url") or f"https://{domain}",
-                        "evidence_snippet": f"Verified via search evidence snippet: {snippets[:180]}...",
-                        "verification_method": "searxng_evidence_classification",
-                        "investigation": inv,
-                    }
-        except Exception as search_err:
-            inv["infra_failure"] = f"SEARCH_ERROR: {search_err}"
-
-        # Strategy 4: Secondary targeted search
-        inv["strategies_completed"].append("secondary_search")
-        inv["strategies_remaining"].remove("secondary_search")
+        if "secondary_search" in inv["strategies_remaining"]:
+            inv["strategies_remaining"].remove("secondary_search")
         inv["sources_checked"].append("secondary_search")
 
-        try:
-            q2 = f'"{company_name}" software SaaS enterprise solutions'
-            inv["search_queries"].append(q2)
-            inv["search_attempts"] += 1
-            results2, is_fallback2, _ = await searxng_service.search_with_meta(q2, category="general", max_results=5)
-            if results2 and not is_fallback2:
-                snippets2 = " ".join([r.get("content", "") for r in results2 if r.get("content")])
-                c_dom4, _, conf4 = domain_classifier.classify(snippets2, title=company_name, url=domain)
-                if conf4 >= 0.60 and c_dom4 != "Unknown":
-                    inv["evidence_found"] = True
-                    inv["completed_at"] = utc_now_iso()
-                    return {
-                        "field": "industry_sector",
-                        "value": c_dom4,
-                        "status": "VERIFIED",
-                        "source_url": results2[0].get("url") or f"https://{domain}",
-                        "evidence_snippet": f"Verified via secondary search: {snippets2[:180]}...",
-                        "verification_method": "searxng_secondary_classification",
-                        "investigation": inv,
-                    }
-        except Exception as e:
-            inv["infra_failure"] = f"SEARCH_ERROR: {e}"
+        def _extract_industry_func(text: str) -> Optional[Dict[str, str]]:
+            from app.classification.domain_classifier import domain_classifier
+            c_dom, sub_dom, conf = domain_classifier.classify(text, title=company_name, url=domain)
+            if conf >= 0.60 and c_dom != "Unknown" and c_dom != "Commercial Web":
+                return {"value": c_dom, "snippet": f"Classified from scraped content as {c_dom} ({sub_dom})"}
+            return None
+
+        query = f'site:{domain}/about OR site:{domain} industry sector what we do'
+        extracted = await self._fetch_and_extract(
+            domain=domain,
+            query=query,
+            searxng_service=searxng_service,
+            inv=inv,
+            extractor_func=_extract_industry_func,
+            max_urls=3
+        )
+
+        if extracted:
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "industry_sector",
+                "value": extracted["value"],
+                "status": "VERIFIED",
+                "source_url": extracted["source_url"],
+                "evidence_snippet": extracted["evidence_snippet"],
+                "verification_method": extracted["verification_method"],
+                "investigation": inv,
+            }
 
         # All strategies exhausted
         inv["strategies_exhausted"] = True
@@ -333,31 +401,34 @@ class Agent2InvestigationEngine:
         inv["strategies_completed"].append("search_location")
         inv["strategies_remaining"].remove("search_location")
 
-        try:
-            q = f'"{domain}" headquarters address office location'
-            inv["search_queries"].append(q)
-            inv["search_attempts"] += 1
-            results, is_fallback, log_msg = await searxng_service.search_with_meta(q, category="general", max_results=5)
-            if is_fallback:
-                inv["infra_failure"] = f"SEARCH_UNAVAILABLE: {log_msg}"
-            elif results:
-                for r in results:
-                    snippet = r.get("content", "")
-                    loc3 = self._extract_location_evidence(snippet)
-                    if loc3:
-                        inv["evidence_found"] = True
-                        inv["completed_at"] = utc_now_iso()
-                        return {
-                            "field": "location_region",
-                            "value": loc3["location"],
-                            "status": "VERIFIED",
-                            "source_url": r.get("url") or f"https://{domain}",
-                            "evidence_snippet": f"Found in search snippet: {snippet[:180]}",
-                            "verification_method": "searxng_address_snippet",
-                            "investigation": inv,
-                        }
-        except Exception as e:
-            inv["infra_failure"] = f"SEARCH_ERROR: {e}"
+        def _extract_location_func(text: str) -> Optional[Dict[str, str]]:
+            loc = self._extract_location_evidence(text)
+            if loc:
+                return {"value": loc["location"], "snippet": loc["snippet"]}
+            return None
+
+        query = f'{domain} company headquarters'
+        extracted = await self._fetch_and_extract(
+            domain=domain,
+            query=query,
+            searxng_service=searxng_service,
+            inv=inv,
+            extractor_func=_extract_location_func,
+            max_urls=3
+        )
+
+        if extracted:
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "location_region",
+                "value": extracted["value"],
+                "status": "VERIFIED",
+                "source_url": extracted["source_url"],
+                "evidence_snippet": extracted["evidence_snippet"],
+                "verification_method": extracted["verification_method"],
+                "investigation": inv,
+            }
 
         inv["strategies_exhausted"] = True
         inv["completed_at"] = utc_now_iso()
@@ -623,30 +694,28 @@ class Agent2InvestigationEngine:
         inv["strategies_completed"].append("search_size")
         inv["strategies_remaining"].remove("search_size")
 
-        try:
-            q = f'"{domain}" team of employees headcount'
-            inv["search_queries"].append(q)
-            inv["search_attempts"] += 1
-            results, is_fallback, log_msg = await searxng_service.search_with_meta(q, category="general", max_results=5)
-            if is_fallback:
-                inv["infra_failure"] = f"SEARCH_UNAVAILABLE: {log_msg}"
-            elif results:
-                for r in results:
-                    size3 = self._extract_size_evidence(r.get("content", ""))
-                    if size3:
-                        inv["evidence_found"] = True
-                        inv["completed_at"] = utc_now_iso()
-                        return {
-                            "field": "company_size_tier",
-                            "value": size3["tier"],
-                            "status": "VERIFIED",
-                            "source_url": r.get("url") or f"https://{domain}",
-                            "evidence_snippet": f"Found in search snippet: {size3['snippet']}",
-                            "verification_method": "searxng_size_snippet",
-                            "investigation": inv,
-                        }
-        except Exception as e:
-            inv["infra_failure"] = f"SEARCH_ERROR: {e}"
+        query = f'{domain} company size'
+        extracted = await self._fetch_and_extract(
+            domain=domain,
+            query=query,
+            searxng_service=searxng_service,
+            inv=inv,
+            extractor_func=self._extract_size_evidence,
+            max_urls=3
+        )
+        
+        if extracted:
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "company_size_tier",
+                "value": extracted["value"],
+                "status": "VERIFIED",
+                "source_url": extracted["source_url"],
+                "evidence_snippet": extracted["evidence_snippet"],
+                "verification_method": extracted["verification_method"],
+                "investigation": inv,
+            }
 
         inv["strategies_exhausted"] = True
         inv["completed_at"] = utc_now_iso()
@@ -747,6 +816,7 @@ class Agent2InvestigationEngine:
         patterns = [
             (r"(?:team of|over|more than|approximately|approx\.)\s*(\d{1,3}(?:,\d{3})*)\s*(?:people|employees|members|engineers|staff)", 1),
             (r"headcount\s*(?:of|is|:)\s*(\d{1,3}(?:,\d{3})*)", 1),
+            (r"\b(\d{1,3}(?:,\d{3})*)\s*(?:employees|people|team members|staff|engineers)\b", 1),
         ]
         for pat, grp in patterns:
             m = re.search(pat, text, re.IGNORECASE)
@@ -852,30 +922,35 @@ class Agent2InvestigationEngine:
         inv["strategies_completed"].append("search_email")
         inv["strategies_remaining"].remove("search_email")
 
-        try:
-            q = f'"{domain}" contact email mailto'
-            inv["search_queries"].append(q)
-            inv["search_attempts"] += 1
-            results, is_fallback, log_msg = await searxng_service.search_with_meta(q, category="general", max_results=5)
-            if is_fallback:
-                inv["infra_failure"] = f"SEARCH_UNAVAILABLE: {log_msg}"
-            elif results:
-                for r in results:
-                    found_emails = re.findall(r"[a-zA-Z0-9_.+-]+@" + re.escape(domain), r.get("content", ""))
-                    for em in found_emails:
-                        inv["evidence_found"] = True
-                        inv["completed_at"] = utc_now_iso()
-                        return {
-                            "field": "verified_contact_email",
-                            "value": em,
-                            "status": "VERIFIED",
-                            "source_url": r.get("url") or f"https://{domain}",
-                            "evidence_snippet": f"Discovered in official search snippet: {em}",
-                            "verification_method": "searxng_email_evidence",
-                            "investigation": inv,
-                        }
-        except Exception as e:
-            inv["infra_failure"] = f"SEARCH_ERROR: {e}"
+        def _extract_email_func(text: str) -> Optional[Dict[str, str]]:
+            found_emails = re.findall(r"[a-zA-Z0-9_.+-]+@" + re.escape(domain), text)
+            for em in found_emails:
+                if not any(em.lower().endswith(ext) for ext in [".png", ".jpg", ".svg", ".webp", ".js", ".css"]):
+                    return {"value": em, "snippet": f"Found on page: {em}"}
+            return None
+
+        query = f'site:{domain}/contact OR site:{domain}/about email OR mailto'
+        extracted = await self._fetch_and_extract(
+            domain=domain,
+            query=query,
+            searxng_service=searxng_service,
+            inv=inv,
+            extractor_func=_extract_email_func,
+            max_urls=3
+        )
+
+        if extracted:
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "verified_contact_email",
+                "value": extracted["value"],
+                "status": "VERIFIED",
+                "source_url": extracted["source_url"],
+                "evidence_snippet": extracted["evidence_snippet"],
+                "verification_method": extracted["verification_method"],
+                "investigation": inv,
+            }
 
         inv["strategies_exhausted"] = True
         inv["completed_at"] = utc_now_iso()

@@ -204,9 +204,9 @@ def _safe_dispatch(task_func, **kwargs):
     """
     Controlled Task Dispatch Execution Adapter:
     1. If an active Celery worker exists: Dispatches via Celery Redis queue (execution_mode=CELERY).
-    2. If no Celery worker exists: Runs the EXACT SAME task function locally in a background daemon thread
-       (execution_mode=LOCAL_THREAD) with full telemetry (run_id, task_id, agent_id, started_at, completed_at, status, exception).
-    3. If dispatch fails: logs explicit DISPATCH_FAILED state.
+    2. If no Celery worker exists and task is NOT Agent 2: Runs the EXACT SAME task function locally in a background daemon thread
+       (execution_mode=LOCAL_THREAD) with full telemetry.
+    3. If no Celery worker exists and task IS Agent 2: FAILS CLOSED. Agent 2 must run on dedicated verification workers.
     """
     from app.audit.tracer import tracer, Checkpoint
     task_name = getattr(task_func, 'name', str(task_func))
@@ -224,7 +224,24 @@ def _safe_dispatch(task_func, **kwargs):
         try:
             return _dispatch_task(task_func, **kwargs)
         except Exception as dispatch_err:
-            logger.warning(f"[_safe_dispatch] Celery dispatch failed for {task_name}, falling back to LOCAL_THREAD: {dispatch_err}")
+            logger.warning(f"[_safe_dispatch] Celery dispatch failed for {task_name}, evaluating fallback: {dispatch_err}")
+
+    # Fail closed for Agent 2 tasks in production (unless explicitly testing locally)
+    if "agent2" in task_name.lower() and settings.OPENDB_ENV.lower() == "production":
+        tracer.log_event(
+            level="ERROR",
+            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
+            event="AGENT2_DISPATCH_FAILED",
+            message=f"Agent 2 task '{task_name}' dispatch failed. Verification worker unavailable. Failing closed.",
+            task_id=task_id,
+            status="DISPATCH_FAILED",
+            extra={
+                "run_id": run_id,
+                "task_id": task_id,
+                "execution_mode": "CELERY_REQUIRED"
+            }
+        )
+        raise RuntimeError(f"QUEUE_FAILED: Agent 2 tasks must execute on dedicated Celery verification worker. Local fallback disabled for {task_name}.")
 
     # Controlled Fallback: LOCAL_THREAD execution mode
     execution_mode = "LOCAL_THREAD"

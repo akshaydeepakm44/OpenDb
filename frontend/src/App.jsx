@@ -1841,6 +1841,7 @@ export default function App() {
                         const label = fieldData.label || key.replace(/_/g, ' ').toUpperCase();
                         const snippet = fieldData.evidence || evRow.evidence_snippet;
                         const source = fieldData.source_url || evRow.source_url;
+                        const investigation = evRow.investigation || {};
 
                         const badgeBg = isVal ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)';
                         const badgeColor = isVal ? '#34d399' : '#f87171';
@@ -1860,7 +1861,21 @@ export default function App() {
                               <div style={{ color: val ? '#67e8f9' : '#64748b', fontSize: '0.82rem', marginTop: '0.25rem', fontWeight: 600 }}>
                                 {val ? safeText(val) : '(Missing or generic placeholder)'}
                               </div>
-                              {snippet && (
+                              {status === 'NOT_FOUND_AFTER_SEARCH' && Object.keys(investigation).length > 0 && (
+                                <div style={{ marginTop: '0.75rem', background: 'rgba(239, 68, 68, 0.05)', padding: '0.5rem', borderRadius: '0.375rem', border: '1px solid rgba(239, 68, 68, 0.2)', fontSize: '0.75rem', color: '#94a3b8' }}>
+                                  <div style={{ marginBottom: '0.25rem', fontWeight: 700, color: '#f87171' }}>Investigation Audit:</div>
+                                  {investigation.search_rounds !== undefined && <div>• Search Rounds: <span style={{ color: '#cbd5e1' }}>{investigation.search_rounds}</span></div>}
+                                  {investigation.search_queries && investigation.search_queries.length > 0 && (
+                                    <div>• Queries Attempted: <span style={{ color: '#cbd5e1', fontFamily: 'monospace' }}>{investigation.search_queries.join(', ')}</span></div>
+                                  )}
+                                  {investigation.sources_checked && investigation.sources_checked.length > 0 && (
+                                    <div>• Sources Examined: <span style={{ color: '#cbd5e1' }}>{investigation.sources_checked.join(', ')}</span></div>
+                                  )}
+                                  {investigation.infra_failure && <div>• Infra Failure: <span style={{ color: '#f87171' }}>{investigation.infra_failure}</span></div>}
+                                  <div style={{ marginTop: '0.25rem' }}>• Reason: {snippet || "No reliable public evidence found."}</div>
+                                </div>
+                              )}
+                              {status !== 'NOT_FOUND_AFTER_SEARCH' && snippet && (
                                 <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem', fontStyle: 'italic' }}>
                                   Provenance: {safeText(snippet).slice(0, 180)}{safeText(snippet).length > 180 ? '...' : ''}
                                 </div>

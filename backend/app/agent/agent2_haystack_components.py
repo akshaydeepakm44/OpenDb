@@ -216,26 +216,31 @@ def generate_dynamic_linkedin_queries(
 
     if search_round == 1:
         return [
+            f"{clean_domain} company ceo",
+            f"{brand} company ceo linkedin",
+            f"{brand} founder linkedin",
+            f"{clean_domain} leadership team",
             f"site:linkedin.com/in/ \"{brand}\" founder OR CEO",
-            f"site:linkedin.com/in/ \"{brand}\" \"Chief Executive Officer\"",
             f"site:linkedin.com/in/ \"{domain_brand}\" founder OR CEO",
             f"site:linkedin.com/in/ \"{clean_domain}\" executive",
-            f"site:linkedin.com/in/ \"{brand}\" CTO OR \"Chief Technology Officer\"",
-            f"site:linkedin.com/in/ \"{brand}\" \"Managing Director\" OR President",
         ]
     elif search_round == 2:
         # Round 2: broaden to directors, co-founders, head of engineering, VP
         return [
+            f"{clean_domain} co-founder linkedin",
+            f"{brand} executive team linkedin",
+            f"{brand} CTO or VP linkedin",
             f"site:linkedin.com/in/ \"{brand}\" \"Co-Founder\"",
             f"site:linkedin.com/in/ \"{domain_brand}\" \"Co-Founder\"",
             f"site:linkedin.com/in/ \"{brand}\" \"Vice President\" OR VP",
             f"site:linkedin.com/in/ \"{brand}\" \"Head of\"",
             f"site:linkedin.com/in/ \"{clean_domain}\" founder OR leadership",
-            f"site:linkedin.com/in/ \"{brand}\" director",
         ]
     else:
         # Round 3+: generalized personal profile query
         return [
+            f"{brand} linkedin executive",
+            f"{clean_domain} founder",
             f"site:linkedin.com/in/ \"{brand}\"",
             f"site:linkedin.com/in/ \"{domain_brand}\"",
             f"site:linkedin.com/in/ \"{clean_domain}\"",
@@ -251,22 +256,31 @@ def evaluate_person_company_match(
     candidate_title: str,
     candidate_company: str,
     evidence_text: str,
-    linkedin_url: str
+    source_url: str = "",
+    linkedin_url: str = ""
 ) -> Dict[str, Any]:
     """
-    Validates whether a discovered LinkedIn candidate genuinely belongs to the target company.
-    Rejects wrong-company executives, non-personal profiles, and ambiguous attributions.
+    Evaluates if a candidate genuinely belongs to the target company.
+    Accepts BOTH official website URLs and LinkedIn URLs as evidence sources.
+    Uses Haystack/LLM for reasoned validation.
     """
     from app.extraction.person_verifier import person_verifier, is_authentic_linkedin_personal_url
 
+    url_to_check = linkedin_url or source_url
+    if not url_to_check:
+        return {
+            "company_match": False,
+            "rejection_reason": "No valid source URL provided for verification."
+        }
+
     # Hard Gate: Profile URL check
-    if not is_authentic_linkedin_personal_url(linkedin_url):
+    if "linkedin.com" in url_to_check and not is_authentic_linkedin_personal_url(url_to_check):
         return {
             "company_match": False,
             "is_leadership": False,
             "verification_status": "REJECTED",
             "rejection_reason": "INVALID_LINKEDIN_URL",
-            "evidence_snippet": f"Rejected URL '{linkedin_url}': Not an authentic personal /in/ profile URL.",
+            "evidence_snippet": f"Rejected URL '{url_to_check}': Not an authentic personal /in/ profile URL.",
         }
 
     # Verify matching using PersonCompanyVerifier
@@ -276,7 +290,7 @@ def evaluate_person_company_match(
         company_name=target_company,
         official_domain=target_domain,
         evidence_text=f"{candidate_company or ''} {evidence_text or ''}",
-        source_url=linkedin_url
+        source_url=url_to_check
     )
 
     v_status = verification.get("verification_status") or verification.get("status") or verification.get("match_status") or "REJECTED"

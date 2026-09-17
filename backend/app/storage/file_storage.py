@@ -459,7 +459,7 @@ class StorageManager:
         Raises/returns explicit error when storage backend is down.
         """
         clean_path = object_path.replace(f"s3://{self.bucket_name}/", "").replace("local://", "")
-        if self.use_local:
+        if self.use_local or object_path.startswith("local://") or (self.local_dir / clean_path).exists():
             target = self.local_dir / clean_path
             if target.exists() and target.is_file():
                 data = target.read_bytes()
@@ -470,7 +470,8 @@ class StorageManager:
                     "backend": "local",
                     "error": None
                 }
-            return {"exists": False, "size_bytes": 0, "content_hash": None, "backend": "local", "error": "file_not_found"}
+            if self.use_local or object_path.startswith("local://"):
+                return {"exists": False, "size_bytes": 0, "content_hash": None, "backend": "local", "error": "file_not_found"}
 
         try:
             stat = self.client.stat_object(self.bucket_name, clean_path)

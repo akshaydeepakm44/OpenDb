@@ -172,7 +172,9 @@ class SearXNGService:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             }
             async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-                resp = await client.post(url, data={"q": query}, headers=headers)
+                resp = await client.get(url, params={"q": query}, headers=headers)
+                if resp.status_code != 200:
+                    resp = await client.post(url, data={"q": query}, headers=headers)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
                     cleaned = []
