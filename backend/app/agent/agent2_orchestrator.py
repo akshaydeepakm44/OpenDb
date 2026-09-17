@@ -512,10 +512,14 @@ class Agent2Orchestrator:
         # As specified: site:linkedin.com/in/ "{company_name}" founder OR CEO
         # Do NOT crawl LinkedIn URLs; extract verified leader identity directly from search snippet.
         queries = [
+            # Open-web queries that Bing/Mojeek/Yahoo respond to
+            f'{target_brand} CEO founder linkedin profile',
+            f'{target_brand} founder linkedin',
+            f'{domain} CEO founder linkedin',
+            f'{target_brand} co-founder executive linkedin',
+            # site: variants as a supplementary pass (works if Google/Brave enabled)
             f'site:linkedin.com/in/ "{target_brand}" founder OR CEO',
             f'site:linkedin.com/in/ "{domain_brand}" founder OR CEO',
-            f'site:linkedin.com/in/ "{domain}" founder OR CEO',
-            f'site:linkedin.com/in/ "{target_brand}" executive OR "co-founder"',
         ]
 
         # Multi-round search retry loop
@@ -532,13 +536,23 @@ class Agent2Orchestrator:
                     if results:
                         for r in results:
                             raw_url = r.get("url", "")
+                            content_snip = r.get("content") or r.get("snippet") or ""
+                            title_snip = r.get("title", "")
+
+                            # First: direct LinkedIn profile URL in result
+                            linkedin_candidate_url = None
                             if is_authentic_linkedin_personal_url(raw_url):
-                                clean_url = re.sub(r"\?.*$", "", raw_url).rstrip("/")
+                                linkedin_candidate_url = raw_url
+                            else:
+                                # Second: extract any linkedin.com/in/ URL from the search snippet/content
+                                li_match = re.search(r'(https?://(?:www\.)?linkedin\.com/in/[A-Za-z0-9\-_]+)', content_snip)
+                                if li_match and is_authentic_linkedin_personal_url(li_match.group(1)):
+                                    linkedin_candidate_url = li_match.group(1)
+
+                            if linkedin_candidate_url:
+                                clean_url = re.sub(r"\?.*$", "", linkedin_candidate_url).rstrip("/")
                                 if clean_url not in seen_urls:
                                     seen_urls.add(clean_url)
-                                    title_snip = r.get("title", "")
-                                    content_snip = r.get("content") or r.get("snippet") or ""
-
                                     # Parse Name & Role directly from search result title
                                     # Formats: "Karri Saarinen - Co-Founder, CEO - Linear | LinkedIn"
                                     clean_title = re.sub(r'\s*\|\s*LinkedIn.*$', '', title_snip, flags=re.IGNORECASE).strip()

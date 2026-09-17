@@ -237,35 +237,37 @@ def generate_dynamic_linkedin_queries(
     brand = re.sub(r'(?i)\b(inc|llc|ltd|gmbh|corp|corporation|technologies|solutions|group|holdings|pte)\b', '', raw_brand).strip(' ,.-') or raw_brand
 
     if search_round == 1:
+        # Open-web queries first — work with Bing/Mojeek/Yahoo which don't return site:linkedin results
         return [
-            f"{clean_domain} company ceo",
-            f"{brand} company ceo linkedin",
-            f"{brand} founder linkedin",
-            f"{clean_domain} leadership team",
-            f"site:linkedin.com/in/ \"{brand}\" founder OR CEO",
-            f"site:linkedin.com/in/ \"{domain_brand}\" founder OR CEO",
-            f"site:linkedin.com/in/ \"{clean_domain}\" executive",
+            f"{brand} CEO linkedin profile",
+            f"{brand} founder CEO linkedin",
+            f"{clean_domain} CEO founder linkedin profile",
+            f"{brand} co-founder linkedin",
+            f"{clean_domain} leadership team linkedin",
+            # site: variants as supplementary for Google/Brave when available
+            f"site:linkedin.com/in/ \"{brand}\" CEO",
+            f"site:linkedin.com/in/ \"{domain_brand}\" founder",
         ]
     elif search_round == 2:
-        # Round 2: broaden to directors, co-founders, head of engineering, VP
+        # Round 2: broaden to directors, co-founders, VPs
         return [
-            f"{clean_domain} co-founder linkedin",
-            f"{brand} executive team linkedin",
-            f"{brand} CTO or VP linkedin",
+            f"{brand} CTO founder linkedin",
+            f"{brand} executive team linkedin profile",
+            f"{clean_domain} co-founder linkedin profile",
+            f"{brand} VP Head linkedin",
+            f"who is the CEO of {brand}",
+            f"who founded {brand} {clean_domain}",
             f"site:linkedin.com/in/ \"{brand}\" \"Co-Founder\"",
-            f"site:linkedin.com/in/ \"{domain_brand}\" \"Co-Founder\"",
-            f"site:linkedin.com/in/ \"{brand}\" \"Vice President\" OR VP",
             f"site:linkedin.com/in/ \"{brand}\" \"Head of\"",
-            f"site:linkedin.com/in/ \"{clean_domain}\" founder OR leadership",
         ]
     else:
-        # Round 3+: generalized personal profile query
+        # Round 3+: generalized broad queries
         return [
-            f"{brand} linkedin executive",
-            f"{clean_domain} founder",
+            f"{brand} executive linkedin",
+            f"{clean_domain} founder CEO",
+            f"{brand} leadership",
             f"site:linkedin.com/in/ \"{brand}\"",
             f"site:linkedin.com/in/ \"{domain_brand}\"",
-            f"site:linkedin.com/in/ \"{clean_domain}\"",
         ]
 
 
