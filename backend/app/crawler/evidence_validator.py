@@ -128,6 +128,34 @@ def extract_raw_page_facts(html: str, text: str, page_url: str) -> Dict[str, Any
                 deduped_socials.append(s)
         facts["detected_social_links"] = deduped_socials
 
+    # 6. Detected founded year (from JSON-LD schema or page text)
+    detected_year = None
+    if soup:
+        for script in soup.find_all("script", type=re.compile(r"application/ld\+json", re.I)):
+            try:
+                import json
+                data = json.loads(script.string or "{}")
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if isinstance(item, dict):
+                        f_date = item.get("foundingDate") or item.get("foundDate") or item.get("foundingYear")
+                        if f_date:
+                            m = re.search(r"\b(19\d{2}|20\d{2})\b", str(f_date))
+                            if m:
+                                detected_year = int(m.group(1))
+                                break
+                if detected_year:
+                    break
+            except Exception:
+                pass
+
+    if not detected_year and text:
+        m = re.search(r"\b(?:founded|established|est\.?)\s*(?:in|:)?\s*(19\d{2}|20\d{2})\b", text, re.I)
+        if m:
+            detected_year = int(m.group(1))
+
+    facts["detected_founded_year"] = detected_year
+
     return facts
 
 

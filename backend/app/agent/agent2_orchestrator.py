@@ -326,6 +326,36 @@ class Agent2Orchestrator:
         )
         field_results["company_size_tier"] = res_size
 
+        # 8. Corporate LinkedIn URL
+        res_li = await investigation_engine.investigate_corporate_linkedin(
+            domain=domain,
+            company_name=company_name,
+            existing_text=text_corpus,
+            existing_metadata=metadata,
+            searxng_service=searxng_service
+        )
+        field_results["company_linkedin_url"] = res_li
+
+        # 9. Contact Phone
+        res_phone = await investigation_engine.investigate_phone(
+            domain=domain,
+            company_name=company_name,
+            existing_text=text_corpus,
+            existing_metadata=metadata,
+            searxng_service=searxng_service
+        )
+        field_results["phone"] = res_phone
+
+        # 10. Founded Year
+        res_founded = await investigation_engine.investigate_founded_year(
+            domain=domain,
+            company_name=company_name,
+            existing_text=text_corpus,
+            existing_metadata=metadata,
+            searxng_service=searxng_service
+        )
+        field_results["founded_year"] = res_founded
+
         # ── SMART FALLBACK: Deep Crawl only if critical fields are missing ──
         # Fields that usually warrant a deep crawl if SearXNG/existing text fails:
         critical_missing = []
@@ -718,6 +748,7 @@ class Agent2Orchestrator:
             overview_text = overview_val.get("text") if isinstance(overview_val, dict) else str(overview_val)
             overview_text = overview_text or doc.title or ""
 
+            li_comp_url = session.phase1_data.get("company_linkedin_url", {}).get("value")
             if not univ:
                 univ = Company(
                     canonical_name=session.company_name,
@@ -726,7 +757,8 @@ class Agent2Orchestrator:
                     industry=session.phase1_data.get("industry_sector", {}).get("value") or "Organization",
                     country="Global",
                     status="VERIFIED",
-                    confidence=evaluation.get("confidence", 0.95)
+                    confidence=evaluation.get("confidence", 0.95),
+                    linkedin_url=li_comp_url
                 )
                 db.add(univ)
                 db.flush()
@@ -736,6 +768,8 @@ class Agent2Orchestrator:
                 univ.canonical_name = session.company_name
                 if overview_text:
                     univ.description = overview_text
+                if li_comp_url:
+                    univ.linkedin_url = li_comp_url
                 doc.company_id = univ.id
             db.commit()
 

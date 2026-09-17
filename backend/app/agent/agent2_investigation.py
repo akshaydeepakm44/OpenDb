@@ -65,6 +65,21 @@ REQUIRED_FIELD_STRATEGIES = {
         "required_source_types": ["content_recalculation"],
         "min_searches": 0,
     },
+    "company_linkedin_url": {
+        "min_sources_checked": 1,
+        "required_source_types": ["social_links_or_text"],
+        "min_searches": 0,
+    },
+    "phone": {
+        "min_sources_checked": 1,
+        "required_source_types": ["contact_or_metadata"],
+        "min_searches": 0,
+    },
+    "founded_year": {
+        "min_sources_checked": 1,
+        "required_source_types": ["metadata_or_text"],
+        "min_searches": 0,
+    },
 }
 
 
@@ -1107,6 +1122,329 @@ class Agent2InvestigationEngine:
             "source_url": "calculation://normalized_extracted_text",
             "evidence_snippet": f"Counted {count} words from verified normalized text corpus.",
             "verification_method": "normalized_extracted_text",
+            "investigation": inv,
+        }
+
+    # ── 8. CORPORATE LINKEDIN URL ────────────────────────────────────────────
+    async def investigate_corporate_linkedin(
+        self,
+        domain: str,
+        company_name: str,
+        existing_text: str,
+        existing_metadata: Dict[str, Any],
+        searxng_service
+    ) -> Dict[str, Any]:
+        inv = {
+            "field": "company_linkedin_url",
+            "started_at": utc_now_iso(),
+            "sources_checked": [],
+            "urls_crawled": [],
+            "search_queries": [],
+            "crawl_attempts": 0,
+            "search_attempts": 0,
+            "evidence_found": False,
+            "strategies_completed": [],
+            "strategies_remaining": ["existing_socials", "text_links", "search_company_linkedin"],
+            "strategies_exhausted": False,
+            "infra_failure": None,
+        }
+
+        # Strategy 1: Check detected_social_links from crawl
+        inv["sources_checked"].append("social_links_or_text")
+        inv["strategies_completed"].append("existing_socials")
+        inv["strategies_remaining"].remove("existing_socials")
+
+        for s in existing_metadata.get("detected_social_links") or []:
+            u = s.get("url") if isinstance(s, dict) else str(s)
+            if "linkedin.com/company" in u.lower():
+                inv["evidence_found"] = True
+                inv["completed_at"] = utc_now_iso()
+                return {
+                    "field": "company_linkedin_url",
+                    "value": u.strip(),
+                    "status": "VERIFIED",
+                    "source_url": f"https://{domain}",
+                    "evidence_snippet": f"Official LinkedIn company link found on site: {u.strip()}",
+                    "verification_method": "on_page_social_link",
+                    "investigation": inv,
+                }
+
+        # Strategy 2: Check text corpus for linkedin.com/company link
+        inv["strategies_completed"].append("text_links")
+        inv["strategies_remaining"].remove("text_links")
+        if existing_text:
+            m = re.search(r"https?://(?:www\.)?linkedin\.com/company/[a-zA-Z0-9_\-]+", existing_text, re.IGNORECASE)
+            if m:
+                inv["evidence_found"] = True
+                inv["completed_at"] = utc_now_iso()
+                return {
+                    "field": "company_linkedin_url",
+                    "value": m.group(0).strip(),
+                    "status": "VERIFIED",
+                    "source_url": f"https://{domain}",
+                    "evidence_snippet": f"LinkedIn company URL found in page text: {m.group(0).strip()}",
+                    "verification_method": "on_page_text_link",
+                    "investigation": inv,
+                }
+
+        # Strategy 3: SearXNG open-web query
+        inv["strategies_completed"].append("search_company_linkedin")
+        inv["strategies_remaining"].remove("search_company_linkedin")
+        if searxng_service:
+            inv["search_attempts"] += 1
+            query = f'"{company_name}" linkedin company profile'
+            inv["search_queries"].append(query)
+            try:
+                s_res = await searxng_service.search(query, num_results=5)
+                for r in (s_res.get("results") or []):
+                    r_url = r.get("url") or ""
+                    r_snip = r.get("content") or ""
+                    if "linkedin.com/company" in r_url.lower():
+                        inv["evidence_found"] = True
+                        inv["completed_at"] = utc_now_iso()
+                        return {
+                            "field": "company_linkedin_url",
+                            "value": r_url.strip(),
+                            "status": "VERIFIED",
+                            "source_url": r_url,
+                            "evidence_snippet": f"SearXNG result: {r_snip[:160]}",
+                            "verification_method": "searxng_company_search",
+                            "investigation": inv,
+                        }
+                    m_snip = re.search(r"https?://(?:www\.)?linkedin\.com/company/[a-zA-Z0-9_\-]+", r_snip, re.IGNORECASE)
+                    if m_snip:
+                        inv["evidence_found"] = True
+                        inv["completed_at"] = utc_now_iso()
+                        return {
+                            "field": "company_linkedin_url",
+                            "value": m_snip.group(0).strip(),
+                            "status": "VERIFIED",
+                            "source_url": r_url or f"https://{domain}",
+                            "evidence_snippet": f"Found in snippet: {r_snip[:160]}",
+                            "verification_method": "searxng_snippet_search",
+                            "investigation": inv,
+                        }
+            except Exception as e:
+                logger.debug(f"Corporate LinkedIn search failed for {domain}: {e}")
+
+        inv["strategies_exhausted"] = True
+        inv["completed_at"] = utc_now_iso()
+        return {
+            "field": "company_linkedin_url",
+            "value": None,
+            "status": "NOT_FOUND_AFTER_SEARCH",
+            "source_url": None,
+            "evidence_snippet": "Corporate page optional; decision makers take precedence.",
+            "verification_method": "exhausted_investigation",
+            "investigation": inv,
+        }
+
+    # ── 9. CONTACT PHONE NUMBER ──────────────────────────────────────────────
+    async def investigate_phone(
+        self,
+        domain: str,
+        company_name: str,
+        existing_text: str,
+        existing_metadata: Dict[str, Any],
+        searxng_service
+    ) -> Dict[str, Any]:
+        inv = {
+            "field": "phone",
+            "started_at": utc_now_iso(),
+            "sources_checked": [],
+            "urls_crawled": [],
+            "search_queries": [],
+            "crawl_attempts": 0,
+            "search_attempts": 0,
+            "evidence_found": False,
+            "strategies_completed": [],
+            "strategies_remaining": ["existing_phones", "text_phone_regex", "search_phone"],
+            "strategies_exhausted": False,
+            "infra_failure": None,
+        }
+
+        # Strategy 1: Check detected_phones from crawl
+        inv["sources_checked"].append("contact_or_metadata")
+        inv["strategies_completed"].append("existing_phones")
+        inv["strategies_remaining"].remove("existing_phones")
+
+        phones = existing_metadata.get("detected_phones") or []
+        if phones and len(phones[0].strip()) >= 7:
+            ph = phones[0].strip()
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "phone",
+                "value": ph,
+                "status": "VERIFIED",
+                "source_url": f"https://{domain}",
+                "evidence_snippet": f"Verified telephone contact: {ph}",
+                "verification_method": "on_page_phone",
+                "investigation": inv,
+            }
+
+        # Strategy 2: Check text for phone pattern
+        inv["strategies_completed"].append("text_phone_regex")
+        inv["strategies_remaining"].remove("text_phone_regex")
+        if existing_text:
+            m = re.search(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}", existing_text)
+            if m:
+                digits = re.sub(r"[^\d]", "", m.group(0))
+                if 8 <= len(digits) <= 15:
+                    ph = m.group(0).strip()
+                    inv["evidence_found"] = True
+                    inv["completed_at"] = utc_now_iso()
+                    return {
+                        "field": "phone",
+                        "value": ph,
+                        "status": "VERIFIED",
+                        "source_url": f"https://{domain}",
+                        "evidence_snippet": f"Phone detected in page content: {ph}",
+                        "verification_method": "on_page_text_phone",
+                        "investigation": inv,
+                    }
+
+        # Strategy 3: SearXNG search for phone/contact
+        inv["strategies_completed"].append("search_phone")
+        inv["strategies_remaining"].remove("search_phone")
+        if searxng_service:
+            inv["search_attempts"] += 1
+            query = f'"{company_name}" "{domain}" phone OR contact number'
+            inv["search_queries"].append(query)
+            try:
+                s_res = await searxng_service.search(query, num_results=3)
+                for r in (s_res.get("results") or []):
+                    snip = r.get("content") or ""
+                    m_ph = re.search(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}", snip)
+                    if m_ph:
+                        digits = re.sub(r"[^\d]", "", m_ph.group(0))
+                        if 8 <= len(digits) <= 15:
+                            ph = m_ph.group(0).strip()
+                            inv["evidence_found"] = True
+                            inv["completed_at"] = utc_now_iso()
+                            return {
+                                "field": "phone",
+                                "value": ph,
+                                "status": "VERIFIED",
+                                "source_url": r.get("url") or f"https://{domain}",
+                                "evidence_snippet": f"Phone found via web search: {ph}",
+                                "verification_method": "searxng_phone_search",
+                                "investigation": inv,
+                            }
+            except Exception as e:
+                logger.debug(f"Phone search failed for {domain}: {e}")
+
+        inv["strategies_exhausted"] = True
+        inv["completed_at"] = utc_now_iso()
+        return {
+            "field": "phone",
+            "value": None,
+            "status": "NOT_FOUND_AFTER_SEARCH",
+            "source_url": None,
+            "evidence_snippet": "No public phone number listed (typical for B2B/SaaS software organizations).",
+            "verification_method": "exhausted_investigation",
+            "investigation": inv,
+        }
+
+    # ── 10. FOUNDED YEAR ─────────────────────────────────────────────────────
+    async def investigate_founded_year(
+        self,
+        domain: str,
+        company_name: str,
+        existing_text: str,
+        existing_metadata: Dict[str, Any],
+        searxng_service
+    ) -> Dict[str, Any]:
+        inv = {
+            "field": "founded_year",
+            "started_at": utc_now_iso(),
+            "sources_checked": [],
+            "urls_crawled": [],
+            "search_queries": [],
+            "crawl_attempts": 0,
+            "search_attempts": 0,
+            "evidence_found": False,
+            "strategies_completed": [],
+            "strategies_remaining": ["existing_metadata", "text_year_regex", "search_year"],
+            "strategies_exhausted": False,
+            "infra_failure": None,
+        }
+
+        # Strategy 1: Check detected_founded_year from crawl
+        inv["sources_checked"].append("metadata_or_text")
+        inv["strategies_completed"].append("existing_metadata")
+        inv["strategies_remaining"].remove("existing_metadata")
+
+        meta_year = existing_metadata.get("detected_founded_year")
+        if meta_year and str(meta_year).isdigit() and 1800 <= int(meta_year) <= 2030:
+            inv["evidence_found"] = True
+            inv["completed_at"] = utc_now_iso()
+            return {
+                "field": "founded_year",
+                "value": int(meta_year),
+                "status": "VERIFIED",
+                "source_url": f"https://{domain}",
+                "evidence_snippet": f"Founded: {meta_year}",
+                "verification_method": "on_page_metadata",
+                "investigation": inv,
+            }
+
+        # Strategy 2: Check text for founded year regex
+        inv["strategies_completed"].append("text_year_regex")
+        inv["strategies_remaining"].remove("text_year_regex")
+        if existing_text:
+            m = re.search(r"\b(?:founded|established|est\.?)\s*(?:in|:)?\s*(19\d{2}|20\d{2})\b", existing_text, re.IGNORECASE)
+            if m:
+                year = int(m.group(1))
+                inv["evidence_found"] = True
+                inv["completed_at"] = utc_now_iso()
+                return {
+                    "field": "founded_year",
+                    "value": year,
+                    "status": "VERIFIED",
+                    "source_url": f"https://{domain}",
+                    "evidence_snippet": f"Founded in {year}",
+                    "verification_method": "on_page_text",
+                    "investigation": inv,
+                }
+
+        # Strategy 3: SearXNG search for founded year
+        inv["strategies_completed"].append("search_year")
+        inv["strategies_remaining"].remove("search_year")
+        if searxng_service:
+            inv["search_attempts"] += 1
+            query = f'"{company_name}" "{domain}" founded year OR established'
+            inv["search_queries"].append(query)
+            try:
+                s_res = await searxng_service.search(query, num_results=3)
+                for r in (s_res.get("results") or []):
+                    snip = r.get("content") or ""
+                    m_yr = re.search(r"\b(?:founded|established|est\.?)\s*(?:in|:)?\s*(19\d{2}|20\d{2})\b", snip, re.IGNORECASE)
+                    if m_yr:
+                        year = int(m_yr.group(1))
+                        inv["evidence_found"] = True
+                        inv["completed_at"] = utc_now_iso()
+                        return {
+                            "field": "founded_year",
+                            "value": year,
+                            "status": "VERIFIED",
+                            "source_url": r.get("url") or f"https://{domain}",
+                            "evidence_snippet": f"Founded in {year} (source: {r.get('url') or 'web search'})",
+                            "verification_method": "searxng_founded_search",
+                            "investigation": inv,
+                        }
+            except Exception as e:
+                logger.debug(f"Founded year search failed for {domain}: {e}")
+
+        inv["strategies_exhausted"] = True
+        inv["completed_at"] = utc_now_iso()
+        return {
+            "field": "founded_year",
+            "value": None,
+            "status": "NOT_FOUND_AFTER_SEARCH",
+            "source_url": None,
+            "evidence_snippet": "Founded year not explicitly stated in public corporate profile.",
+            "verification_method": "exhausted_investigation",
             "investigation": inv,
         }
 

@@ -879,6 +879,7 @@ def crawl_entity_task(
         "detected_emails": validated_emails,
         "detected_phones": raw_facts.get("detected_phones") or [],
         "detected_social_links": raw_facts.get("detected_social_links") or [],
+        "detected_founded_year": raw_facts.get("detected_founded_year"),
         "subpages_crawled": subpages_crawled_urls,
         "pages_crawled_count": 1 + len(subpages_crawled_urls),
         "crawl_timestamp": crawl_ts,
