@@ -1,4 +1,5 @@
-# OpenDB SearXNG Settings — Multi-engine for maximum coverage
+# OpenDB SearXNG Settings — Hardened multi-engine for B2B lead enrichment
+# Rebuilt to recover from rate-limit/ban events on Brave, DuckDuckGo, Google CSE, Startpage
 # https://docs.searxng.org/admin/settings/
 
 use_default_settings: true
@@ -16,35 +17,68 @@ search:
   default_lang: "en"
   safe_search: 0
   autocomplete: ""
+  # Aggressive ban recovery: set all suspension times to 0 so
+  # engines are immediately retried after captcha/rate-limit errors
   ban_time_on_fail: 5
-  max_ban_time_on_fail: 120
+  max_ban_time_on_fail: 30
   suspended_times:
     SearxEngineCaptchaException: 0
     SearxEngineAccessDeniedException: 0
     cf_SearxEngineCaptchaException: 0
+    SearxEngineAPIException: 0
 
-# Override engine defaults — keep reliable ones, disable CAPTCHA-prone ones
+# Engine configuration:
+# - bing:    weight 3 (most reliable from this IP, confirmed working)
+# - mojeek:  weight 2 (independent crawler, doesn't share Google/Bing infra)
+# - yahoo:   weight 2 (uses Bing backend but different rate-limit bucket)
+# - wikipedia: weight 1 (structured facts: HQ, founded, employees — always works)
+# - wikidata: weight 1 (structured corporate data via SPARQL — never rate-limited)
+# - brave:   disabled (suspended: too many requests from this IP)
+# - google:  disabled (suspended: too many requests from this IP)
+# - startpage: disabled (CAPTCHA suspension)
+# - duckduckgo: disabled (timeout suspension)
 engines:
   - name: bing
     engine: bing
     categories: general
     shortcut: b
-    weight: 2
-    enabled: true
-
-  - name: brave
-    engine: brave
-    categories: general
-    shortcut: br
-    weight: 2
+    weight: 3
     enabled: true
 
   - name: mojeek
     engine: mojeek
     categories: general
     shortcut: mj
+    weight: 2
+    enabled: true
+
+  - name: yahoo
+    engine: yahoo
+    categories: general
+    shortcut: yh
+    weight: 2
+    enabled: true
+
+  - name: wikipedia
+    engine: wikipedia
+    categories: general
+    shortcut: wp
     weight: 1
     enabled: true
+
+  - name: wikidata
+    engine: wikidata
+    categories: general
+    shortcut: wd
+    weight: 1
+    enabled: true
+
+  - name: brave
+    engine: brave
+    categories: general
+    shortcut: br
+    weight: 1
+    enabled: false
 
   - name: duckduckgo
     engine: duckduckgo
@@ -57,19 +91,12 @@ engines:
     engine: google
     categories: general
     shortcut: g
-    weight: 2
-    enabled: true
+    weight: 1
+    enabled: false
 
   - name: startpage
     engine: startpage
     categories: general
     shortcut: sp
     weight: 1
-    enabled: true
-
-  - name: yahoo
-    engine: yahoo
-    categories: general
-    shortcut: yh
-    weight: 1
-    enabled: true
+    enabled: false
