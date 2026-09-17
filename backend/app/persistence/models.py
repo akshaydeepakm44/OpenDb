@@ -158,6 +158,11 @@ class Company(Base):
     def metadata_json(self):
         return {}
 
+    @metadata_json.setter
+    def metadata_json(self, val):
+        # No backing column — stored in VerificationSession.investigation_log instead
+        pass
+
     @property
     def people(self):
         return self.key_people

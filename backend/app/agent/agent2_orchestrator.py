@@ -657,7 +657,7 @@ class Agent2Orchestrator:
                     univ = db.query(Company).filter(Company.primary_domain == session.domain).first()
                 if univ and univ.status == "VERIFIED":
                     univ.status = failed_state
-                    univ.metadata_json = {"verification_contract": evaluation}
+                    # metadata_json is a read-only compat property; contract data is in investigation_log
             db.commit()
 
             tracer.log_event(
