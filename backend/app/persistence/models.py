@@ -166,6 +166,14 @@ class Company(Base):
     def subpages(self):
         return self.documents
 
+    @hybrid_property
+    def document_id(self):
+        return self.documents[0].id if self.documents else None
+
+    @document_id.setter
+    def document_id(self, val):
+        pass
+
 
 class Domain(Base):
     """

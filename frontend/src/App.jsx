@@ -47,20 +47,35 @@ const getLinkedInLabel = (person) => {
 
 export const safeText = (val, fallback = '') => {
   if (val === null || val === undefined) return fallback;
-  if (typeof val === 'string') return val;
-  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
-  if (typeof val === 'object') {
-    if (typeof val.text === 'string') return val.text;
-    if (typeof val.summary === 'string') return val.summary;
-    if (val.value !== undefined) return safeText(val.value, fallback);
-    if (typeof val.description === 'string') return val.description;
-    try {
-      return JSON.stringify(val);
-    } catch {
-      return fallback;
+  let str = '';
+  if (typeof val === 'string') str = val;
+  else if (typeof val === 'number' || typeof val === 'boolean') str = String(val);
+  else if (typeof val === 'object') {
+    if (typeof val.text === 'string') str = val.text;
+    else if (typeof val.summary === 'string') str = val.summary;
+    else if (val.value !== undefined) str = safeText(val.value, fallback);
+    else if (typeof val.description === 'string') str = val.description;
+    else {
+      try {
+        str = JSON.stringify(val);
+      } catch {
+        return fallback;
+      }
     }
+  } else {
+    str = String(val);
   }
-  return String(val);
+
+  // Sanitize raw HTML markup if leaked into content
+  if (typeof str === 'string' && (str.includes('<html') || str.includes('<!DOCTYPE') || str.includes('<head') || str.includes('<meta'))) {
+    const m = str.match(/content=["'](.*?)["']/i);
+    if (m && m[1] && m[1].length > 20 && !m[1].includes('<')) {
+      return m[1].trim();
+    }
+    return str.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  return str;
 };
 
 export default function App() {

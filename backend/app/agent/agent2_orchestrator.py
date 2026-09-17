@@ -650,7 +650,11 @@ class Agent2Orchestrator:
             if doc:
                 doc.lifecycle_state = failed_state
                 # Downgrade any stale UniversalRecord if previously marked verified
-                univ = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+                univ = None
+                if doc.company_id:
+                    univ = db.query(Company).filter(Company.id == doc.company_id).first()
+                if not univ and session.domain:
+                    univ = db.query(Company).filter(Company.primary_domain == session.domain).first()
                 if univ and univ.status == "VERIFIED":
                     univ.status = failed_state
                     univ.metadata_json = {"verification_contract": evaluation}
@@ -690,25 +694,35 @@ class Agent2Orchestrator:
         doc = db.query(Document).filter(Document.id == session.document_id).first()
         if doc:
             doc.lifecycle_state = "VERIFIED"
-            univ = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+            univ = None
+            if doc.company_id:
+                univ = db.query(Company).filter(Company.id == doc.company_id).first()
+            if not univ and session.domain:
+                univ = db.query(Company).filter(Company.primary_domain == session.domain).first()
+
+            overview_val = session.phase2_data.get("business_overview", {})
+            overview_text = overview_val.get("text") if isinstance(overview_val, dict) else str(overview_val)
+            overview_text = overview_text or doc.title or ""
+
             if not univ:
-                univ = UniversalRecord(
-                    document_id=doc.id,
+                univ = Company(
                     canonical_name=session.company_name,
-                    entity_type=session.phase1_data.get("industry_sector", {}).get("value") or "Organization",
-                    description=session.phase2_data.get("business_overview", {}).get("text") or doc.title or "",
-                    url=f"https://{session.domain}",
+                    primary_domain=session.domain,
+                    description=overview_text,
+                    industry=session.phase1_data.get("industry_sector", {}).get("value") or "Organization",
                     country="Global",
                     status="VERIFIED",
-                    confidence=evaluation.get("confidence", 0.95),
-                    metadata_json={"verification_contract": evaluation}
+                    confidence=evaluation.get("confidence", 0.95)
                 )
                 db.add(univ)
+                db.flush()
+                doc.company_id = univ.id
             else:
                 univ.status = "VERIFIED"
                 univ.canonical_name = session.company_name
-                univ.description = session.phase2_data.get("business_overview", {}).get("text") or univ.description
-                univ.metadata_json = {"verification_contract": evaluation}
+                if overview_text:
+                    univ.description = overview_text
+                doc.company_id = univ.id
             db.commit()
 
         tracer.log_event(

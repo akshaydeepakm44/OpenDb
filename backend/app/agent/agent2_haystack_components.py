@@ -117,7 +117,27 @@ def run_business_synthesis(
     source_url: str = ""
 ) -> Dict[str, Any]:
     """Generates structured, evidence-grounded business synthesis."""
-    clipped_text = evidence_text[:14000] if evidence_text else ""
+    clean_text = evidence_text or ""
+    meta_desc_candidate = ""
+    if "<html" in clean_text.lower() or "<body" in clean_text.lower() or "<meta" in clean_text.lower() or "<!doctype" in clean_text.lower():
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(clean_text, "html.parser")
+            meta_tag = soup.find("meta", attrs={"name": re.compile(r"^description$", re.I)}) or soup.find("meta", attrs={"property": re.compile(r"og:description", re.I)})
+            if meta_tag and meta_tag.get("content"):
+                meta_desc_candidate = meta_tag["content"].strip()
+            for element in soup(["script", "style", "noscript", "svg", "header", "footer", "nav"]):
+                element.extract()
+            body_txt = soup.get_text(separator=' ', strip=True)
+            if meta_desc_candidate and len(meta_desc_candidate) > 20:
+                clean_text = f"{meta_desc_candidate}. {body_txt}"
+            else:
+                clean_text = body_txt
+        except Exception:
+            clean_text = re.sub(r"<[^>]+>", " ", clean_text)
+
+    clean_text = re.sub(r"\s+", " ", clean_text).strip()
+    clipped_text = clean_text[:14000] if clean_text else ""
     prompt = _SYNTHESIS_PROMPT.format(
         company_name=company_name,
         domain=domain,
@@ -151,21 +171,23 @@ def run_business_synthesis(
     # If LLM parsed successfully and has business_overview
     if result_data and isinstance(result_data, dict) and "business_overview" in result_data:
         text = result_data["business_overview"].get("text", "").strip()
-        # Verify non-empty and non-buzzword
-        if text and "commercial web" not in text.lower() and "official portal" not in text.lower():
+        # Verify non-empty, non-html and non-buzzword
+        if text and "<" not in text and "commercial web" not in text.lower() and "official portal" not in text.lower():
             return result_data
 
-    # Grounded deterministic fallback from first 2 informative sentences of crawled text
-    sentences = re.split(r'(?<=[.!?])\s+', clipped_text)
-    clean_sentences = []
-    for s in sentences:
-        s_clean = s.strip().replace("\n", " ")
-        if len(s_clean) > 30 and not any(kw in s_clean.lower() for kw in ["cookie", "privacy policy", "all rights reserved", "javascript"]):
-            clean_sentences.append(s_clean)
-        if len(clean_sentences) >= 2:
-            break
-
-    summary = " ".join(clean_sentences) if clean_sentences else f"{company_name} provides products and services via {domain}."
+    # Grounded deterministic fallback from meta description or informative sentences
+    if meta_desc_candidate and len(meta_desc_candidate) > 30 and not any(kw in meta_desc_candidate.lower() for kw in ["cookie", "javascript"]):
+        summary = meta_desc_candidate
+    else:
+        sentences = re.split(r'(?<=[.!?])\s+', clipped_text)
+        clean_sentences = []
+        for s in sentences:
+            s_clean = s.strip().replace("\n", " ")
+            if len(s_clean) > 30 and "<" not in s_clean and not any(kw in s_clean.lower() for kw in ["cookie", "privacy policy", "all rights reserved", "javascript", "apple-itunes-app"]):
+                clean_sentences.append(s_clean)
+            if len(clean_sentences) >= 2:
+                break
+        summary = " ".join(clean_sentences) if clean_sentences else f"{company_name} provides products and services via {domain}."
     return {
         "business_overview": {
             "text": summary,
