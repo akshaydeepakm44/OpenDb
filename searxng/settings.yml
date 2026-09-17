@@ -77,26 +77,28 @@ engines:
     engine: brave
     categories: general
     shortcut: br
-    weight: 1
-    enabled: false
+    disabled: true
 
   - name: duckduckgo
     engine: duckduckgo
     categories: general
     shortcut: ddg
-    weight: 1
-    enabled: false
+    disabled: true
 
   - name: google
     engine: google
     categories: general
     shortcut: g
-    weight: 1
-    enabled: false
+    disabled: true
+
+  - name: google cse
+    engine: google cse
+    categories: general
+    disabled: true
 
   - name: startpage
     engine: startpage
     categories: general
     shortcut: sp
-    weight: 1
-    enabled: false
+    disabled: true
+
