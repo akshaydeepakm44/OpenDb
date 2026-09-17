@@ -1075,6 +1075,8 @@ def get_entities_list(
         rev = dom_data.get("funding_stage") or dom_data.get("revenue_funding") or dom_data.get("revenue") or "Unknown"
         emails = dom_data.get("contact_emails") or dom_data.get("verified_emails") or _infer_emails(clean_domain, r.description or "")
         overview = r.description or dom_data.get("business_overview") or ""
+        if isinstance(overview, dict):
+            overview = overview.get("text") or ""
         if "indexed" in overview.lower() or not overview.strip():
             overview = "Unknown"
 
@@ -1484,6 +1486,8 @@ async def get_entity_detail(entity_id: str, db: Session = Depends(get_db)):
         # Business Overview Narrative
         rec_desc = getattr(record, "description", None)
         summary = rec_desc or domain_data.get("business_overview") or ""
+        if isinstance(summary, dict):
+            summary = summary.get("text") or ""
         if "indexed" in summary.lower() or not summary.strip():
             summary = "Unknown"
 
@@ -1758,7 +1762,7 @@ def export_verified_leads(
             "decision_makers": "; ".join([f"{p.get('name')} ({p.get('title')})" for p in leadership]) if isinstance(leadership, list) else "",
             "technology_stack": ", ".join(tech_stack) if isinstance(tech_stack, list) else str(tech_stack),
             "confidence_score": float(r.confidence or 0.85),
-            "summary": r.description or dom_data.get("business_overview") or "",
+            "summary": (r.description or (dom_data.get("business_overview", {}).get("text") if isinstance(dom_data.get("business_overview"), dict) else dom_data.get("business_overview")) or ""),
             "created_at": r.created_at.isoformat() if r.created_at else ""
         })
 

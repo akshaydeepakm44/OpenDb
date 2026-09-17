@@ -188,6 +188,8 @@ class VerificationContract:
             or (session_data.get("phase2_data") or {}).get("business_overview", {}).get("text")
             or ""
         )
+        if isinstance(desc_val, dict):
+            desc_val = desc_val.get("text") or ""
         desc_clean = str(desc_val).strip()
         is_desc_valid = (
             len(desc_clean) >= REQUIRED_CORE_FIELDS["description"]["min_len"]

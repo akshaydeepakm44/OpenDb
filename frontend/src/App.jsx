@@ -45,6 +45,24 @@ const getLinkedInLabel = (person) => {
 };
 
 
+export const safeText = (val, fallback = '') => {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number' || typeof val === 'boolean') return String(val);
+  if (typeof val === 'object') {
+    if (typeof val.text === 'string') return val.text;
+    if (typeof val.summary === 'string') return val.summary;
+    if (val.value !== undefined) return safeText(val.value, fallback);
+    if (typeof val.description === 'string') return val.description;
+    try {
+      return JSON.stringify(val);
+    } catch {
+      return fallback;
+    }
+  }
+  return String(val);
+};
+
 export default function App() {
   // Agent & Operations State
   const [agentStatus, setAgentStatus] = useState(null);
@@ -339,7 +357,7 @@ export default function App() {
         company_tier: preExisting.company_tier || 'Unknown',
         revenue_funding: preExisting.revenue_funding || 'Unknown',
         verified_emails: preExisting.verified_emails || [],
-        summary: preExisting.business_overview || preExisting.summary || 'Intelligence dossier synthesis pending.',
+        summary: safeText(preExisting.business_overview) || safeText(preExisting.summary) || 'Intelligence dossier synthesis pending.',
         technology_stack: preExisting.technology_stack || [],
         decision_makers: preExisting.decision_makers || [],
         crawled_subpages: preExisting.crawled_subpages || [],
@@ -1350,7 +1368,7 @@ export default function App() {
 
                     {/* 3. Business Overview Text Snippet */}
                     <div style={{ fontSize: '0.78rem', color: '#94a3b8', lineHeight: '1.45', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                      {ent.business_overview || ent.description || `${ent.canonical_name} operates in the ${industryStr} domain.`}
+                      {safeText(ent.business_overview) || safeText(ent.description) || `${ent.canonical_name} operates in the ${industryStr} domain.`}
                     </div>
 
                     {/* 4. Tech Stack Tags */}
@@ -1840,17 +1858,17 @@ export default function App() {
                                 </span>
                               </div>
                               <div style={{ color: val ? '#67e8f9' : '#64748b', fontSize: '0.82rem', marginTop: '0.25rem', fontWeight: 600 }}>
-                                {val ? String(val) : '(Missing or generic placeholder)'}
+                                {val ? safeText(val) : '(Missing or generic placeholder)'}
                               </div>
                               {snippet && (
                                 <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.25rem', fontStyle: 'italic' }}>
-                                  Provenance: {String(snippet).slice(0, 180)}{String(snippet).length > 180 ? '...' : ''}
+                                  Provenance: {safeText(snippet).slice(0, 180)}{safeText(snippet).length > 180 ? '...' : ''}
                                 </div>
                               )}
                             </div>
                             {source && (
                               <div style={{ fontSize: '0.72rem', color: '#64748b', textAlign: 'right', flexShrink: 0 }}>
-                                <span style={{ color: '#60a5fa' }}>Source: {String(source).slice(0, 35)}</span>
+                                <span style={{ color: '#60a5fa' }}>Source: {safeText(source).slice(0, 35)}</span>
                               </div>
                             )}
                           </div>
@@ -1900,12 +1918,12 @@ export default function App() {
                               </div>
                               {val && (
                                 <div style={{ color: '#38bdf8', fontSize: '0.8rem', marginTop: '0.15rem' }}>
-                                  {String(val)}
+                                  {safeText(val)}
                                 </div>
                               )}
                               {snippet && (
                                 <div style={{ fontSize: '0.72rem', color: '#64748b', marginTop: '0.15rem' }}>
-                                  Evidence: {String(snippet).slice(0, 120)}
+                                  Evidence: {safeText(snippet).slice(0, 120)}
                                 </div>
                               )}
                             </div>
@@ -1924,24 +1942,18 @@ export default function App() {
                     </h3>
                     <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '0.75rem', padding: '1rem', color: '#cbd5e1', fontSize: '0.88rem', lineHeight: '1.6' }}>
                       <div style={{ marginBottom: '0.6rem' }}>
-                        {typeof agent2Detail.phase2_data.business_overview === 'object'
-                          ? (agent2Detail.phase2_data.business_overview?.text || JSON.stringify(agent2Detail.phase2_data.business_overview))
-                          : agent2Detail.phase2_data.business_overview}
+                        {safeText(agent2Detail.phase2_data.business_overview)}
                       </div>
                       {agent2Detail.phase2_data.target_customers && (
                         <div style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
                           <strong style={{ color: '#60a5fa' }}>Target Customers:</strong>{' '}
-                          {typeof agent2Detail.phase2_data.target_customers === 'object'
-                            ? (agent2Detail.phase2_data.target_customers?.text || JSON.stringify(agent2Detail.phase2_data.target_customers))
-                            : agent2Detail.phase2_data.target_customers}
+                          {safeText(agent2Detail.phase2_data.target_customers)}
                         </div>
                       )}
                       {agent2Detail.phase2_data.commercial_model && (
                         <div style={{ fontSize: '0.8rem', color: '#94a3b8', marginTop: '0.2rem' }}>
                           <strong style={{ color: '#34d399' }}>Commercial Model:</strong>{' '}
-                          {typeof agent2Detail.phase2_data.commercial_model === 'object'
-                            ? (agent2Detail.phase2_data.commercial_model?.text || JSON.stringify(agent2Detail.phase2_data.commercial_model))
-                            : agent2Detail.phase2_data.commercial_model}
+                          {safeText(agent2Detail.phase2_data.commercial_model)}
                         </div>
                       )}
                     </div>
@@ -2172,7 +2184,7 @@ export default function App() {
                         BUSINESS OVERVIEW & SYNTHESIS
                       </h3>
                       <div style={{ background: '#111827', border: '1px solid #1f2937', borderRadius: '0.75rem', padding: '1.1rem', color: '#cbd5e1', fontSize: '0.9rem', lineHeight: '1.6' }}>
-                        {entityDetail.summary}
+                        {safeText(entityDetail.summary)}
                       </div>
                     </div>
 
