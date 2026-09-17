@@ -748,20 +748,18 @@ class AutonomousDiscoveryAgent:
         total_searches = db.query(SearchHistory).count()
         total_sources_val = db.query(func.coalesce(func.sum(SearchHistory.sources_found), 0)).scalar()
         total_sources = int(total_sources_val or 0)
-        from app.persistence.models import GlobalLead
-        total_entities = db.query(GlobalLead).count() or db.query(UniversalRecord).count()
-        verified_entities = db.query(GlobalLead).count() or db.query(UniversalRecord).filter(
-            or_(UniversalRecord.status == "Verified", UniversalRecord.status == "Active")
+        from app.persistence.models import Company
+        total_entities = db.query(Company).count()
+        verified_entities = db.query(Company).filter(
+            Company.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
         ).count()
-        duplicates_removed = (
-            db.query(UniversalRecord).filter(UniversalRecord.status == "Duplicate").count()
-        )
+        duplicates_removed = 0
 
         recent_batch = (
             db.query(BatchResult).order_by(BatchResult.started_at.desc()).first()
         )
         recent_records = (
-            db.query(UniversalRecord).order_by(UniversalRecord.created_at.desc()).limit(10).all()
+            db.query(Company).order_by(Company.created_at.desc()).limit(10).all()
         )
 
         return {

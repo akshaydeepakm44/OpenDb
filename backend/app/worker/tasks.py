@@ -27,9 +27,10 @@ from app.worker.celery_app import celery_app
 from app.persistence.database import SessionLocal
 from app.persistence.repositories import repo
 from app.persistence.models import (
-    SearchHistory, Document, UniversalRecord, DomainRecord,
-    VerificationRecord, ExtractedFact, BatchResult, CrawlError,
-    CrawlActivityLog, GlobalLead, ArtifactOutbox, utc_now,
+    SearchHistory, Document, Company, Domain,
+    BatchResult, CrawlError, CrawlActivityLog,
+    KeyPerson, VerificationSession, CanonicalEvidence,
+    ArtifactOutbox, utc_now,
 )
 
 from app.crawler.searxng_service import searxng_service
@@ -483,7 +484,7 @@ def search_and_discover_task(
 
                 # Check PostgreSQL authoritative lake
                 try:
-                    exists_lead = db.query(GlobalLead).filter(GlobalLead.domain == reg_domain).first()
+                    exists_lead = db.query(Company).filter(Company.primary_domain == reg_domain).first()
                     if exists_lead:
                         _log_activity(db, url=target_url, stage="FILTER", domain=domain,
                                       status="DUPLICATE", message=f"Domain '{reg_domain}' already exists in PostgreSQL lake", batch_id=batch_id)
@@ -1328,21 +1329,21 @@ def search_company_people_task(
                         d_data["key_people"] = kp_list
                         dom_rec.data = d_data
                 
-                glead = db.query(GlobalLead).filter(GlobalLead.domain == site_domain).first()
-                if glead:
-                    from app.persistence.models import GlobalLeadPerson
-                    existing_gl_people = {glp.full_name.lower() for glp in db.query(GlobalLeadPerson).filter(GlobalLeadPerson.global_lead_id == glead.id).all()}
+                company = db.query(Company).filter(Company.primary_domain == site_domain).first()
+                if company:
+                    existing_kp_names = {kp.full_name.lower() for kp in db.query(KeyPerson).filter(KeyPerson.company_id == company.id).all()}
                     for p in all_discovered:
-                        if p["name"].lower() not in existing_gl_people:
+                        if p["name"].lower() not in existing_kp_names:
                             p_url = p.get("linkedin_url")
-                            db.add(GlobalLeadPerson(
-                                global_lead_id=glead.id,
+                            db.add(KeyPerson(
+                                company_id=company.id,
                                 full_name=p["name"],
                                 title=p["title"],
                                 linkedin_url=p_url,
-                                linkedin_search_url=p_url
+                                linkedin_search_url=p_url,
+                                verification_status="DISCOVERED"
                             ))
-                            existing_gl_people.add(p["name"].lower())
+                            existing_kp_names.add(p["name"].lower())
             except Exception as sync_err:
                 logger.debug(f"[Worker P] Key people backfill sync notice: {sync_err}")
         
@@ -1406,14 +1407,14 @@ def agent2_process_card_task(self, document_id: str, trace_ctx: Optional[Dict[st
 def agent2_verify_phase1_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Executes Phase 1 evidence verification for an Agent 2 session."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
-    from app.persistence.models import Agent2VerificationSession
+    from app.persistence.models import VerificationSession
     from app.audit.tracer import tracer
     if trace_ctx:
         tracer.restore_context_dict(trace_ctx)
     tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
-        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        session = db.query(VerificationSession).filter(VerificationSession.id == session_id).first()
         if not session:
             return {"status": "error", "error": "Session not found"}
         return run_async(agent2_orchestrator.verify_phase1(session, db))
@@ -1425,14 +1426,14 @@ def agent2_verify_phase1_task(self, session_id: str, trace_ctx: Optional[Dict[st
 def agent2_synthesize_business_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Runs Phase 2 Haystack business synthesis."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
-    from app.persistence.models import Agent2VerificationSession
+    from app.persistence.models import VerificationSession
     from app.audit.tracer import tracer
     if trace_ctx:
         tracer.restore_context_dict(trace_ctx)
     tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
-        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        session = db.query(VerificationSession).filter(VerificationSession.id == session_id).first()
         if not session:
             return {"status": "error", "error": "Session not found"}
         return run_async(agent2_orchestrator.synthesize_business(session, db))
@@ -1444,14 +1445,14 @@ def agent2_synthesize_business_task(self, session_id: str, trace_ctx: Optional[D
 def agent2_search_linkedin_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Runs Phase 2 LinkedIn key person discovery."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
-    from app.persistence.models import Agent2VerificationSession
+    from app.persistence.models import VerificationSession
     from app.audit.tracer import tracer
     if trace_ctx:
         tracer.restore_context_dict(trace_ctx)
     tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
-        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        session = db.query(VerificationSession).filter(VerificationSession.id == session_id).first()
         if not session:
             return {"status": "error", "error": "Session not found"}
         return run_async(agent2_orchestrator.discover_and_verify_linkedin(session, db))
@@ -1463,14 +1464,14 @@ def agent2_search_linkedin_task(self, session_id: str, trace_ctx: Optional[Dict[
 def agent2_finalize_verification_task(self, session_id: str, trace_ctx: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Finalizes verification decision and triggers PostgreSQL Outbox."""
     from app.agent.agent2_orchestrator import agent2_orchestrator
-    from app.persistence.models import Agent2VerificationSession
+    from app.persistence.models import VerificationSession
     from app.audit.tracer import tracer
     if trace_ctx:
         tracer.restore_context_dict(trace_ctx)
     tracer.set_context(agent_id="AGENT-02", task_id=getattr(self.request, "id", None))
     db = SessionLocal()
     try:
-        session = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.id == session_id).first()
+        session = db.query(VerificationSession).filter(VerificationSession.id == session_id).first()
         if not session:
             return {"status": "error", "error": "Session not found"}
         return run_async(agent2_orchestrator.finalize_verification_and_sync(session, db))

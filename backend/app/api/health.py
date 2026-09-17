@@ -80,7 +80,7 @@ def services_health_check(db: Session = Depends(get_db)):
     from app.crawler.distributed_slot_manager import slot_manager
     from app.crawler.crawler_service import get_active_browser_contexts_count
     from app.safety.resource_governor import governor
-    from app.persistence.models import AgentState, Document, Agent2VerificationSession
+    from app.persistence.models import AgentState, Document, VerificationSession
 
     db_status_info = get_database_status()
 
@@ -114,7 +114,7 @@ def services_health_check(db: Session = Depends(get_db)):
     agent2_verified = 0
     try:
         agent2_queued = db.query(Document).filter(Document.lifecycle_state == "CRAWLED_PENDING_AGENT_2").count()
-        agent2_verified = db.query(Agent2VerificationSession).filter(Agent2VerificationSession.status.in_(["VERIFIED", "POSTGRES_VERIFIED"])).count()
+        agent2_verified = db.query(VerificationSession).filter(VerificationSession.status.in_(["VERIFIED", "POSTGRES_VERIFIED"])).count()
     except Exception:
         pass
 

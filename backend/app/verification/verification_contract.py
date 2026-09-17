@@ -472,7 +472,7 @@ class VerificationContract:
         Extracts session data, evidence records, and candidate matches from the database
         and runs the authoritative contract evaluation.
         """
-        from app.persistence.models import Document, Agent2Evidence, Agent2PersonCandidate, GlobalLeadSubpage
+        from app.persistence.models import Document, CanonicalEvidence, KeyPerson
 
         doc = None
         if getattr(session, "document_id", None):
@@ -487,16 +487,20 @@ class VerificationContract:
         raw_meta = (doc.raw_metadata or {}) if doc else {}
         subpages_count = len(raw_meta.get("subpages_crawled", [])) if raw_meta else 0
 
-        # Check GlobalLeadSubpage table if available
+        # Check Document table for subpages crawled under this domain
         if hasattr(session, "domain") and session.domain:
             try:
-                sub_recs = db.query(GlobalLeadSubpage).filter(GlobalLeadSubpage.domain == session.domain).count()
+                sub_recs = db.query(Document).filter(Document.url.ilike(f"%{session.domain}%")).count()
                 subpages_count = max(subpages_count, sub_recs)
             except Exception:
                 pass
 
-        evidence_rows = db.query(Agent2Evidence).filter(Agent2Evidence.session_id == session.id).all()
-        candidates_rows = db.query(Agent2PersonCandidate).filter(Agent2PersonCandidate.session_id == session.id).all()
+        evidence_rows = db.query(CanonicalEvidence).filter(
+            (CanonicalEvidence.verification_session_id == session.id) | (CanonicalEvidence.session_id == session.id)
+        ).all()
+        candidates_rows = db.query(KeyPerson).filter(
+            (KeyPerson.verification_session_id == session.id) | (KeyPerson.session_id == session.id)
+        ).all()
 
         evidence_list = [
             {

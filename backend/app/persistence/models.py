@@ -1,11 +1,15 @@
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlparse
+from typing import Optional, List, Dict, Any
+
 from sqlalchemy import (
     Column, Integer, String, Text, Boolean, BigInteger, Numeric, Float,
     DateTime, ForeignKey, JSON, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
+from sqlalchemy.ext.hybrid import hybrid_property
 from app.persistence.database import Base
 
 JSONB_TYPE = JSON().with_variant(JSONB, "postgresql")
@@ -22,42 +26,15 @@ def utc_now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-class Metadata(Base):
-    """
-    Central metadata registry — answers 'does X exist in the system?'
-    entity_type: 'domain' | 'subdomain' | 'keyword' | 'url' | 'schema' | 'batch'
-    entity_key:  the actual value (e.g. 'Technology', 'healthcare.org')
-    is_present:  True = active/exists, False = deprecated/removed
-    """
-    __tablename__ = "metadata"
-    __table_args__ = {'extend_existing': True}
-
-    id           = Column(Integer, primary_key=True, index=True)
-    entity_type  = Column(String(100), nullable=False)
-    entity_key   = Column(Text, nullable=False)
-    domain       = Column(String(100), nullable=True)
-    subdomain    = Column(String(100), nullable=True)
-    is_present   = Column(Boolean, default=True)
-    source_table = Column(String(100), nullable=True)
-    source_id    = Column(Text, nullable=True)
-    extra        = Column(JSONB_TYPE, default=dict)
-    created_at   = Column(DateTime(timezone=True), default=utc_now)
-    updated_at   = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-class Source(Base):
-    __tablename__ = "sources"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(255), nullable=False)
-    source_type = Column(String(50), nullable=False)  # website, API, RSS, user-provided URL
-    base_url = Column(Text, nullable=True)
-    description = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-    documents = relationship("Document", back_populates="source")
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. CORE BUSINESS ENTITIES
+# ─────────────────────────────────────────────────────────────────────────────
 
 class IndustryTaxonomy(Base):
+    """
+    Canonical Industry Taxonomy.
+    Separates conceptual business industry classifications from DNS web domains.
+    """
     __tablename__ = "industry_taxonomies"
     __table_args__ = {'extend_existing': True}
 
@@ -66,7 +43,13 @@ class IndustryTaxonomy(Base):
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
+
 class Company(Base):
+    """
+    Canonical Company Intelligence Entity.
+    Single authoritative owner consolidating discovery leads, universal records,
+    and verified corporate profiles.
+    """
     __tablename__ = "companies"
     __table_args__ = {'extend_existing': True}
 
@@ -92,11 +75,91 @@ class Company(Base):
 
     domains = relationship("Domain", back_populates="company")
     documents = relationship("Document", back_populates="company")
-    key_people = relationship("KeyPerson", back_populates="company")
-    verification_sessions = relationship("VerificationSession", back_populates="company")
-    evidence_items = relationship("CanonicalEvidence", back_populates="company")
+    key_people = relationship("KeyPerson", back_populates="company", cascade="all, delete-orphan")
+    verification_sessions = relationship("VerificationSession", back_populates="company", cascade="all, delete-orphan")
+    evidence_items = relationship("CanonicalEvidence", back_populates="company", cascade="all, delete-orphan")
+
+    # Seamless backward compatibility hybrid properties
+    @hybrid_property
+    def domain(self):
+        return self.primary_domain
+
+    @domain.setter
+    def domain(self, val):
+        self.primary_domain = val
+
+    @hybrid_property
+    def company_name(self):
+        return self.canonical_name
+
+    @company_name.setter
+    def company_name(self, val):
+        self.canonical_name = val
+
+    @hybrid_property
+    def name(self):
+        return self.canonical_name
+
+    @name.setter
+    def name(self, val):
+        self.canonical_name = val
+
+    @hybrid_property
+    def url(self):
+        return f"https://{self.primary_domain}" if self.primary_domain else ""
+
+    @url.setter
+    def url(self, val):
+        if val:
+            parsed = urlparse(val)
+            self.primary_domain = (parsed.netloc or val).replace("www.", "").strip()
+
+    @hybrid_property
+    def entity_type(self):
+        return self.industry or "Organization"
+
+    @entity_type.setter
+    def entity_type(self, val):
+        self.industry = val
+
+    @hybrid_property
+    def summary(self):
+        return self.description
+
+    @summary.setter
+    def summary(self, val):
+        self.description = val
+
+    @hybrid_property
+    def company_size(self):
+        return self.employee_range
+
+    @company_size.setter
+    def company_size(self, val):
+        self.employee_range = val
+
+    @hybrid_property
+    def revenue_funding(self):
+        return self.revenue_range
+
+    @revenue_funding.setter
+    def revenue_funding(self, val):
+        self.revenue_range = val
+
+    @property
+    def people(self):
+        return self.key_people
+
+    @property
+    def subpages(self):
+        return self.documents
+
 
 class Domain(Base):
+    """
+    Canonical Internet Web Domain Entity.
+    Tracks hostname reputation, crawl status, and maps to owning company.
+    """
     __tablename__ = "domains"
     __table_args__ = {'extend_existing': True}
 
@@ -113,52 +176,20 @@ class Domain(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     company = relationship("Company", back_populates="domains")
-    subdomains = relationship("Subdomain", back_populates="domain")
 
-class Subdomain(Base):
-    __tablename__ = "subdomains"
-
-    id = Column(Integer, primary_key=True, index=True)
-    domain_id = Column(Integer, ForeignKey("domains.id", ondelete="CASCADE"), nullable=False)
-    name = Column(String(100), nullable=False)
-    description = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-    domain = relationship("Domain", back_populates="subdomains")
-
-class CrawlJob(Base):
-    __tablename__ = "crawl_jobs"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    starting_url = Column(Text, nullable=False)
-    query = Column(Text, nullable=True)
-    domain_name = Column(String(100), nullable=True)
-    max_depth = Column(Integer, default=2)
-    max_pages = Column(Integer, default=20)
-    status = Column(String(50), default="pending")  # pending, running, completed, failed
-    pages_discovered = Column(Integer, default=0)
-    pages_crawled = Column(Integer, default=0)
-    documents_count = Column(Integer, default=0)
-    resources_count = Column(Integer, default=0)
-    successful_count = Column(Integer, default=0)
-    failed_count = Column(Integer, default=0)
-    pipeline_stage = Column(String(100), default="INITIALIZED")
-    pipeline_details = Column(JSON, default=dict)
-    error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-
-    documents = relationship("Document", back_populates="crawl_job")
-    errors = relationship("CrawlError", back_populates="crawl_job")
 
 class Document(Base):
+    """
+    Canonical Crawled Web Document Entity.
+    Authoritative pointer to raw MinIO HTML/Markdown storage artifacts with content hashes.
+    """
     __tablename__ = "documents"
+    __table_args__ = {'extend_existing': True}
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     company_id = Column(String(36), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     source_id = Column(Integer, ForeignKey("sources.id", ondelete="SET NULL"), nullable=True)
-    crawl_job_id = Column(String(36), ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=True)
+    crawl_job_id = Column(String(36), nullable=True)
     url = Column(Text, unique=True, nullable=False)
     canonical_url = Column(Text, nullable=True)
     title = Column(Text, nullable=True)
@@ -175,537 +206,13 @@ class Document(Base):
     lifecycle_state = Column(String(50), default="CRAWLED_PENDING_AGENT_2", index=True)
     raw_artifacts = Column(JSON, default=list)
     raw_metadata = Column(JSON, default=dict)
-    content_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True)  # pgvector 384-dim
+    content_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True)
     retrieved_at = Column(DateTime(timezone=True), default=utc_now)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     company = relationship("Company", back_populates="documents")
     source = relationship("Source", back_populates="documents")
-    crawl_job = relationship("CrawlJob", back_populates="documents")
-    versions = relationship("DocumentVersion", back_populates="document")
-    resources = relationship("Resource", back_populates="source_document")
-    universal_records = relationship("UniversalRecord", back_populates="document")
 
-class DocumentVersion(Base):
-    __tablename__ = "document_versions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    version_number = Column(Integer, default=1)
-    content_hash = Column(String(64), nullable=False)
-    raw_path = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-    document = relationship("Document", back_populates="versions")
-
-class Resource(Base):
-    __tablename__ = "resources"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    source_document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=True)
-    source_url = Column(Text, nullable=False)
-    parent_page_url = Column(Text, nullable=True)
-    resource_url = Column(Text, nullable=False)
-    resource_type = Column(String(50), nullable=False)  # document, media, api, asset
-    mime_type = Column(String(100), nullable=True)
-    file_extension = Column(String(20), nullable=True)
-    file_name = Column(Text, nullable=True)
-    anchor_text = Column(Text, nullable=True)
-    http_status = Column(Integer, nullable=True)
-    content_length = Column(BigInteger, nullable=True)
-    hash = Column(String(64), nullable=True)
-    raw_path = Column(Text, nullable=True)
-    downloaded = Column(Boolean, default=False)
-    discovered_at = Column(DateTime(timezone=True), default=utc_now)
-
-    source_document = relationship("Document", back_populates="resources")
-
-class ResourceLink(Base):
-    __tablename__ = "resource_links"
-
-    id = Column(Integer, primary_key=True, index=True)
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    resource_id = Column(String(36), ForeignKey("resources.id", ondelete="CASCADE"), nullable=False)
-    anchor_text = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-class UniversalRecord(Base):
-    __tablename__ = "universal_records"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    domain_id = Column(Integer, ForeignKey("domains.id", ondelete="SET NULL"), nullable=True)
-    subdomain_id = Column(Integer, ForeignKey("subdomains.id", ondelete="SET NULL"), nullable=True)
-    entity_type = Column(String(100), nullable=True)
-    canonical_name = Column(Text, nullable=True)
-    title = Column(Text, nullable=True)
-    description = Column(Text, nullable=True)
-    url = Column(Text, nullable=False)
-    language = Column(String(20), nullable=True)
-    country = Column(String(100), nullable=True)
-    location = Column(Text, nullable=True)
-    status = Column(String(50), nullable=True)
-    confidence    = Column(Numeric(5, 4), nullable=True)
-    metadata_json = Column(JSONB_TYPE, default=dict)                                              # matches DB column metadata_json
-    entity_embedding = Column(Vector(384)) if HAS_PGVECTOR else Column(Text, nullable=True) # pgvector 384-dim
-    created_at    = Column(DateTime(timezone=True), default=utc_now)
-    updated_at    = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-    document = relationship("Document", back_populates="universal_records")
-    domain_records = relationship("DomainRecord", back_populates="universal_record")
-    facts = relationship("ExtractedFact", back_populates="universal_record")
-    domain = relationship("Domain")
-    subdomain = relationship("Subdomain")
-
-class DomainRecord(Base):
-    __tablename__ = "domain_records"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    universal_record_id = Column(String(36), ForeignKey("universal_records.id", ondelete="CASCADE"), nullable=False)
-    domain_id = Column(Integer, ForeignKey("domains.id", ondelete="SET NULL"), nullable=True)
-    schema_version = Column(String(50), nullable=False)
-    data = Column(JSON, nullable=False, default=dict)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-    universal_record = relationship("UniversalRecord", back_populates="domain_records")
-
-class ExtractedFact(Base):
-    __tablename__ = "extracted_facts"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    universal_record_id = Column(String(36), ForeignKey("universal_records.id", ondelete="SET NULL"), nullable=True)
-    field_name = Column(String(100), nullable=False)
-    field_value = Column(Text, nullable=True)
-    value_type = Column(String(50), nullable=True)  # string, array, int, null
-    confidence = Column(Numeric(5, 4), nullable=True)
-    extractor = Column(String(100), nullable=False)  # deterministic, llm, document
-    schema_version = Column(String(50), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-    universal_record = relationship("UniversalRecord", back_populates="facts")
-    evidence_items = relationship("Evidence", back_populates="fact")
-
-class Evidence(Base):
-    __tablename__ = "evidence"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    fact_id = Column(String(36), ForeignKey("extracted_facts.id", ondelete="CASCADE"), nullable=False)
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    source_url = Column(Text, nullable=False)
-    text_snippet = Column(Text, nullable=True)
-    selector = Column(Text, nullable=True)
-    page_number = Column(Integer, nullable=True)
-    line_reference = Column(Text, nullable=True)
-    confidence = Column(Numeric(5, 4), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-    fact = relationship("ExtractedFact", back_populates="evidence_items")
-
-class ExtractionRun(Base):
-    __tablename__ = "extraction_runs"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    crawl_job_id = Column(String(36), ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=True)
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    domain_id = Column(Integer, ForeignKey("domains.id", ondelete="SET NULL"), nullable=True)
-    extractor_type = Column(String(50), nullable=False)
-    status = Column(String(50), nullable=False)
-    duration_ms = Column(Integer, nullable=True)
-    fields_extracted = Column(Integer, default=0)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-class SchemaDefinition(Base):
-    __tablename__ = "schema_definitions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    domain = Column(String(100), unique=True, nullable=False)
-    version = Column(String(50), nullable=False)
-    schema_definition = Column(JSON, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-class CrawlError(Base):
-    __tablename__ = "crawl_errors"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    crawl_job_id = Column(String(36), ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=True)  # nullable — agent tasks have no job
-    document_id = Column(String(36), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
-    url = Column(Text, nullable=False)
-    stage = Column(String(100), nullable=False)
-    error_type = Column(String(100), nullable=False)
-    error_message = Column(Text, nullable=False)
-    stack_trace = Column(Text, nullable=True)
-    timestamp = Column(DateTime(timezone=True), default=utc_now)
-
-    crawl_job = relationship("CrawlJob", back_populates="errors")
-
-
-class CrawlActivityLog(Base):
-    """
-    Live crawl activity log — one row per URL crawled by the agent.
-    Surfaced in the 'Live Crawl Activity Stream' tab of the UI.
-    """
-    __tablename__ = "crawl_activity_log"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    url = Column(Text, nullable=False)
-    domain = Column(String(100), nullable=True)
-    stage = Column(String(100), nullable=False)   # SEARCH | CRAWL | EXTRACT | VERIFY | FILTER
-    status = Column(String(50), nullable=False)   # OK | FILTERED | DUPLICATE | ERROR
-    message = Column(Text, nullable=True)
-    entity_name = Column(Text, nullable=True)     # if entity was resolved
-    batch_id = Column(String(36), nullable=True)
-    timestamp = Column(DateTime(timezone=True), default=utc_now)
-
-class AgentState(Base):
-    __tablename__ = "agent_state"
-
-    id = Column(Integer, primary_key=True, index=True)
-    status = Column(String(50), nullable=False, default='PAUSED')
-    current_domain = Column(String(100), nullable=True)
-    current_subdomain = Column(String(100), nullable=True)
-    current_keyword = Column(Text, nullable=True)
-    last_run_at = Column(DateTime(timezone=True), nullable=True)
-    state_data = Column(JSON, default=dict)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-class SearchHistory(Base):
-    __tablename__ = "search_history"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    keyword = Column(Text, nullable=False)
-    domain = Column(String(100), nullable=True)
-    sources_found = Column(Integer, default=0)
-    relevant_sources = Column(Integer, default=0)
-    entities_discovered = Column(Integer, default=0)
-    batch_id = Column(String(36), nullable=True)
-    is_fallback = Column(Boolean, default=False)
-    log_message = Column(Text, nullable=True)
-    executed_at = Column(DateTime(timezone=True), default=utc_now)
-
-class BatchResult(Base):
-    __tablename__ = "batch_results"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    status = Column(String(50), default="RUNNING")
-    searches_planned = Column(Integer, default=0)
-    searches_executed = Column(Integer, default=0)
-    urls_discovered = Column(Integer, default=0)
-    urls_crawled = Column(Integer, default=0)
-    entities_discovered = Column(Integer, default=0)
-    entities_verified = Column(Integer, default=0)
-    duplicates_removed = Column(Integer, default=0)
-    feedback_generated = Column(Boolean, default=False)
-    started_at = Column(DateTime(timezone=True), default=utc_now)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-
-class KeywordPerformance(Base):
-    __tablename__ = "keyword_performance"
-
-    keyword = Column(Text, primary_key=True)
-    domain = Column(String(100), nullable=True)
-    usage_count = Column(Integer, default=0)
-    success_rate = Column(Numeric(5, 4), default=0)
-    last_used = Column(DateTime(timezone=True), default=utc_now)
-    is_deprecated = Column(Boolean, default=False)
-    feedback_notes = Column(Text, nullable=True)
-
-class VerificationRecord(Base):
-    __tablename__ = "verification_records"
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    universal_record_id = Column(String(36), ForeignKey("universal_records.id", ondelete="CASCADE"), nullable=False)
-    is_verified = Column(Boolean, default=False)
-    confidence = Column(Numeric(5, 4), default=0)
-    verification_notes = Column(Text, nullable=True)
-    verified_at = Column(DateTime(timezone=True), default=utc_now)
-    
-    universal_record = relationship("UniversalRecord")
-
-
-class BlockedDomain(Base):
-    __tablename__ = "blocked_domains"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    domain = Column(String(255), nullable=False, unique=True, index=True)
-    reason_category = Column(String(100), nullable=False)
-    source = Column(String(50), nullable=False) # searxng_block, reputation_api, content_moderation, manual_review, manual_admin
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-
-class QuarantinedContent(Base):
-    __tablename__ = "quarantined_content"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String(36), nullable=True)
-    url = Column(Text, nullable=False)
-    domain = Column(String(255), nullable=False)
-    content_type = Column(String(50), nullable=False) # text, logo, image
-    flagged_categories = Column(JSONB_TYPE, default=list)
-    confidence_score = Column(Numeric(5, 4), default=0)
-    reason = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-
-class ManualReviewQueue(Base):
-    __tablename__ = "manual_review_queue"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    url = Column(Text, nullable=False)
-    domain = Column(String(255), nullable=False)
-    item_type = Column(String(50), nullable=False) # text_ambiguous, logo_ambiguous, entity_uncertain
-    content_snippet = Column(Text, nullable=True)
-    score = Column(Numeric(5, 4), default=0)
-    status = Column(String(30), default="pending") # pending, approved, rejected
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENTERPRISE ARCHITECTURE MODELS (PostgreSQL Open Lake & SQLite WAL Vault)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class OpenLakeRecord(Base):
-    """PostgreSQL Open Lake dispatch candidates repository."""
-    __tablename__ = "open_lake_records"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    domain = Column(String(255), nullable=False, unique=True, index=True)
-    enrichment_status = Column(String(50), default="pending") # pending, in_progress, enriched, failed
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-
-class GlobalLead(Base):
-    """SQLite WAL Master Vault - Primary lead repository."""
-    __tablename__ = "global_leads"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True) # md5 hash of domain
-    domain = Column(String(255), nullable=False, unique=True, index=True)
-    company_name = Column(String(255), nullable=False)
-    minio_asset_path = Column(Text, nullable=True) # companies/{domain}/brand_kit.json
-    logo_url = Column(Text, nullable=True)
-    technology_stack = Column(JSONB_TYPE, default=list) # JSON array of tech stack
-    quality_score = Column(Float, default=0.0)
-    headquarters = Column(Text, nullable=True)
-    industry = Column(Text, nullable=True)
-    company_size = Column(Text, nullable=True)
-    revenue_funding = Column(Text, nullable=True)
-    verified_emails = Column(JSONB_TYPE, default=list)
-    summary = Column(Text, nullable=True)
-    linkedin_url = Column(Text, nullable=True) # Corporate LinkedIn company page
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-    people = relationship("GlobalLeadPerson", back_populates="lead", cascade="all, delete-orphan")
-    subpages = relationship("GlobalLeadSubpage", back_populates="lead", cascade="all, delete-orphan")
-
-
-class GlobalLeadPerson(Base):
-    """Key decision makers & leadership associated with a global lead."""
-    __tablename__ = "global_lead_people"
-    __table_args__ = (
-        UniqueConstraint('domain', 'full_name', name='uix_domain_full_name'),
-        {'extend_existing': True}
-    )
-
-    id = Column(String(36), primary_key=True) # md5 hash of domain + full_name
-    global_lead_id = Column(String(36), ForeignKey("global_leads.id", ondelete="CASCADE"), nullable=False)
-    domain = Column(String(255), nullable=False)
-    full_name = Column(String(255), nullable=False)
-    title = Column(String(255), nullable=True)
-    linkedin_search_url = Column(Text, nullable=True)
-    linkedin_url = Column(Text, nullable=True) # Authentic public profile URL (linkedin.com/in/<slug>)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-    lead = relationship("GlobalLead", back_populates="people")
-
-
-
-class GlobalLeadSubpage(Base):
-    """Crawled Markdown DOM subpages stored in MinIO L3 object storage."""
-    __tablename__ = "global_lead_subpages"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    global_lead_id = Column(String(36), ForeignKey("global_leads.id", ondelete="CASCADE"), nullable=False)
-    domain = Column(String(255), nullable=False)
-    page_url = Column(Text, nullable=False, unique=True)
-    minio_object_path = Column(Text, nullable=False) # pages/{slug}.md
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-    lead = relationship("GlobalLead", back_populates="subpages")
-
-
-class KeyPersonCandidate(Base):
-    """
-    Key Person Candidates (KP-01 to KP-08)
-    Discovered asynchronously via parallel SearXNG search & evidence verification.
-    """
-    __tablename__ = "key_person_candidates"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    company_id = Column(String(255), nullable=True, index=True)
-    company_name = Column(String(255), nullable=False, index=True)
-    person_name = Column(String(255), nullable=False)
-    role = Column(String(255), nullable=True)
-    source_url = Column(Text, nullable=True)
-    source_domain = Column(String(255), nullable=True)
-    source_type = Column(String(100), nullable=True)
-    discovery_query = Column(Text, nullable=True)
-    evidence_text = Column(Text, nullable=True)
-    confidence_score = Column(Float, default=0.0)
-    verification_status = Column(String(50), default="DISCOVERED", index=True) # DISCOVERED, PENDING_VERIFICATION, HIGH_CONFIDENCE, VERIFIED, REJECTED, INSUFFICIENT_EVIDENCE
-    crawl_status = Column(String(50), default="COMPLETED")
-    discovered_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-
-class PostgresSyncOutbox(Base):
-    """
-    Transactional Outbox Table for Two-Stage SQLite Staging -> PostgreSQL Sync.
-    Ensures that fallback and staging records are durably transferred to PostgreSQL
-    with stable IDs, idempotency, and traceability.
-    """
-    __tablename__ = "postgres_sync_outbox"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    record_id = Column(String(36), nullable=False, index=True)
-    domain = Column(String(255), nullable=True, index=True)
-    company_name = Column(String(255), nullable=True)
-    source_url = Column(Text, nullable=True)
-    source_type = Column(String(50), default="website")
-    observed_at = Column(DateTime(timezone=True), default=utc_now)
-    extracted_at = Column(DateTime(timezone=True), default=utc_now)
-    evidence = Column(JSONB_TYPE, default=list)
-    payload_json = Column(JSON, nullable=False, default=dict)
-    sync_status = Column(String(50), default="PENDING", index=True) # PENDING, SYNCING, SYNCED, CONFLICT, FAILED
-    sync_attempts = Column(Integer, default=0)
-    last_sync_error = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-    synced_at = Column(DateTime(timezone=True), nullable=True)
-
-
-class ArtifactOutbox(Base):
-    """
-    Durable Outbox Table for Raw Crawl Artifact Uploads to MinIO.
-    Ensures raw HTML, markdown, screenshots, and brand assets survive worker/MinIO outages
-    with bounded retry state, exponential backoff, and idempotency.
-    """
-    __tablename__ = "artifact_outbox"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    domain = Column(String(255), nullable=True, index=True)
-    object_name = Column(String(512), nullable=False, index=True)
-    bucket_name = Column(String(100), default="opendb")
-    content_type = Column(String(100), default="application/octet-stream")
-    file_size_bytes = Column(BigInteger, default=0)
-    sha256_hash = Column(String(64), nullable=True)
-    local_staging_path = Column(Text, nullable=True)
-    status = Column(String(50), default="PENDING", index=True)  # PENDING, UPLOADING, COMPLETED, FAILED
-    retry_count = Column(Integer, default=0)
-    max_retries = Column(Integer, default=5)
-    last_error = Column(Text, nullable=True)
-    next_retry_at = Column(DateTime(timezone=True), default=utc_now)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    uploaded_at = Column(DateTime(timezone=True), nullable=True)
-
-
-
-class Agent2VerificationSession(Base):
-    """
-    Operational session tracking an Agent 2 verification workflow.
-    Starts strictly from CRAWLED_PENDING_AGENT_2 and progresses through:
-    AGENT2_QUEUED -> PHASE1_RANKED -> PHASE1_VERIFYING -> PHASE1_RECRAWL_REQUIRED ->
-    PHASE1_VERIFIED -> PHASE2_SYNTHESIS -> LINKEDIN_DISCOVERY -> LINKEDIN_CANDIDATES_FOUND ->
-    LINKEDIN_PROFILE_CRAWL -> PERSON_MATCHING -> FINAL_VERIFICATION -> VERIFIED ->
-    POSTGRES_SYNC_PENDING -> POSTGRES_VERIFIED (or explicit BLOCKED/FAILURE states).
-    """
-    __tablename__ = "agent2_verification_sessions"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    document_id = Column(String(36), nullable=True, index=True)
-    domain = Column(String(255), nullable=False, index=True)
-    company_name = Column(String(255), nullable=False)
-    status = Column(String(60), default="AGENT2_QUEUED", index=True)
-    priority_score = Column(Float, default=0.0)
-    priority_reasons = Column(JSON, default=list)
-    phase1_data = Column(JSON, default=dict)
-    phase2_data = Column(JSON, default=dict)
-    recrawl_count = Column(Integer, default=0)
-    search_rounds = Column(Integer, default=0)
-    investigation_log = Column(JSON, default=list)
-    error_message = Column(Text, nullable=True)
-    verified_at = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-    evidence_items = relationship("Agent2Evidence", back_populates="session", cascade="all, delete-orphan")
-    person_candidates = relationship("Agent2PersonCandidate", back_populates="session", cascade="all, delete-orphan")
-
-
-class Agent2Evidence(Base):
-    """
-    Field-level provenance and verification record for an Agent 2 session.
-    Preserves exact source URL, snippet, method, and the complete audit investigation record.
-    """
-    __tablename__ = "agent2_evidence"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    session_id = Column(String(36), ForeignKey("agent2_verification_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
-    field_name = Column(String(100), nullable=False, index=True)
-    value = Column(Text, nullable=True)
-    source_url = Column(Text, nullable=True)
-    evidence_snippet = Column(Text, nullable=True)
-    verification_status = Column(String(50), default="UNVERIFIED", index=True)  # VERIFIED, NOT_FOUND_AFTER_SEARCH, NOT_APPLICABLE, UNVERIFIED
-    verification_method = Column(String(100), nullable=True)
-    investigation_record = Column(JSON, default=dict)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
-
-    session = relationship("Agent2VerificationSession", back_populates="evidence_items")
-
-
-class Agent2PersonCandidate(Base):
-    """
-    Discovered LinkedIn candidate profile evaluated during Phase 2 key-person discovery.
-    Strictly accepts only genuine personal profiles (linkedin.com/in/<slug>).
-    """
-    __tablename__ = "agent2_person_candidates"
-    __table_args__ = {'extend_existing': True}
-
-    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    session_id = Column(String(36), ForeignKey("agent2_verification_sessions.id", ondelete="CASCADE"), nullable=False, index=True)
-    person_name = Column(String(255), nullable=False)
-    linkedin_url = Column(Text, nullable=False)
-    title = Column(String(255), nullable=True)
-    company = Column(String(255), nullable=True)
-    candidate_status = Column(String(50), default="DISCOVERED")  # DISCOVERED, CRAWLED, VERIFIED, REJECTED
-    company_match_status = Column(Boolean, default=False)
-    is_leadership = Column(Boolean, default=False)
-    rejection_reason = Column(Text, nullable=True)
-    evidence_snippet = Column(Text, nullable=True)
-    source_url = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=utc_now)
-
-    session = relationship("Agent2VerificationSession", back_populates="person_candidates")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CANONICAL SCHEMA MODELS (Phase 1 Redesign & Consolidation)
-# ─────────────────────────────────────────────────────────────────────────────
 
 class KeyPerson(Base):
     """
@@ -728,7 +235,7 @@ class KeyPerson(Base):
     source_type = Column(String(100), default="linkedin_profile")
     evidence_text = Column(Text, nullable=True)
     confidence_score = Column(Float, default=0.0)
-    verification_status = Column(String(50), default="DISCOVERED", index=True)  # DISCOVERED, CRAWLED, HIGH_CONFIDENCE, VERIFIED, REJECTED
+    verification_status = Column(String(50), default="DISCOVERED", index=True)
     company_match_status = Column(Boolean, default=False)
     is_leadership = Column(Boolean, default=False)
     rejection_reason = Column(Text, nullable=True)
@@ -737,6 +244,54 @@ class KeyPerson(Base):
 
     company = relationship("Company", back_populates="key_people")
     verification_session = relationship("VerificationSession", back_populates="key_people")
+
+    @hybrid_property
+    def person_name(self):
+        return self.full_name
+
+    @person_name.setter
+    def person_name(self, val):
+        self.full_name = val
+
+    @hybrid_property
+    def name(self):
+        return self.full_name
+
+    @name.setter
+    def name(self, val):
+        self.full_name = val
+
+    @hybrid_property
+    def session_id(self):
+        return self.verification_session_id
+
+    @session_id.setter
+    def session_id(self, val):
+        self.verification_session_id = val
+
+    @hybrid_property
+    def candidate_status(self):
+        return self.verification_status
+
+    @candidate_status.setter
+    def candidate_status(self, val):
+        self.verification_status = val
+
+    @property
+    def session(self):
+        return self.verification_session
+
+    @session.setter
+    def session(self, val):
+        self.verification_session = val
+
+    @property
+    def evidence_snippet(self):
+        return self.evidence_text
+
+    @evidence_snippet.setter
+    def evidence_snippet(self, val):
+        self.evidence_text = val
 
 
 class VerificationSession(Base):
@@ -769,6 +324,14 @@ class VerificationSession(Base):
     key_people = relationship("KeyPerson", back_populates="verification_session")
     evidence_items = relationship("CanonicalEvidence", back_populates="verification_session")
 
+    @property
+    def session_id(self):
+        return self.id
+
+    @property
+    def person_candidates(self):
+        return self.key_people
+
 
 class CanonicalEvidence(Base):
     """
@@ -795,7 +358,241 @@ class CanonicalEvidence(Base):
     company = relationship("Company", back_populates="evidence_items")
     verification_session = relationship("VerificationSession", back_populates="evidence_items")
 
+    @hybrid_property
+    def session_id(self):
+        return self.verification_session_id
+
+    @session_id.setter
+    def session_id(self, val):
+        self.verification_session_id = val
+
+    @property
+    def session(self):
+        return self.verification_session
+
+    @session.setter
+    def session(self, val):
+        self.verification_session = val
 
 
+class Source(Base):
+    """
+    Discovered SERP and crawl source URLs.
+    """
+    __tablename__ = "sources"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True, index=True)
+    url = Column(Text, unique=True, nullable=False)
+    domain = Column(String(255), nullable=False, index=True)
+    discovery_query = Column(Text, nullable=True)
+    search_engine = Column(String(50), default="searxng")
+    rank = Column(Integer, nullable=True)
+    discovered_at = Column(DateTime(timezone=True), default=utc_now)
+    status = Column(String(50), default="discovered")
+
+    documents = relationship("Document", back_populates="source")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. OPERATIONAL & TELEMETRY ENTITIES
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CrawlActivityLog(Base):
+    """
+    Operational log of crawling, filtering, and worker activities.
+    """
+    __tablename__ = "crawl_activity_log"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    batch_id = Column(String(36), nullable=True, index=True)
+    timestamp = Column(DateTime(timezone=True), default=utc_now, index=True)
+    stage = Column(String(50), nullable=False, index=True)
+    status = Column(String(50), nullable=False, index=True)
+    url = Column(Text, nullable=True)
+    domain = Column(String(255), nullable=True, index=True)
+    message = Column(Text, nullable=True)
+    extra_metadata = Column(JSONB_TYPE, default=dict)
+
+
+class CrawlError(Base):
+    """
+    Operational crawl failure records.
+    """
+    __tablename__ = "crawl_errors"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True, index=True)
+    crawl_job_id = Column(String(36), nullable=True)
+    url = Column(Text, nullable=False)
+    error_type = Column(String(100), nullable=False)
+    error_message = Column(Text, nullable=True)
+    status_code = Column(Integer, nullable=True)
+    retry_count = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class BatchResult(Base):
+    """
+    Operational batch crawl summary and performance statistics.
+    """
+    __tablename__ = "batch_results"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    started_at = Column(DateTime(timezone=True), default=utc_now)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    queries_run = Column(Integer, default=0)
+    sources_discovered = Column(Integer, default=0)
+    domains_processed = Column(Integer, default=0)
+    records_created = Column(Integer, default=0)
+    records_updated = Column(Integer, default=0)
+    errors_count = Column(Integer, default=0)
+    metrics = Column(JSONB_TYPE, default=dict)
+
+
+class SearchHistory(Base):
+    """
+    Operational record of discovery search queries run against SearXNG.
+    """
+    __tablename__ = "search_history"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    query = Column(Text, nullable=False)
+    search_engine = Column(String(50), default="searxng")
+    searched_at = Column(DateTime(timezone=True), default=utc_now)
+    sources_found = Column(Integer, default=0)
+    sources_new = Column(Integer, default=0)
+    batch_id = Column(String(36), nullable=True, index=True)
+
+
+class KeywordPerformance(Base):
+    """
+    Operational search keyword efficiency telemetry.
+    """
+    __tablename__ = "keyword_performance"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    keyword = Column(String(255), unique=True, nullable=False)
+    times_used = Column(Integer, default=0)
+    results_found = Column(Integer, default=0)
+    companies_identified = Column(Integer, default=0)
+    success_rate = Column(Float, default=0.0)
+    last_used_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. DURABLE INFRASTRUCTURE STATE
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AgentState(Base):
+    """
+    Durable state of autonomous background discovery loops and workers.
+    """
+    __tablename__ = "agent_state"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default="default")
+    status = Column(String(50), default="idle")
+    current_batch_id = Column(String(36), nullable=True)
+    last_active_at = Column(DateTime(timezone=True), default=utc_now)
+    total_runs = Column(Integer, default=0)
+    total_records_processed = Column(Integer, default=0)
+    state_data = Column(JSONB_TYPE, default=dict)
+
+
+class ArtifactOutbox(Base):
+    """
+    Durable Outbox Table for Raw Crawl Artifact Uploads to MinIO.
+    Ensures raw HTML, markdown, screenshots, and brand assets survive worker/MinIO outages.
+    """
+    __tablename__ = "artifact_outbox"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    domain = Column(String(255), nullable=True, index=True)
+    object_name = Column(String(512), nullable=False, index=True)
+    bucket_name = Column(String(100), default="opendb")
+    content_type = Column(String(100), default="application/octet-stream")
+    file_size_bytes = Column(BigInteger, default=0)
+    sha256_hash = Column(String(64), nullable=True)
+    local_staging_path = Column(Text, nullable=True)
+    status = Column(String(50), default="PENDING", index=True)
+    retry_count = Column(Integer, default=0)
+    max_retries = Column(Integer, default=5)
+    last_error = Column(Text, nullable=True)
+    next_retry_at = Column(DateTime(timezone=True), default=utc_now)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    uploaded_at = Column(DateTime(timezone=True), nullable=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. SAFETY & MODERATION ENTITIES
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BlockedDomain(Base):
+    """
+    Explicitly blacklisted or rate-limited external domains.
+    """
+    __tablename__ = "blocked_domains"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True, index=True)
+    domain = Column(String(255), unique=True, nullable=False, index=True)
+    reason = Column(String(255), nullable=False)
+    blocked_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+class ManualReviewQueue(Base):
+    """
+    Items flagged for manual verification or operator review.
+    """
+    __tablename__ = "manual_review_queue"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_type = Column(String(50), nullable=False)
+    entity_id = Column(String(36), nullable=False)
+    reason = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolution = Column(String(50), nullable=True)
+
+
+class QuarantinedContent(Base):
+    """
+    Content flagged as toxic, malware, or policy-violating.
+    """
+    __tablename__ = "quarantined_content"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    url = Column(Text, nullable=False)
+    reason = Column(String(255), nullable=False)
+    content_hash = Column(String(64), nullable=True)
+    quarantined_at = Column(DateTime(timezone=True), default=utc_now)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. BACKWARD COMPATIBILITY ALIASES (Seamless single-owner redirects)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GlobalLead = Company
+GlobalLeadPerson = KeyPerson
+GlobalLeadSubpage = Document
+UniversalRecord = Company
+DomainRecord = Domain
+KeyPersonCandidate = KeyPerson
+Agent2PersonCandidate = KeyPerson
+Agent2VerificationSession = VerificationSession
+Agent2Evidence = CanonicalEvidence
+Metadata = IndustryTaxonomy
+Evidence = CanonicalEvidence
+ExtractedFact = CanonicalEvidence
+VerificationRecord = VerificationSession
+CrawlJob = CrawlActivityLog
+PostgresSyncOutbox = ArtifactOutbox
+OpenLakeRecord = Company
