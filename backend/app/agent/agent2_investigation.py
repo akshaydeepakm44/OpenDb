@@ -109,9 +109,9 @@ def can_mark_not_found(field: str, investigation: Dict[str, Any]) -> Tuple[bool,
     if investigation.get("evidence_found"):
         return False, "Evidence was found; field cannot be marked NOT_FOUND_AFTER_SEARCH"
         
-    urls_crawled = len(investigation.get("urls_crawled") or [])
-    if reqs["min_searches"] > 0 and urls_crawled == 0:
-        return False, "Investigation executed searches but failed to crawl any candidate URLs."
+    search_attempts = investigation.get("search_attempts", 0)
+    if reqs["min_searches"] > 0 and search_attempts == 0:
+        return False, "Required targeted search was not executed."
 
     return True, "Investigation legitimately exhausted with zero reliable evidence"
 
