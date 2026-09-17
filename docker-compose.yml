@@ -83,6 +83,36 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
 
+  # ─── pgAdmin 4 (PostgreSQL Web UI) ────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: opendb_pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@opendb.internal}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin123}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # ─── Redis Commander (Redis Web UI) ───────────────────────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: opendb_redis_commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=opendb:redis:6379:0:${REDIS_PASSWORD:-opendb_redis_secret}
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+
   # ─── Backend API ──────────────────────────────────────────────────────────
   backend:
     build:
@@ -234,3 +264,4 @@ volumes:
   postgres_data:
   redis_data:
   minio_data:
+  pgadmin_data:
