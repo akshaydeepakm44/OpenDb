@@ -260,7 +260,7 @@ def get_crawl_job_pages(job_id: str, db: Session = Depends(get_db)):
     docs = db.query(Document).filter(Document.crawl_job_id == job_id).all()
     pages = []
     for doc in docs:
-        univ = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+        univ = db.query(UniversalRecord).filter(UniversalRecord.id == doc.company_id).first() if doc.company_id else None
         pages.append({
             "document_id": doc.id,
             "url": doc.url,
@@ -268,7 +268,7 @@ def get_crawl_job_pages(job_id: str, db: Session = Depends(get_db)):
             "status": doc.http_status,
             "content_type": doc.content_type,
             "word_count": doc.word_count,
-            "domain": univ.entity_type if univ else "Unknown",
+            "domain": univ.industry if univ else "Unknown",
             "confidence": float(univ.confidence) if univ and univ.confidence else 0.0
         })
     return pages
@@ -279,25 +279,8 @@ def get_crawl_job_results(job_id: str, db: Session = Depends(get_db)):
     docs = db.query(Document).filter(Document.crawl_job_id == job_id).all()
     results = []
     for doc in docs:
-        univ = db.query(UniversalRecord).filter(UniversalRecord.document_id == doc.id).first()
+        univ = db.query(UniversalRecord).filter(UniversalRecord.id == doc.company_id).first() if doc.company_id else None
         if univ:
-            dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == univ.id).first()
-            facts = db.query(ExtractedFact).filter(ExtractedFact.document_id == doc.id).all()
-            
-            evidence_list = []
-            for f in facts:
-                ev_objs = db.query(Evidence).filter(Evidence.fact_id == f.id).all()
-                for ev in ev_objs:
-                    evidence_list.append({
-                        "field": f.field_name,
-                        "value": f.field_value,
-                        "source_url": ev.source_url,
-                        "evidence_text": ev.text_snippet,
-                        "confidence": float(ev.confidence) if ev.confidence else 0.9
-                    })
-
-            resources = db.query(Resource).filter(Resource.source_document_id == doc.id).all()
-
             results.append({
                 "document_id": doc.id,
                 "source": {
@@ -306,38 +289,16 @@ def get_crawl_job_results(job_id: str, db: Session = Depends(get_db)):
                     "retrieved_at": doc.retrieved_at
                 },
                 "classification": {
-                    "domain": univ.domain.name if univ.domain else "Technology",
-                    "subdomain": univ.subdomain.name if univ.subdomain else "General",
+                    "domain": univ.industry or "Technology",
                     "confidence": float(univ.confidence) if univ.confidence else 0.90
                 },
                 "universal": {
                     "resource_id": doc.id,
                     "canonical_name": univ.canonical_name,
-                    "title": univ.title,
                     "description": univ.description,
-                    "url": univ.url,
-                    "domain": univ.domain.name if univ.domain else "Technology",
-                    "subdomain": univ.subdomain.name if univ.subdomain else "General",
-                    "entity_type": univ.entity_type,
-                    "language": univ.language,
                     "country": univ.country,
-                    "location": univ.location,
                     "status": univ.status,
                     "confidence": float(univ.confidence) if univ.confidence else 0.90
-                },
-                "domain_data": dom_rec.data if dom_rec else {},
-                "evidence": evidence_list,
-                "resources": [
-                    {
-                        "id": r.id,
-                        "url": r.resource_url,
-                        "type": r.resource_type,
-                        "mime_type": r.mime_type,
-                        "size": r.content_length,
-                        "stored_path": r.raw_path,
-                        "downloaded": r.downloaded
-                    }
-                    for r in resources
-                ]
+                }
             })
     return results

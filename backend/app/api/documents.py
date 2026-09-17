@@ -58,27 +58,23 @@ def get_document_extraction(document_id: str, db: Session = Depends(get_db)):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found.")
 
-    univ_rec = db.query(UniversalRecord).filter(UniversalRecord.document_id == document_id).first()
+    # Look up Company via doc.company_id (UniversalRecord = Company; no document_id FK on Company)
+    univ_rec = db.query(UniversalRecord).filter(UniversalRecord.id == doc.company_id).first() if doc.company_id else None
     if not univ_rec:
         raise HTTPException(status_code=404, detail="Extraction results not found for document.")
 
-    dom_rec = db.query(DomainRecord).filter(DomainRecord.universal_record_id == univ_rec.id).first()
     extracted_json = file_storage.read_file_content(f"processed/extracted/{document_id}.json")
 
     return {
         "document_id": doc.id,
         "universal": {
             "canonical_name": univ_rec.canonical_name,
-            "title": univ_rec.title,
             "description": univ_rec.description,
-            "url": univ_rec.url,
-            "entity_type": univ_rec.entity_type,
-            "language": univ_rec.language,
             "country": univ_rec.country,
-            "location": univ_rec.location,
+            "industry": univ_rec.industry,
             "status": univ_rec.status,
             "confidence": float(univ_rec.confidence) if univ_rec.confidence else None
         },
-        "domain_data": dom_rec.data if dom_rec else {},
         "raw_extraction_payload": extracted_json
     }
+
