@@ -998,21 +998,22 @@ def get_entities_list(
 
     rec_ids = [r.id for r in records]
     dom_map = {
-        d.universal_record_id: (d.data or {}) for d in db.query(Domain).filter(Domain.universal_record_id.in_(rec_ids)).all()
+        d.company_id: (d.description or {}) for d in db.query(Domain).filter(Domain.company_id.in_(rec_ids)).all()
     } if rec_ids else {}
 
     from app.persistence.models import KeyPerson
     all_kps = db.query(KeyPerson).all()
     kp_map = {}
     for kp in all_kps:
-        cleaned_kname = _clean_name(kp.company_name or "", kp.source_url or "")
+        c_name = kp.company.canonical_name if (hasattr(kp, "company") and kp.company) else ""
+        cleaned_kname = _clean_name(c_name, kp.source_url or "")
         kp_obj = {
-            "name": kp.person_name,
+            "name": kp.full_name,
             "title": kp.role,
-            "linkedin_search_url": kp.source_url,
-            "linkedin_url": kp.source_url
+            "linkedin_search_url": kp.linkedin_search_url or kp.source_url,
+            "linkedin_url": kp.linkedin_url or kp.source_url
         }
-        for k_key in [kp.company_name, cleaned_kname, kp.company_name.lower() if kp.company_name else "", cleaned_kname.lower()]:
+        for k_key in [c_name, cleaned_kname, c_name.lower() if c_name else "", cleaned_kname.lower()]:
             if k_key:
                 kp_map.setdefault(k_key, []).append(kp_obj)
 

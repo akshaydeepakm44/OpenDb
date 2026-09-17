@@ -146,6 +146,18 @@ class Company(Base):
     def revenue_funding(self, val):
         self.revenue_range = val
 
+    @hybrid_property
+    def location(self):
+        return self.headquarters
+
+    @location.setter
+    def location(self, val):
+        self.headquarters = val
+
+    @property
+    def metadata_json(self):
+        return {}
+
     @property
     def people(self):
         return self.key_people
@@ -176,6 +188,19 @@ class Domain(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     company = relationship("Company", back_populates="domains")
+
+    # Seamless backward compatibility hybrid properties
+    @hybrid_property
+    def universal_record_id(self):
+        return self.company_id
+
+    @universal_record_id.setter
+    def universal_record_id(self, val):
+        self.company_id = val
+
+    @property
+    def data(self):
+        return {}
 
 
 class Document(Base):
@@ -292,6 +317,10 @@ class KeyPerson(Base):
     @evidence_snippet.setter
     def evidence_snippet(self, val):
         self.evidence_text = val
+
+    @property
+    def company_name(self):
+        return self.company.canonical_name if self.company else ""
 
 
 class VerificationSession(Base):
