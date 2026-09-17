@@ -12,6 +12,7 @@ import re
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from urllib.parse import urlparse
+from app.config import settings
 
 from app.persistence.database import SessionLocal
 from app.persistence.models import (

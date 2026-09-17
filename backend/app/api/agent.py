@@ -862,8 +862,8 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
             return url, url
 
     name, domain = _parse_url(doc.url or "")
-    linked = db.query(Company).filter(Company.document_id == doc.id).first()
-    if not linked and domain:
+    linked = None
+    if domain:
         linked = db.query(Company).filter(Company.url.ilike(f"%{domain}%")).first()
 
     raw_content = ""
