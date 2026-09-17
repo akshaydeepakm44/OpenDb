@@ -57,14 +57,62 @@ class Source(Base):
 
     documents = relationship("Document", back_populates="source")
 
-class Domain(Base):
-    __tablename__ = "domains"
+class IndustryTaxonomy(Base):
+    __tablename__ = "industry_taxonomies"
+    __table_args__ = {'extend_existing': True}
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), unique=True, nullable=False)
     description = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
+class Company(Base):
+    __tablename__ = "companies"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    canonical_name = Column(String(255), nullable=False, index=True)
+    legal_name = Column(String(255), nullable=True)
+    primary_domain = Column(String(255), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    industry = Column(String(100), nullable=True, index=True)
+    headquarters = Column(Text, nullable=True)
+    country = Column(String(100), nullable=True)
+    employee_range = Column(String(50), nullable=True)
+    revenue_range = Column(String(50), nullable=True)
+    linkedin_url = Column(Text, nullable=True)
+    logo_url = Column(Text, nullable=True)
+    technology_stack = Column(JSONB_TYPE, default=list)
+    verified_emails = Column(JSONB_TYPE, default=list)
+    quality_score = Column(Float, default=0.0)
+    status = Column(String(50), default="DISCOVERED", index=True)  # DISCOVERED, CRAWLED, VERIFIED, REJECTED
+    confidence = Column(Float, default=0.0)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    domains = relationship("Domain", back_populates="company")
+    documents = relationship("Document", back_populates="company")
+    key_people = relationship("KeyPerson", back_populates="company")
+    verification_sessions = relationship("VerificationSession", back_populates="company")
+    evidence_items = relationship("CanonicalEvidence", back_populates="company")
+
+class Domain(Base):
+    __tablename__ = "domains"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(String(36), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
+    name = Column(String(100), unique=True, nullable=False)
+    domain = Column(String(255), unique=True, nullable=True, index=True)
+    canonical_url = Column(Text, nullable=True)
+    domain_type = Column(String(50), default="primary")
+    status = Column(String(50), default="active")
+    description = Column(Text, nullable=True)
+    first_seen_at = Column(DateTime(timezone=True), default=utc_now)
+    last_crawled_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+
+    company = relationship("Company", back_populates="domains")
     subdomains = relationship("Subdomain", back_populates="domain")
 
 class Subdomain(Base):
@@ -108,6 +156,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(36), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True)
     source_id = Column(Integer, ForeignKey("sources.id", ondelete="SET NULL"), nullable=True)
     crawl_job_id = Column(String(36), ForeignKey("crawl_jobs.id", ondelete="CASCADE"), nullable=True)
     url = Column(Text, unique=True, nullable=False)
@@ -130,6 +179,7 @@ class Document(Base):
     retrieved_at = Column(DateTime(timezone=True), default=utc_now)
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
+    company = relationship("Company", back_populates="documents")
     source = relationship("Source", back_populates="documents")
     crawl_job = relationship("CrawlJob", back_populates="documents")
     versions = relationship("DocumentVersion", back_populates="document")
@@ -651,6 +701,100 @@ class Agent2PersonCandidate(Base):
     created_at = Column(DateTime(timezone=True), default=utc_now)
 
     session = relationship("Agent2VerificationSession", back_populates="person_candidates")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CANONICAL SCHEMA MODELS (Phase 1 Redesign & Consolidation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class KeyPerson(Base):
+    """
+    Canonical Key Person / Decision Maker Model.
+    Single authoritative owner consolidating Agent 1 search discovery and Agent 2 LinkedIn profiles.
+    """
+    __tablename__ = "key_people"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(36), ForeignKey("companies.id", ondelete="CASCADE"), nullable=True, index=True)
+    verification_session_id = Column(String(36), ForeignKey("verification_sessions.id", ondelete="SET NULL"), nullable=True, index=True)
+    full_name = Column(String(255), nullable=False, index=True)
+    title = Column(String(255), nullable=True)
+    role = Column(String(255), nullable=True)
+    linkedin_url = Column(Text, nullable=True, index=True)
+    linkedin_search_url = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=True)
+    source_domain = Column(String(255), nullable=True)
+    source_type = Column(String(100), default="linkedin_profile")
+    evidence_text = Column(Text, nullable=True)
+    confidence_score = Column(Float, default=0.0)
+    verification_status = Column(String(50), default="DISCOVERED", index=True)  # DISCOVERED, CRAWLED, HIGH_CONFIDENCE, VERIFIED, REJECTED
+    company_match_status = Column(Boolean, default=False)
+    is_leadership = Column(Boolean, default=False)
+    rejection_reason = Column(Text, nullable=True)
+    discovered_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    company = relationship("Company", back_populates="key_people")
+    verification_session = relationship("VerificationSession", back_populates="key_people")
+
+
+class VerificationSession(Base):
+    """
+    Canonical Verification Session Model.
+    Single authoritative owner for Agent 2 deep investigation and verification contract lifecycle.
+    """
+    __tablename__ = "verification_sessions"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(36), ForeignKey("companies.id", ondelete="SET NULL"), nullable=True, index=True)
+    document_id = Column(String(36), nullable=True, index=True)
+    domain = Column(String(255), nullable=False, index=True)
+    company_name = Column(String(255), nullable=False)
+    status = Column(String(60), default="AGENT2_QUEUED", index=True)
+    priority_score = Column(Float, default=0.0)
+    priority_reasons = Column(JSONB_TYPE, default=list)
+    phase1_data = Column(JSONB_TYPE, default=dict)
+    phase2_data = Column(JSONB_TYPE, default=dict)
+    recrawl_count = Column(Integer, default=0)
+    search_rounds = Column(Integer, default=0)
+    investigation_log = Column(JSONB_TYPE, default=list)
+    error_message = Column(Text, nullable=True)
+    verified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    company = relationship("Company", back_populates="verification_sessions")
+    key_people = relationship("KeyPerson", back_populates="verification_session")
+    evidence_items = relationship("CanonicalEvidence", back_populates="verification_session")
+
+
+class CanonicalEvidence(Base):
+    """
+    Canonical Evidence Model.
+    Single authoritative owner for field-level provenance, verified facts, snippets, and investigation records.
+    """
+    __tablename__ = "canonical_evidence"
+    __table_args__ = {'extend_existing': True}
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    company_id = Column(String(36), ForeignKey("companies.id", ondelete="CASCADE"), nullable=True, index=True)
+    verification_session_id = Column(String(36), ForeignKey("verification_sessions.id", ondelete="CASCADE"), nullable=True, index=True)
+    document_id = Column(String(36), nullable=True)
+    field_name = Column(String(100), nullable=False, index=True)
+    value = Column(Text, nullable=True)
+    source_url = Column(Text, nullable=True)
+    evidence_snippet = Column(Text, nullable=True)
+    verification_status = Column(String(50), default="UNVERIFIED", index=True)
+    verification_method = Column(String(100), nullable=True)
+    investigation_record = Column(JSONB_TYPE, default=dict)
+    created_at = Column(DateTime(timezone=True), default=utc_now)
+    updated_at = Column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+    company = relationship("Company", back_populates="evidence_items")
+    verification_session = relationship("VerificationSession", back_populates="evidence_items")
+
 
 
 
