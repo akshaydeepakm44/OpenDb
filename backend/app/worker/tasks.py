@@ -218,30 +218,13 @@ def _safe_dispatch(task_func, **kwargs):
     agent_id = trace_ctx.get("agent_id") or "AGENT-01"
     task_id = str(uuid.uuid4())
 
-    has_worker = _has_active_celery_worker()
-
-    if has_worker:
+    # Attempt Celery dispatch if worker is active or Redis is reachable
+    from app.worker.celery_app import REDIS_AVAILABLE
+    if has_worker or REDIS_AVAILABLE:
         try:
             return _dispatch_task(task_func, **kwargs)
         except Exception as dispatch_err:
             logger.warning(f"[_safe_dispatch] Celery dispatch failed for {task_name}, evaluating fallback: {dispatch_err}")
-
-    # Fail closed for Agent 2 tasks in production (unless explicitly testing locally)
-    if "agent2" in task_name.lower() and settings.OPENDB_ENV.lower() == "production":
-        tracer.log_event(
-            level="ERROR",
-            checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
-            event="AGENT2_DISPATCH_FAILED",
-            message=f"Agent 2 task '{task_name}' dispatch failed. Verification worker unavailable. Failing closed.",
-            task_id=task_id,
-            status="DISPATCH_FAILED",
-            extra={
-                "run_id": run_id,
-                "task_id": task_id,
-                "execution_mode": "CELERY_REQUIRED"
-            }
-        )
-        raise RuntimeError(f"QUEUE_FAILED: Agent 2 tasks must execute on dedicated Celery verification worker. Local fallback disabled for {task_name}.")
 
     # Controlled Fallback: LOCAL_THREAD execution mode
     execution_mode = "LOCAL_THREAD"

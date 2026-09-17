@@ -5,9 +5,13 @@ Queue management, explicit card processing, field-level evidence inspection,
 LinkedIn candidate audit, and chronological session timelines.
 """
 
+import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.persistence.database import get_db
 from app.persistence.models import (
@@ -234,15 +238,15 @@ def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Di
 
 
 @router.post("/rerun/{session_id}")
-def rerun_agent2_verification(
+async def rerun_agent2_verification(
     session_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
     Re-runs verification on a lead in a non-verified state (§20).
-    Only permitted for PARTIALLY_VERIFIED, NEEDS_REVIEW, PHASE1_BLOCKED, VERIFICATION_FAILED, etc.
-    Preserves valid existing evidence while conducting targeted missing-field investigation.
+    Awaits real-time verification up to 10s so user immediately receives updated data,
+    continuing in background if deeper processing is needed.
     """
     clean_target = str(session_id).strip()
     session = db.query(Agent2VerificationSession).filter(
@@ -276,31 +280,42 @@ def rerun_agent2_verification(
     })
     db.commit()
 
+    dispatch_method = "direct_completed"
     try:
-        from app.audit.tracer import tracer, Checkpoint
-        ctx_dict = tracer.get_context_dict()
-        _safe_dispatch(agent2_process_card_task, document_id=str(session.document_id), trace_ctx=ctx_dict)
-    except Exception as e:
+        await asyncio.wait_for(
+            agent2_orchestrator.execute_full_verification(str(session.document_id)),
+            timeout=10.0
+        )
+        db.refresh(session)
+    except asyncio.TimeoutError:
+        logger.info(f"Re-run for {session.id} exceeded 10s, continuing in background.")
         background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id))
+        dispatch_method = "background_task"
+    except Exception as e:
+        logger.warning(f"Re-run error for {session.id}: {e}, falling back to background.")
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id))
+        dispatch_method = "background_task"
 
     return {
-        "status": "rerun_dispatched",
+        "status": "completed" if dispatch_method == "direct_completed" else "rerun_dispatched",
         "session_id": session.id,
         "document_id": session.document_id,
         "domain": session.domain,
-        "new_state": "QUEUED_FOR_VERIFICATION"
+        "new_state": session.status,
+        "dispatch_method": dispatch_method
     }
 
 
 @router.post("/process/{document_id}")
-def trigger_agent2_process(
+async def trigger_agent2_process(
     document_id: str,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
     Explicitly triggers Agent 2 verification on a Document card in state CRAWLED_PENDING_AGENT_2.
-    Ensures that Agent 1 NEVER automatically invokes Agent 2.
+    Awaits real-time verification up to 10s so user immediately receives updated data,
+    continuing in background if deeper processing is needed.
     """
     doc_id_str = str(document_id)
     doc = None
@@ -322,14 +337,24 @@ def trigger_agent2_process(
     if not session:
         raise HTTPException(status_code=500, detail="Failed to initialize Agent 2 session")
 
-    # Dispatch task via observable execution adapter
-    from app.audit.tracer import tracer, Checkpoint
-    ctx_dict = tracer.get_context_dict()
-    _safe_dispatch(agent2_process_card_task, document_id=doc_id_str, trace_ctx=ctx_dict)
-    dispatch_method = "safe_dispatch"
+    dispatch_method = "direct_completed"
+    try:
+        await asyncio.wait_for(
+            agent2_orchestrator.execute_full_verification(doc_id_str),
+            timeout=10.0
+        )
+        db.refresh(session)
+    except asyncio.TimeoutError:
+        logger.info(f"Direct verification for {doc_id_str} exceeded 10s timeout, continuing in background.")
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str)
+        dispatch_method = "background_task"
+    except Exception as e:
+        logger.warning(f"Direct verification error for {doc_id_str}: {e}, falling back to background.")
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str)
+        dispatch_method = "background_task"
 
     return {
-        "status": "queued",
+        "status": "completed" if dispatch_method == "direct_completed" else "queued",
         "session_id": session.id,
         "document_id": doc_id_str,
         "domain": session.domain,

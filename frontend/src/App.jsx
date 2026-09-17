@@ -121,9 +121,14 @@ export default function App() {
       if (res.ok) {
         const refreshed = await fetch(`${API_BASE}/agent2/cards/${sessionId}`).then(r => r.ok ? r.json() : null);
         if (refreshed) setAgent2Detail(refreshed);
+        await fetchAgent2Sessions();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Re-run failed: ${err.detail || 'Internal server error'}`);
       }
     } catch (err) {
       console.error("Failed to trigger re-run:", err);
+      alert("Failed to trigger re-run.");
     } finally {
       setRerunningAgent2(false);
     }
@@ -247,9 +252,14 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setLeadView('agent2');
-        fetchAgent2Sessions();
+        await fetchAgent2Sessions();
         if (data.session_id) {
           setSelectedAgent2Id(data.session_id);
+          const detailRes = await fetch(`${API_BASE}/agent2/cards/${data.session_id}`);
+          if (detailRes.ok) {
+            const detailData = await detailRes.json();
+            setAgent2Detail(detailData);
+          }
         }
       } else {
         const err = await res.json().catch(() => ({}));
