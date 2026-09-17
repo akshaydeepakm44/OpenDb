@@ -271,29 +271,29 @@ async def rerun_agent2_verification(
             detail=f"Card is already authoritatively VERIFIED. Re-run is not required."
         )
 
-    session.status = "QUEUED_FOR_VERIFICATION"
+    session.status = "AGENT2_QUEUED"
     from datetime import datetime, timezone
     session.investigation_log.append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "state": "QUEUED_FOR_VERIFICATION",
-        "message": "Verification re-run requested by user. Preserving valid evidence."
+        "state": "AGENT2_QUEUED",
+        "message": "Verification re-run requested by user. Executing full pipeline from step 1."
     })
     db.commit()
 
     dispatch_method = "direct_completed"
     try:
         await asyncio.wait_for(
-            agent2_orchestrator.execute_full_verification(str(session.document_id)),
+            agent2_orchestrator.execute_full_verification(str(session.document_id), force_rerun=True),
             timeout=10.0
         )
         db.refresh(session)
     except asyncio.TimeoutError:
         logger.info(f"Re-run for {session.id} exceeded 10s, continuing in background.")
-        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id))
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id), True)
         dispatch_method = "background_task"
     except Exception as e:
         logger.warning(f"Re-run error for {session.id}: {e}, falling back to background.")
-        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id))
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id), True)
         dispatch_method = "background_task"
 
     return {
@@ -340,17 +340,17 @@ async def trigger_agent2_process(
     dispatch_method = "direct_completed"
     try:
         await asyncio.wait_for(
-            agent2_orchestrator.execute_full_verification(doc_id_str),
+            agent2_orchestrator.execute_full_verification(doc_id_str, force_rerun=True),
             timeout=10.0
         )
         db.refresh(session)
     except asyncio.TimeoutError:
         logger.info(f"Direct verification for {doc_id_str} exceeded 10s timeout, continuing in background.")
-        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str)
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str, True)
         dispatch_method = "background_task"
     except Exception as e:
         logger.warning(f"Direct verification error for {doc_id_str}: {e}, falling back to background.")
-        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str)
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str, True)
         dispatch_method = "background_task"
 
     return {

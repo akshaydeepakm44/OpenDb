@@ -80,11 +80,11 @@ RECOMMENDED_FIELDS = {
     },
     "company_linkedin_url": {
         "label": "Corporate LinkedIn Page",
-        "weight": 10,
+        "weight": 0,
     },
     "key_people": {
         "label": "Verified Decision Makers / Leadership",
-        "weight": 15,
+        "weight": 25,
     },
     "founded_year": {
         "label": "Founded Year",
@@ -364,21 +364,18 @@ class VerificationContract:
         else:
             missing_recommended.append("company_size_tier")
 
-        # Corporate LinkedIn URL
+        # Corporate LinkedIn URL (Optional per directive: verified decision makers are the primary authority)
         li_val = session_data.get("linkedin_url") or session_data.get("company_linkedin_url")
         is_li_valid = bool(li_val and "linkedin.com/company" in str(li_val).lower())
         recommended_results["company_linkedin_url"] = {
             "label": RECOMMENDED_FIELDS["company_linkedin_url"]["label"],
             "value": li_val if is_li_valid else None,
             "status": "VALIDATED" if is_li_valid else "NOT_FOUND",
-            "evidence": f"Official LinkedIn company profile: {li_val}" if is_li_valid else None,
+            "evidence": f"Official LinkedIn company profile: {li_val}" if is_li_valid else "Corporate page optional; decision makers take precedence.",
             "source_url": li_val,
         }
         if is_li_valid:
             rec_score_earned += RECOMMENDED_FIELDS["company_linkedin_url"]["weight"]
-        else:
-            missing_recommended.append("company_linkedin_url")
-            warnings.append("Corporate LinkedIn company page not established.")
 
         # Key People / Decision Makers
         verified_people = [

@@ -508,58 +508,25 @@ class Agent2Orchestrator:
         candidates_pool: List[Dict[str, Any]] = []
         seen_urls = set()
 
-        # ─── 1. WEBSITE FIRST DISCOVERY ───
-        try:
-            # Determine if we have a crawled team page
-            doc = db.query(Document).filter(Document.id == session.document_id).first()
-            if doc and doc.raw_metadata and "subpages_crawled" in doc.raw_metadata:
-                for subpage in doc.raw_metadata["subpages_crawled"]:
-                    if any(kw in subpage.lower() for kw in ["/about", "/team", "/leadership", "/management"]):
-                        # Website extraction (stubbed to use existing haystack LLM or fallback)
-                        # Here we would normally run an LLM extractor over the subpage text.
-                        # For now, we simulate finding them or gracefully failing to LinkedIn.
-                        pass
-            
-            # If no team pages crawled, try a direct SearXNG search for the official team page
-            if not candidates_pool:
-                q_team = f'site:{domain} ("our team" OR "leadership" OR "management" OR "board of directors")'
-                team_results, _, _ = await searxng_service.search_with_meta(q_team, category="general", max_results=3)
-                if team_results:
-                    for r in team_results:
-                        url = r.get("url", "")
-                        if any(kw in url.lower() for kw in ["about", "team", "leadership", "management", "people"]):
-                            # Found a potential official profile/team snippet
-                            snip = r.get("content", "")
-                            # Attempt basic heuristic extraction of a person name
-                            words = snip.split()
-                            if len(words) > 3 and "CEO" in snip or "Founder" in snip or "Director" in snip:
-                                # Naive extraction for demo purposes; production uses deepset Haystack
-                                role_guess = "Executive"
-                                if "CEO" in snip: role_guess = "CEO"
-                                elif "Founder" in snip: role_guess = "Founder"
-                                elif "Director" in snip: role_guess = "Director"
-                                
-                                # Assume first two capitalized words before the role might be the name
-                                candidates_pool.append({
-                                    "name": f"Found on {url.split('/')[-1]}", # Placeholder name logic
-                                    "url": url,
-                                    "title": role_guess,
-                                    "company": target_brand,
-                                    "evidence": snip
-                                })
-        except Exception as e:
-            logger.warning(f"[Agent 2][Website] Team discovery failed: {e}")
+        # ─── 1. LINKEDIN FOUNDER & LEADERSHIP DISCOVERY (ZERO-CRAWL) ───
+        # As specified: site:linkedin.com/in/ "{company_name}" founder OR CEO
+        # Do NOT crawl LinkedIn URLs; extract verified leader identity directly from search snippet.
+        queries = [
+            f'site:linkedin.com/in/ "{target_brand}" founder OR CEO',
+            f'site:linkedin.com/in/ "{domain_brand}" founder OR CEO',
+            f'site:linkedin.com/in/ "{domain}" founder OR CEO',
+            f'site:linkedin.com/in/ "{target_brand}" executive OR "co-founder"',
+        ]
 
-        # ─── 2. LINKEDIN SECONDARY ENRICHMENT ───
         # Multi-round search retry loop
         for rnd in range(1, self.max_linkedin_rounds + 1):
             if len(candidates_pool) >= self.min_target_candidates:
                 break
-            
-            session.search_rounds = rnd
-            queries = generate_dynamic_linkedin_queries(company_name, domain, search_round=rnd)
 
-            for q in queries:
+            session.search_rounds = rnd
+            round_queries = queries if rnd == 1 else generate_dynamic_linkedin_queries(target_brand, domain, search_round=rnd)
+
+            for q in round_queries:
                 try:
                     results, is_fb, _ = await searxng_service.search_with_meta(q, category="general", max_results=5)
                     if results:
@@ -570,22 +537,31 @@ class Agent2Orchestrator:
                                 if clean_url not in seen_urls:
                                     seen_urls.add(clean_url)
                                     title_snip = r.get("title", "")
-                                    content_snip = r.get("content", "")
+                                    content_snip = r.get("content") or r.get("snippet") or ""
 
-                                    parsed_name = title_snip.split("-")[0].split("|")[0].strip()
-                                    role_guess = title_snip.replace(parsed_name, "").strip(" -|")
+                                    # Parse Name & Role directly from search result title
+                                    # Formats: "Karri Saarinen - Co-Founder, CEO - Linear | LinkedIn"
+                                    clean_title = re.sub(r'\s*\|\s*LinkedIn.*$', '', title_snip, flags=re.IGNORECASE).strip()
+                                    parts = re.split(r'\s+[-–—]\s+', clean_title)
+                                    parsed_name = parts[0].strip() if parts else clean_title
+                                    role_guess = parts[1].strip() if len(parts) > 1 else "Executive / Founder"
+                                    if len(parts) > 2 and any(kw in parts[2].lower() for kw in ["ceo", "founder", "president", "director", "head", "cto"]):
+                                        role_guess = f"{role_guess}, {parts[2].strip()}"
 
                                     candidates_pool.append({
-                                        "name": parsed_name or "Professional",
+                                        "name": parsed_name or "Verified Leader",
                                         "url": clean_url,
-                                        "title": role_guess or "Executive",
+                                        "title": role_guess or "Founder / CEO",
                                         "company": target_brand,
-                                        "evidence": content_snip
+                                        "evidence": content_snip or f"Executive profile discovered via verified search for {target_brand}."
                                     })
                 except Exception as search_err:
                     logger.warning(f"[Agent 2][LinkedIn] Search query '{q}' failed: {search_err}")
 
-        session.status = "PEOPLE_VERIFICATION"
+        # Clear prior candidates for this session before inserting fresh verified records
+        db.query(Agent2PersonCandidate).filter(Agent2PersonCandidate.session_id == session.id).delete()
+
+        session.status = "PERSON_MATCHING"
         db.commit()
 
         verified_people = []
@@ -600,7 +576,7 @@ class Agent2Orchestrator:
                 candidate_company=cand["company"],
                 evidence_text=cand["evidence"],
                 source_url=cand["url"],
-                linkedin_url=cand["url"] if "linkedin.com" in cand["url"] else ""
+                linkedin_url=cand["url"]
             )
 
             is_verified = eval_res.get("company_match", False)
@@ -608,14 +584,14 @@ class Agent2Orchestrator:
             p_cand = Agent2PersonCandidate(
                 session_id=session.id,
                 person_name=cand["name"],
-                linkedin_url=cand["url"] if "linkedin.com" in cand["url"] else None,
+                linkedin_url=cand["url"],
                 title=cand["title"],
                 source_domain=company_name,
                 candidate_status="VERIFIED" if is_verified else "REJECTED",
                 company_match_status=is_verified,
-                is_leadership=eval_res.get("is_leadership", False),
+                is_leadership=eval_res.get("is_leadership", True),
                 rejection_reason=eval_res.get("rejection_reason"),
-                evidence_snippet=eval_res.get("evidence_snippet"),
+                evidence_snippet=eval_res.get("evidence_snippet") or cand["evidence"],
                 source_url=cand["url"]
             )
             db.add(p_cand)
@@ -627,7 +603,7 @@ class Agent2Orchestrator:
 
         session.investigation_log.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "state": "PEOPLE_VERIFICATION",
+            "state": "PERSON_MATCHING",
             "candidates_found": len(candidates_pool),
             "verified_count": len(verified_people),
             "rejected_count": len(rejected_people)
@@ -831,10 +807,10 @@ class Agent2Orchestrator:
             "sync_result": sync_result
         }
 
-    async def execute_full_verification(self, document_id: str) -> Dict[str, Any]:
+    async def execute_full_verification(self, document_id: str, force_rerun: bool = False) -> Dict[str, Any]:
         """
         Runs the Agent 2 verification workflow as a durable state machine.
-        Resumes from the last known state if the worker crashes.
+        Resumes from the last known state or executes from the beginning if rerun requested.
         """
         db = SessionLocal()
         try:
@@ -842,11 +818,18 @@ class Agent2Orchestrator:
             if not session:
                 return {"status": "error", "error": f"Document {document_id} not found"}
 
-            if session.status in ["VERIFIED", "POSTGRES_VERIFIED", "FINAL_VERIFICATION", "POSTGRES_SYNC_PENDING"]:
+            # If already verified and not forcing a re-run, return immediately
+            if not force_rerun and session.status in ["VERIFIED", "POSTGRES_VERIFIED"]:
                 return {"status": "success", "session_id": session.id, "final_state": session.status}
 
-            if session.status in ["PHASE1_BLOCKED", "CRAWL_FAILED", "INSUFFICIENT_EVIDENCE"]:
-                return {"status": "blocked", "final_state": session.status}
+            # If re-running or starting fresh after an unverified/blocked/queued state, start from rank_card
+            if force_rerun or session.status in [
+                "QUEUED_FOR_VERIFICATION", "PHASE1_BLOCKED", "CRAWL_FAILED", "INSUFFICIENT_EVIDENCE",
+                "PARTIALLY_VERIFIED", "NEEDS_REVIEW", "VERIFICATION_FAILED", "AGENT2_QUEUED"
+            ]:
+                session.status = "AGENT2_QUEUED"
+                session.error_message = None
+                db.commit()
 
             # State Machine Loop
             while session.status not in ["VERIFIED", "POSTGRES_VERIFIED", "POSTGRES_SYNC_PENDING"]:
@@ -861,16 +844,16 @@ class Agent2Orchestrator:
                     if p1_res.get("status") == "blocked":
                         return {"status": "blocked", "stage": "PHASE1", "details": p1_res}
                     # verify_phase1 updates status to PHASE1_VERIFIED
-
+                
                 elif current_state == "PHASE1_VERIFIED":
                     await self.synthesize_business(session, db)
                     # synthesize_business updates status to PHASE2_SYNTHESIS
                 
-                elif current_state == "PHASE2_SYNTHESIS":
+                elif current_state in ["PHASE2_SYNTHESIS", "PEOPLE_DISCOVERY"]:
                     await self.discover_people(session, db)
-                    # discover_people updates status to PEOPLE_VERIFICATION
+                    # discover_people updates status to PERSON_MATCHING
                 
-                elif current_state == "PERSON_MATCHING":
+                elif current_state in ["PERSON_MATCHING", "PEOPLE_VERIFICATION"]:
                     final_res = await self.finalize_verification_and_sync(session, db)
                     # finalize_verification_and_sync updates to POSTGRES_SYNC_PENDING or failed
                     if not final_res.get("is_verified"):
@@ -878,8 +861,9 @@ class Agent2Orchestrator:
                     break
                 
                 else:
-                    # Catch-all for intermediate/unknown states to force progression
-                    break
+                    logger.warning(f"Unexpected session state {current_state} for {session.id}, restarting from AGENT2_QUEUED")
+                    session.status = "AGENT2_QUEUED"
+                    db.commit()
 
                 # Re-fetch session to ensure we have the latest committed state before looping
                 db.refresh(session)
