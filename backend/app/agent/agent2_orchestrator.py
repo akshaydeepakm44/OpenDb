@@ -389,6 +389,9 @@ class Agent2Orchestrator:
             except Exception as crawl_err:
                 logger.warning(f"[Agent 2] Playwright fallback failed for {domain}: {crawl_err}")
 
+        # Clear prior evidence for this session before inserting fresh records
+        db.query(Agent2Evidence).filter(Agent2Evidence.session_id == session.id).delete()
+
         # Persist Agent2Evidence records & log extracted fields at DEBUG level
         for fname, fres in field_results.items():
             ev = Agent2Evidence(
