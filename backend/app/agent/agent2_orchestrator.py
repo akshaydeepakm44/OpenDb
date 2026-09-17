@@ -541,7 +541,74 @@ class Agent2Orchestrator:
         candidates_pool: List[Dict[str, Any]] = []
         seen_urls = set()
 
-        # ─── 1. LINKEDIN FOUNDER & LEADERSHIP DISCOVERY (ZERO-CRAWL) ───
+        # ─── 0. GROUND-TRUTH ON-SITE TEAM & LEADERSHIP HARVESTING ───
+        # Check crawled documents, raw HTML, and fetch /about & /team subpages for direct personal LinkedIn links
+        doc = db.query(Document).filter(Document.id == session.document_id).first()
+        raw_html = ""
+        if doc and doc.raw_path:
+            raw_html = file_storage.read_file_content(doc.raw_path) or ""
+
+        import httpx
+        from bs4 import BeautifulSoup
+
+        def harvest_html_linkedin(html_content: str, source_url: str):
+            if not html_content:
+                return
+            try:
+                soup = BeautifulSoup(html_content, "html.parser")
+                for a in soup.find_all("a", href=True):
+                    href = a["href"].strip()
+                    if "linkedin.com/in/" in href.lower():
+                        clean_url = re.sub(r"\?.*$", "", href).rstrip("/")
+                        if is_authentic_linkedin_personal_url(clean_url) and clean_url not in seen_urls:
+                            seen_urls.add(clean_url)
+                            text_val = a.get_text(strip=True)
+                            parent_text = a.parent.get_text(separator=" ", strip=True) if a.parent else ""
+                            m_role = re.search(r"(co-founder|founder|ceo|cpo|cto|coo|head of|vp|director|president|lead|advisor)", text_val, re.IGNORECASE)
+                            if m_role:
+                                name_part = text_val[:m_role.start()].strip()
+                                role_part = text_val[m_role.start():].strip()
+                            else:
+                                name_part = text_val
+                                role_part = "Founder / Executive"
+                            
+                            if not name_part and parent_text:
+                                tokens = parent_text.split()
+                                name_part = " ".join(tokens[:2]) if len(tokens) >= 2 else parent_text
+                            
+                            candidates_pool.append({
+                                "name": name_part or "Verified Leader",
+                                "url": clean_url,
+                                "title": role_part or "Founder / Executive",
+                                "company": target_brand,
+                                "evidence": f"Direct leadership profile on official company page ({source_url})"
+                            })
+            except Exception as e:
+                logger.debug(f"[Agent 2] Site harvesting error for {source_url}: {e}")
+
+        # Harvest from source document
+        if raw_html:
+            harvest_html_linkedin(raw_html, f"https://{domain}")
+
+        # If more candidates needed, quickly audit /about, /team, /leadership, /company
+        if len(candidates_pool) < self.min_target_candidates:
+            team_pages_to_check = [f"https://{domain}/about", f"https://{domain}/team", f"https://{domain}/company", f"https://{domain}/leadership"]
+            try:
+                # Synchronous-like quick fetch in async context
+                with httpx.Client(timeout=4.0, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}, follow_redirects=True, verify=False) as client:
+                    for tp in team_pages_to_check:
+                        try:
+                            resp = client.get(tp)
+                            if resp.status_code == 200:
+                                harvest_html_linkedin(resp.text, tp)
+                            if len(candidates_pool) >= self.min_target_candidates:
+                                break
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"[Agent 2] Team pages fetch failed: {e}")
+
+        # ─── 1. LINKEDIN FOUNDER & LEADERSHIP DISCOVERY (ZERO-CRAWL SEARCH) ───
         # As specified: site:linkedin.com/in/ "{company_name}" founder OR CEO
         # Do NOT crawl LinkedIn URLs; extract verified leader identity directly from search snippet.
         queries = [
