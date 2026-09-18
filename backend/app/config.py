@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "openai"  # 'ollama', 'openai', 'qwen_local', 'heuristics'
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     # Production Hardening & Autonomous Concurrency Controls
-    AGENT_LOOP_PACE_SECONDS: int = 20
-    MAX_DISCOVERY_RESULTS_PER_CYCLE: int = 10
+    AGENT_LOOP_PACE_SECONDS: int = 15
+    MAX_DISCOVERY_RESULTS_PER_CYCLE: int = 25
     MAX_CONCURRENT_CRAWLS: int = 2
     MAX_CONCURRENT_DEEP_CRAWLS: int = 1
     MAX_BROWSER_CONTEXTS: int = 2

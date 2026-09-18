@@ -421,7 +421,7 @@ def search_and_discover_task(
     db = SessionLocal()
     try:
         search_results, is_fallback, log_msg = run_async(
-            searxng_service.search_with_meta(query=query, max_results=20)
+            searxng_service.search_with_meta(query=query, max_results=35)
         )
 
         # Log search event
@@ -451,7 +451,7 @@ def search_and_discover_task(
 
         # Process each search result URL with deduplication and backpressure
         enqueued = 0
-        max_cycle_results = getattr(settings, "MAX_DISCOVERY_RESULTS_PER_CYCLE", 10)
+        max_cycle_results = getattr(settings, "MAX_DISCOVERY_RESULTS_PER_CYCLE", 25)
         high_watermark = getattr(settings, "DISCOVERY_QUEUE_HIGH_WATERMARK", 100)
         r = get_redis()
 
@@ -471,7 +471,30 @@ def search_and_discover_task(
                     pass
 
             target_url = res.get("url")
-            # Stage 1: Pre-crawl qualification
+            if not target_url:
+                continue
+
+            # Stage 1: Classify listing vs entity
+            classification = listing_detector.classify_url(target_url)
+
+            if classification == "listing":
+                # Listing directory page (e.g. Clutch, YC, ProductHunt) -> extract outbound entity links
+                if r is not None:
+                    try:
+                        if r.get(f"opendb:listing:crawled:{target_url}"):
+                            continue
+                        r.set(f"opendb:listing:crawled:{target_url}", "1", ex=1800)
+                    except Exception:
+                        pass
+
+                _log_activity(db, url=target_url, stage="CRAWL", domain=domain,
+                              status="QUEUED", message="Classified as LISTING page — queuing source extraction",
+                              batch_id=batch_id)
+                _safe_dispatch(crawl_source_task, source_url=target_url, domain=domain, batch_id=batch_id)
+                enqueued += 1
+                continue
+
+            # Stage 2: Direct Company Candidate Qualification
             qual = quality_filter.qualify_company_candidate(
                 title=res.get("title", ""),
                 snippet=res.get("snippet", ""),
@@ -511,23 +534,13 @@ def search_and_discover_task(
                     except Exception:
                         pass
 
-            # Stage 2: Classify listing vs entity
-            classification = listing_detector.classify_url(target_url)
-
-            if classification == "listing":
-                _log_activity(db, url=target_url, stage="CRAWL", domain=domain,
-                              status="QUEUED", message="Classified as LISTING page — queuing source extraction",
-                              batch_id=batch_id)
-                _safe_dispatch(crawl_source_task, source_url=target_url, domain=domain, batch_id=batch_id)
-                enqueued += 1
-            else:
-                parsed_u = urlparse(target_url)
-                entity_root_url = f"{parsed_u.scheme}://{parsed_u.netloc}/" if parsed_u.netloc else target_url
-                _log_activity(db, url=entity_root_url, stage="CRAWL", domain=domain,
-                              status="QUEUED", message=f"Qualified ({qual['company_size']}) — queuing root entity crawl ({reg_domain or parsed_u.netloc})",
-                              batch_id=batch_id)
-                _safe_dispatch(crawl_entity_task, url=entity_root_url, domain=domain, batch_id=batch_id)
-                enqueued += 1
+            parsed_u = urlparse(target_url)
+            entity_root_url = f"{parsed_u.scheme}://{parsed_u.netloc}/" if parsed_u.netloc else target_url
+            _log_activity(db, url=entity_root_url, stage="CRAWL", domain=domain,
+                          status="QUEUED", message=f"Qualified ({qual['company_size']}) — queuing root entity crawl ({reg_domain or parsed_u.netloc})",
+                          batch_id=batch_id)
+            _safe_dispatch(crawl_entity_task, url=entity_root_url, domain=domain, batch_id=batch_id)
+            enqueued += 1
 
         return {
             "query": query,
