@@ -306,34 +306,30 @@ def reset_database_data(db: Session = Depends(get_db)):
         from app.agent.discovery_agent import discovery_agent
         discovery_agent.is_running_loop = False
 
-        from app.persistence.models import (
-    BatchResult, KeywordPerformance, Company, Domain,
-    Document, CanonicalEvidence, VerificationSession, CrawlError,
-    SearchHistory, CrawlActivityLog, KeyPerson
-)
-
-        try:
-            db.execute(text("PRAGMA foreign_keys = OFF;"))
-        except Exception:
-            pass
-
-        # Foreign-key ordered: children and dependents first, parents last
-        models_to_clear = [
-            Agent2PersonCandidate, Agent2CanonicalEvidence, Agent2VerificationSession, PostgresSyncOutbox,
-            GlobalLeadSubpage, GlobalLeadPerson, GlobalLead, OpenLakeRecord,
-            KeyPerson, ManualReviewQueue,
-            ResourceLink, Resource, ExtractionRun, DocumentVersion,
-            CanonicalEvidence, CanonicalEvidence, VerificationRecord, Domain,
-            Company, Document, CrawlJob, CrawlError,
-            CrawlActivityLog, SearchHistory, BatchResult, AgentState
+        # 1. Truncate / Delete all OpenDB tables cleanly
+        table_names = [
+            "quarantined_content", "manual_review_queue", "artifact_outbox",
+            "agent_state", "keyword_performance", "search_history", "batch_results",
+            "crawl_errors", "crawl_activity_log", "canonical_evidence",
+            "verification_sessions", "key_people", "documents", "domains",
+            "companies", "sources", "blocked_domains"
         ]
-        for m in models_to_clear:
-            try:
-                db.execute(text(f"DELETE FROM {m.__tablename__};"))
-                db.commit()
-            except Exception as de:
-                db.rollback()
-                logger.warning(f"Reset: table clearing note for {m.__tablename__}: {de}")
+        
+        # In PostgreSQL, TRUNCATE ... CASCADE is atomic, fast, and handles all foreign key constraints
+        try:
+            db.execute(text(f"TRUNCATE TABLE {', '.join(table_names)} CASCADE;"))
+            db.commit()
+            logger.info("Successfully truncated all OpenDb database tables.")
+        except Exception as trunc_err:
+            db.rollback()
+            logger.warning(f"TRUNCATE CASCADE note ({trunc_err}), executing individual DELETE statements")
+            for t_name in table_names:
+                try:
+                    db.execute(text(f"DELETE FROM {t_name};"))
+                    db.commit()
+                except Exception as de:
+                    db.rollback()
+                    logger.debug(f"Reset: table delete note for {t_name}: {de}")
 
         try:
             db.execute(text("DELETE FROM global_leads_fts;"))
@@ -341,12 +337,7 @@ def reset_database_data(db: Session = Depends(get_db)):
         except Exception:
             db.rollback()
 
-        try:
-            db.execute(text("PRAGMA foreign_keys = ON;"))
-        except Exception:
-            pass
-
-        # Clean all local storage directories across project
+        # 2. Clean all local data directories across project
         candidate_data_dirs = [
             os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"),
             os.path.abspath("data"),
@@ -365,13 +356,27 @@ def reset_database_data(db: Session = Depends(get_db)):
                             os.unlink(item_p)
                     except Exception:
                         pass
-        
-        # Flush Redis Queue safely without blocking if Redis is down
+
+        # 3. Clean MinIO bucket objects if available
         try:
-            from app.api.health import _quick_port_check
-            if _quick_port_check(settings.REDIS_URL, 6379):
-                r = redis.Redis.from_url(settings.REDIS_URL.replace("localhost", "127.0.0.1"), socket_connect_timeout=0.2, socket_timeout=0.2)
+            from app.storage.file_storage import file_storage
+            if file_storage.client and not file_storage.use_local:
+                objects = file_storage.client.list_objects(file_storage.bucket_name, recursive=True)
+                for obj in objects:
+                    try:
+                        file_storage.client.remove_object(file_storage.bucket_name, obj.object_name)
+                    except Exception:
+                        pass
+        except Exception as s3_err:
+            logger.debug(f"MinIO cleanup note: {s3_err}")
+
+        # 4. Flush Redis DB & queues safely
+        try:
+            from app.cache.redis_client import get_redis
+            r = get_redis()
+            if r is not None:
                 r.flushdb()
+                logger.info("Redis queues & caches flushed successfully.")
         except Exception as e:
             logger.debug(f"Redis queue reset notice: {e}")
             

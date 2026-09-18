@@ -130,7 +130,8 @@ def _dispatch_task(task_func, **kwargs):
     agent_id = trace_ctx.get("agent_id") or "AGENT-01"
 
     try:
-        task_res = task_func.apply_async(kwargs=kwargs, queue="celery")
+        # Route dynamically via celery_app.conf.task_routes (discovery, crawl, verification)
+        task_res = task_func.apply_async(kwargs=kwargs)
         task_id = getattr(task_res, "id", str(uuid.uuid4()))
         
         tracer.log_event(

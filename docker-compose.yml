@@ -156,7 +156,7 @@ services:
       dockerfile: Dockerfile
     container_name: opendb_celery_discovery
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q discovery
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q discovery,celery
     env_file: .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}
@@ -190,7 +190,7 @@ services:
       dockerfile: Dockerfile
     container_name: opendb_celery_crawler
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2 --max-tasks-per-child=50 -Q crawl
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2 --max-tasks-per-child=50 -Q crawl,celery
     env_file: .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}
@@ -224,7 +224,7 @@ services:
       dockerfile: Dockerfile
     container_name: opendb_celery_verification
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q verification
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 --max-tasks-per-child=50 -Q verification,celery
     env_file: .env
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-admin}:${POSTGRES_PASSWORD:-password123}@postgres:5432/${POSTGRES_DB:-opendb}
