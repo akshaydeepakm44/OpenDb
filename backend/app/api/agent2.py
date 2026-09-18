@@ -245,9 +245,11 @@ async def rerun_agent2_verification(
 ) -> Dict[str, Any]:
     """
     Re-runs verification on a lead in a non-verified state (§20).
-    Awaits real-time verification up to 10s so user immediately receives updated data,
+    Awaits real-time verification up to 30s so user immediately receives updated data,
     continuing in background if deeper processing is needed.
+    The frontend should poll GET /agent2/cards/{session_id} after this returns.
     """
+    from datetime import datetime, timezone
     clean_target = str(session_id).strip()
     session = db.query(Agent2VerificationSession).filter(
         Agent2VerificationSession.id == clean_target
@@ -260,48 +262,57 @@ async def rerun_agent2_verification(
     if not session:
         raise HTTPException(status_code=404, detail="Agent 2 session not found")
 
-    # Only allow rerun for appropriate states
-    rerun_allowed_states = [
-        "PARTIALLY_VERIFIED", "NEEDS_REVIEW", "PHASE1_BLOCKED", "VERIFICATION_FAILED",
-        "INSUFFICIENT_EVIDENCE", "CRAWL_FAILED", "AGENT2_QUEUED", "PHASE1_RANKED"
-    ]
-    if session.status == "VERIFIED" or session.status == "POSTGRES_VERIFIED":
+    if session.status in ["VERIFIED", "POSTGRES_VERIFIED"]:
         raise HTTPException(
             status_code=400,
             detail=f"Card is already authoritatively VERIFIED. Re-run is not required."
         )
 
+    # Capture IDs before we potentially lose references
+    doc_id = str(session.document_id)
+    sess_id = str(session.id)
+
+    # Reset to AGENT2_QUEUED and log the rerun request
     session.status = "AGENT2_QUEUED"
-    from datetime import datetime, timezone
-    session.investigation_log.append({
+    session.error_message = None
+    if not isinstance(session.investigation_log, list):
+        session.investigation_log = []
+    session.investigation_log = session.investigation_log + [{
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "state": "AGENT2_QUEUED",
         "message": "Verification re-run requested by user. Executing full pipeline from step 1."
-    })
+    }]
     db.commit()
 
-    dispatch_method = "direct_completed"
+    dispatch_method = "background_task"
     try:
+        # Run with 30s timeout — allows Phase 1 to complete in-band for most companies
         await asyncio.wait_for(
-            agent2_orchestrator.execute_full_verification(str(session.document_id), force_rerun=True),
-            timeout=10.0
+            agent2_orchestrator.execute_full_verification(doc_id, force_rerun=True),
+            timeout=30.0
         )
-        db.refresh(session)
+        dispatch_method = "direct_completed"
     except asyncio.TimeoutError:
-        logger.info(f"Re-run for {session.id} exceeded 10s, continuing in background.")
-        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id), True)
-        dispatch_method = "background_task"
+        logger.info(f"Re-run for {sess_id} exceeded 30s, continuing in background.")
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id, True)
     except Exception as e:
-        logger.warning(f"Re-run error for {session.id}: {e}, falling back to background.")
-        background_tasks.add_task(agent2_orchestrator.execute_full_verification, str(session.document_id), True)
-        dispatch_method = "background_task"
+        logger.warning(f"Re-run error for {sess_id}: {e}, falling back to background.")
+        background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id, True)
+
+    # Re-query the session from DB to get the freshest committed state
+    # (orchestrator uses its own SessionLocal, so db.refresh() won't see its commits without expire)
+    db.expire_all()
+    fresh_session = db.query(Agent2VerificationSession).filter(
+        Agent2VerificationSession.id == sess_id
+    ).first()
+    current_status = fresh_session.status if fresh_session else "AGENT2_QUEUED"
 
     return {
         "status": "completed" if dispatch_method == "direct_completed" else "rerun_dispatched",
-        "session_id": session.id,
-        "document_id": session.document_id,
-        "domain": session.domain,
-        "new_state": session.status,
+        "session_id": sess_id,
+        "document_id": doc_id,
+        "domain": fresh_session.domain if fresh_session else "",
+        "new_state": current_status,
         "dispatch_method": dispatch_method
     }
 
@@ -314,8 +325,7 @@ async def trigger_agent2_process(
 ) -> Dict[str, Any]:
     """
     Explicitly triggers Agent 2 verification on a Document card in state CRAWLED_PENDING_AGENT_2.
-    Awaits real-time verification up to 10s so user immediately receives updated data,
-    continuing in background if deeper processing is needed.
+    Awaits real-time verification up to 30s, continuing in background if deeper processing is needed.
     """
     doc_id_str = str(document_id)
     doc = None
@@ -337,27 +347,32 @@ async def trigger_agent2_process(
     if not session:
         raise HTTPException(status_code=500, detail="Failed to initialize Agent 2 session")
 
-    dispatch_method = "direct_completed"
+    sess_id = str(session.id)
+    dispatch_method = "background_task"
     try:
         await asyncio.wait_for(
             agent2_orchestrator.execute_full_verification(doc_id_str, force_rerun=True),
-            timeout=10.0
+            timeout=30.0
         )
-        db.refresh(session)
+        dispatch_method = "direct_completed"
     except asyncio.TimeoutError:
-        logger.info(f"Direct verification for {doc_id_str} exceeded 10s timeout, continuing in background.")
+        logger.info(f"Direct verification for {doc_id_str} exceeded 30s timeout, continuing in background.")
         background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str, True)
-        dispatch_method = "background_task"
     except Exception as e:
         logger.warning(f"Direct verification error for {doc_id_str}: {e}, falling back to background.")
         background_tasks.add_task(agent2_orchestrator.execute_full_verification, doc_id_str, True)
-        dispatch_method = "background_task"
+
+    # Re-query after orchestrator has committed its changes
+    db.expire_all()
+    fresh_session = db.query(Agent2VerificationSession).filter(
+        Agent2VerificationSession.id == sess_id
+    ).first()
 
     return {
         "status": "completed" if dispatch_method == "direct_completed" else "queued",
-        "session_id": session.id,
+        "session_id": sess_id,
         "document_id": doc_id_str,
-        "domain": session.domain,
+        "domain": fresh_session.domain if fresh_session else session.domain,
         "dispatch_method": dispatch_method
     }
 

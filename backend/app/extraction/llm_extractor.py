@@ -215,14 +215,7 @@ TEXT TO EXTRACT FROM:
                     val = [val] if val else []
                 evidence_snippet = f"Extracted location: {val}" if val else None
 
-            # 3. Founded Year
-            elif prop_name == "founded_year":
-                match = re.search(r"\b(founded|established|est\.|since)\s+(?:in\s+)?([12][09]\d{2})\b", text, re.IGNORECASE)
-                if match:
-                    val = int(match.group(2))
-                    evidence_snippet = match.group(0)
-
-            # 4. Technologies
+            # 3. Technologies
             elif prop_name == "technologies":
                 found_tech = [t for t in TECH_KEYWORDS if re.search(rf"\b{re.escape(t)}\b", text, re.IGNORECASE)]
                 if found_tech:

@@ -11,7 +11,6 @@
     "founders": { "type": "array", "items": { "type": "string" } },
     "leadership": { "type": "array", "items": { "type": "string" } },
     "locations": { "type": "array", "items": { "type": "string" } },
-    "contact_information": { "type": ["string", "null"] },
-    "founded_year": { "type": ["integer", "null"] }
+    "contact_information": { "type": ["string", "null"] }
   }
 }

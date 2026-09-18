@@ -80,19 +80,11 @@ RECOMMENDED_FIELDS = {
     },
     "company_linkedin_url": {
         "label": "Corporate LinkedIn Page",
-        "weight": 0,
+        "weight": 5,
     },
     "key_people": {
         "label": "Verified Decision Makers / Leadership",
-        "weight": 25,
-    },
-    "founded_year": {
-        "label": "Founded Year",
-        "weight": 5,
-    },
-    "phone": {
-        "label": "Contact Phone Number",
-        "weight": 5,
+        "weight": 30,
     },
 }
 
@@ -397,38 +389,6 @@ class VerificationContract:
             missing_recommended.append("key_people")
             warnings.append("No verified executive leadership profiles found.")
 
-        # Founded Year
-        founded_ev = evidence_by_field.get("founded_year") or (session_data.get("phase1_data") or {}).get("founded_year") or {}
-        founded_val = founded_ev.get("value") or session_data.get("founded_year")
-        is_founded_valid = bool(founded_val and str(founded_val).isdigit())
-        recommended_results["founded_year"] = {
-            "label": RECOMMENDED_FIELDS["founded_year"]["label"],
-            "value": founded_val if is_founded_valid else None,
-            "status": "VALIDATED" if is_founded_valid else "NOT_FOUND",
-            "evidence": founded_ev.get("evidence_snippet") or (f"Founded: {founded_val}" if is_founded_valid else None),
-            "source_url": founded_ev.get("source_url"),
-        }
-        if is_founded_valid:
-            rec_score_earned += RECOMMENDED_FIELDS["founded_year"]["weight"]
-        else:
-            missing_recommended.append("founded_year")
-
-        # Phone
-        phone_ev = evidence_by_field.get("phone") or (session_data.get("phase1_data") or {}).get("phone") or {}
-        phone_val = phone_ev.get("value") or session_data.get("phone")
-        is_phone_valid = bool(phone_val and len(str(phone_val).strip()) >= 7)
-        recommended_results["phone"] = {
-            "label": RECOMMENDED_FIELDS["phone"]["label"],
-            "value": phone_val if is_phone_valid else None,
-            "status": "VALIDATED" if is_phone_valid else "NOT_FOUND",
-            "evidence": phone_ev.get("evidence_snippet") or (f"Phone: {phone_val}" if is_phone_valid else None),
-            "source_url": phone_ev.get("source_url"),
-        }
-        if is_phone_valid:
-            rec_score_earned += RECOMMENDED_FIELDS["phone"]["weight"]
-        else:
-            missing_recommended.append("phone")
-
         # ── 4. Deterministic Completeness Score ──────────────────────────────
         core_pct = (core_passed_count / len(REQUIRED_CORE_FIELDS)) * 60.0
         rec_pct = (rec_score_earned / rec_score_total) * 40.0
@@ -542,15 +502,7 @@ class VerificationContract:
         c_dom = getattr(session, "domain", None) or (urlparse(doc.url).netloc.replace("www.", "") if doc and doc.url else None)
         c_desc = p2.get("business_overview", {}).get("text") or (doc.title if doc else None)
 
-        # 1. Phone extraction
-        phone_ev = (p1.get("phone", {}) or {})
-        phone_val = phone_ev.get("value")
-        if not phone_val:
-            det_phones = raw_meta.get("detected_phones") or []
-            if det_phones and isinstance(det_phones, list):
-                phone_val = str(det_phones[0]).strip()
-
-        # 2. Corporate LinkedIn URL extraction
+        # 1. Corporate LinkedIn URL extraction
         li_ev = (p1.get("company_linkedin_url", {}) or {})
         li_val = li_ev.get("value") or getattr(session, "company_linkedin_url", None)
         if not li_val:
@@ -565,15 +517,6 @@ class VerificationContract:
             if comp and comp.linkedin_url:
                 li_val = comp.linkedin_url
 
-        # 3. Founded Year extraction
-        founded_ev = (p1.get("founded_year", {}) or {})
-        founded_val = founded_ev.get("value") or raw_meta.get("detected_founded_year")
-        if not founded_val:
-            corpus_to_search = (p2.get("business_overview", {}).get("text") or "") + " " + (doc.title or "")
-            m_yr = re.search(r"\b(?:founded|established|est\.?)\s*(?:in|:)?\s*(19\d{2}|20\d{2})\b", corpus_to_search, re.IGNORECASE)
-            if m_yr:
-                founded_val = int(m_yr.group(1))
-
         session_data = {
             "domain": c_dom,
             "company_name": c_name,
@@ -586,8 +529,6 @@ class VerificationContract:
             "minio_asset_path": (doc.raw_path or (doc.raw_artifacts[0] if doc and doc.raw_artifacts else None)) if doc else None,
             "phase1_data": p1,
             "phase2_data": p2,
-            "phone": phone_val,
-            "founded_year": founded_val,
             "linkedin_url": li_val,
             "company_linkedin_url": li_val,
         }
@@ -629,22 +570,6 @@ class VerificationContract:
                     "status": "VALIDATED",
                     "evidence_snippet": f"Official LinkedIn company profile: {li_val}",
                     "source_url": li_val
-                })
-            if phone_val and not any(e.get("field") == "phone" for e in evidence_list):
-                evidence_list.append({
-                    "field": "phone",
-                    "value": phone_val,
-                    "status": "VALIDATED",
-                    "evidence_snippet": f"Contact telephone number: {phone_val}",
-                    "source_url": f"https://{c_dom}" if c_dom else None
-                })
-            if founded_val and not any(e.get("field") == "founded_year" for e in evidence_list):
-                evidence_list.append({
-                    "field": "founded_year",
-                    "value": founded_val,
-                    "status": "VALIDATED",
-                    "evidence_snippet": f"Founded year: {founded_val}",
-                    "source_url": f"https://{c_dom}" if c_dom else None
                 })
 
         return cls.evaluate(

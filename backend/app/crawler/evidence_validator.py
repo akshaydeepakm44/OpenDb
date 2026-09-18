@@ -33,7 +33,6 @@ def extract_raw_page_facts(html: str, text: str, page_url: str) -> Dict[str, Any
         "raw_page_title": None,
         "meta_description": None,
         "detected_emails": [],
-        "detected_phones": [],
         "detected_social_links": [],
     }
 
@@ -91,22 +90,7 @@ def extract_raw_page_facts(html: str, text: str, page_url: str) -> Dict[str, Any
             valid_emails.append(em)
     facts["detected_emails"] = sorted(list(set(valid_emails)))
 
-    # 4. Detected phones (strictly from tel: links or explicit phone patterns)
-    candidate_phones = set()
-    if soup:
-        for tel in soup.find_all("a", href=re.compile(r"^tel:", re.I)):
-            ph = tel.get("href", "").replace("tel:", "").strip()
-            if len(re.sub(r"[^\d]", "", ph)) >= 7:
-                candidate_phones.add(ph)
-
-    phone_pattern = re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}")
-    for match in phone_pattern.findall(text or ""):
-        digits = re.sub(r"[^\d]", "", match)
-        if 8 <= len(digits) <= 15:
-            candidate_phones.add(match.strip())
-    facts["detected_phones"] = sorted(list(candidate_phones))[:5]
-
-    # 5. Detected official social / LinkedIn links (on-page links only)
+    # 4. Detected official social / LinkedIn links (on-page links only)
     if soup:
         socials = []
         for a in soup.find_all("a", href=True):
@@ -127,34 +111,6 @@ def extract_raw_page_facts(html: str, text: str, page_url: str) -> Dict[str, Any
                 seen_urls.add(s["url"])
                 deduped_socials.append(s)
         facts["detected_social_links"] = deduped_socials
-
-    # 6. Detected founded year (from JSON-LD schema or page text)
-    detected_year = None
-    if soup:
-        for script in soup.find_all("script", type=re.compile(r"application/ld\+json", re.I)):
-            try:
-                import json
-                data = json.loads(script.string or "{}")
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    if isinstance(item, dict):
-                        f_date = item.get("foundingDate") or item.get("foundDate") or item.get("foundingYear")
-                        if f_date:
-                            m = re.search(r"\b(19\d{2}|20\d{2})\b", str(f_date))
-                            if m:
-                                detected_year = int(m.group(1))
-                                break
-                if detected_year:
-                    break
-            except Exception:
-                pass
-
-    if not detected_year and text:
-        m = re.search(r"\b(?:founded|established|est\.?)\s*(?:in|:)?\s*(19\d{2}|20\d{2})\b", text, re.I)
-        if m:
-            detected_year = int(m.group(1))
-
-    facts["detected_founded_year"] = detected_year
 
     return facts
 

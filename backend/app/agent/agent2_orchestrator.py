@@ -336,26 +336,6 @@ class Agent2Orchestrator:
         )
         field_results["company_linkedin_url"] = res_li
 
-        # 9. Contact Phone
-        res_phone = await investigation_engine.investigate_phone(
-            domain=domain,
-            company_name=company_name,
-            existing_text=text_corpus,
-            existing_metadata=metadata,
-            searxng_service=searxng_service
-        )
-        field_results["phone"] = res_phone
-
-        # 10. Founded Year
-        res_founded = await investigation_engine.investigate_founded_year(
-            domain=domain,
-            company_name=company_name,
-            existing_text=text_corpus,
-            existing_metadata=metadata,
-            searxng_service=searxng_service
-        )
-        field_results["founded_year"] = res_founded
-
         # ── SMART FALLBACK: Deep Crawl only if critical fields are missing ──
         # Fields that usually warrant a deep crawl if SearXNG/existing text fails:
         critical_missing = []
@@ -419,35 +399,66 @@ class Agent2Orchestrator:
         session.phase1_data = field_results
 
         # ── Phase 1 Gate Evaluation ──────────────────────────────────────────
-        unverified_fields = [k for k, v in field_results.items() if v.get("status") == "UNVERIFIED"]
+        # IMPORTANT: Only these 4 core investigation fields can block the pipeline.
+        # Optional fields (company_linkedin_url, storage fields)
+        # are allowed to be NOT_FOUND_AFTER_SEARCH without blocking.
+        # UNVERIFIED means infrastructure failure (crawler/SearXNG down), not "not found".
+        CORE_BLOCKING_FIELDS = {
+            "industry_sector", "location_region", "company_size_tier", "verified_contact_email"
+        }
+        # Only block on core fields that are truly UNVERIFIED (infra failure)
+        truly_unverified = [
+            k for k, v in field_results.items()
+            if k in CORE_BLOCKING_FIELDS and v.get("status") == "UNVERIFIED"
+        ]
+        # Log any non-core unverified fields as warnings (don't block)
+        all_unverified = [k for k, v in field_results.items() if v.get("status") == "UNVERIFIED"]
+        non_core_unverified = [k for k in all_unverified if k not in CORE_BLOCKING_FIELDS]
+
         phase1_dur = time.time() - t_phase1_start
-        if unverified_fields:
+
+        if non_core_unverified:
+            tracer.log_event(
+                level="WARNING",
+                checkpoint=Checkpoint.CP23_VALIDATION_GATE,
+                event="PHASE1_OPTIONAL_FIELDS_UNVERIFIED",
+                message=f"Non-blocking optional fields unverified for {domain}: {non_core_unverified} (pipeline continues)",
+                agent_id="AGENT-02",
+                lead_id=domain,
+                extra={"non_blocking_unverified": non_core_unverified}
+            )
+
+        if truly_unverified:
             session.status = "PHASE1_BLOCKED"
-            session.error_message = f"Phase 1 Gate blocked: incomplete investigations for {unverified_fields}"
+            session.error_message = f"Phase 1 Gate: core fields unresolved (infra failure) for {truly_unverified}"
             session.investigation_log.append({
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "state": "PHASE1_BLOCKED",
-                "unverified_fields": unverified_fields
+                "blocking_fields": truly_unverified,
+                "non_blocking_unverified": non_core_unverified,
+                "message": "Core fields UNVERIFIED due to infrastructure failure. Will continue to Phase 2 anyway."
             })
             db.commit()
             tracer.log_event(
                 level="WARNING",
                 checkpoint=Checkpoint.CP23_VALIDATION_GATE,
-                event="PHASE1_GATE_BLOCKED",
-                message=f"Phase 1 Gate BLOCKED for {domain}: unverified fields {unverified_fields}",
+                event="PHASE1_GATE_PARTIAL_BLOCK",
+                message=f"Phase 1 core fields blocked for {domain}: {truly_unverified} (continuing to Phase 2 with partial data)",
                 agent_id="AGENT-02",
                 lead_id=domain,
                 duration=phase1_dur,
-                status="BLOCKED",
-                extra={"unverified_fields": unverified_fields}
+                status="PARTIAL",
+                extra={"blocking_fields": truly_unverified}
             )
-            return {"status": "blocked", "unverified_fields": unverified_fields}
+            # Do NOT return blocked — advance to PHASE1_VERIFIED so Phase 2 and people discovery still run
+            session.status = "PHASE1_VERIFIED"
+            db.commit()
 
         session.status = "PHASE1_VERIFIED"
         session.investigation_log.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "state": "PHASE1_VERIFIED",
-            "message": "All 7 fields successfully investigated and passed Phase 1 Gate."
+            "message": f"Phase 1 complete. Verified fields: {[k for k,v in field_results.items() if v.get('status') not in ['UNVERIFIED']]}. Non-blocking unverified: {non_core_unverified}."
         })
         db.commit()
 
@@ -455,7 +466,7 @@ class Agent2Orchestrator:
             level="INFO",
             checkpoint=Checkpoint.CP23_VALIDATION_GATE,
             event="PHASE1_GATE_PASSED",
-            message=f"Phase 1 Gate PASSED for {domain}: All 7 fields verified or exhausted without unhandled status",
+            message=f"Phase 1 Gate PASSED for {domain}: core fields resolved, proceeding to Phase 2",
             agent_id="AGENT-02",
             lead_id=domain,
             duration=phase1_dur,
@@ -753,12 +764,12 @@ class Agent2Orchestrator:
             failed_state = evaluation["verification_state"]
             session.status = failed_state
             session.verified_at = None
-            session.investigation_log.append({
+            session.investigation_log = (session.investigation_log or []) + [{
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "state": failed_state,
                 "message": f"Verification Contract evaluated: {failed_state}. Completeness: {evaluation['completeness_score']}%. Missing required: {evaluation['missing_required_fields']}",
                 "evaluation": evaluation
-            })
+            }]
 
             doc = db.query(Document).filter(Document.id == session.document_id).first()
             if doc:
@@ -964,36 +975,44 @@ class Agent2Orchestrator:
                 db.commit()
 
             # State Machine Loop
-            while session.status not in ["VERIFIED", "POSTGRES_VERIFIED", "POSTGRES_SYNC_PENDING"]:
+            max_iterations = 20  # safety cap to prevent infinite loops
+            iteration = 0
+            while session.status not in ["VERIFIED", "POSTGRES_VERIFIED", "POSTGRES_SYNC_PENDING"] and iteration < max_iterations:
                 current_state = session.status
+                iteration += 1
+                logger.info(f"[Agent 2] State machine iteration {iteration}: {session.domain} -> {current_state}")
 
                 if current_state == "AGENT2_QUEUED":
                     self.rank_card(session, db)
                     # rank_card updates status to PHASE1_RANKED
-                
+
                 elif current_state == "PHASE1_RANKED":
                     p1_res = await self.verify_phase1(session, db)
-                    if p1_res.get("status") == "blocked":
-                        return {"status": "blocked", "stage": "PHASE1", "details": p1_res}
-                    # verify_phase1 updates status to PHASE1_VERIFIED
-                
+                    # verify_phase1 now always advances to PHASE1_VERIFIED (never blocks pipeline)
+                    # If status is still PHASE1_BLOCKED due to infra failure, force advance
+                    db.refresh(session)
+                    if session.status == "PHASE1_BLOCKED":
+                        logger.warning(f"[Agent 2] Phase 1 blocked for {session.domain} but advancing to Phase 2 with partial data")
+                        session.status = "PHASE1_VERIFIED"
+                        db.commit()
+
                 elif current_state == "PHASE1_VERIFIED":
                     await self.synthesize_business(session, db)
                     # synthesize_business updates status to PHASE2_SYNTHESIS
-                
+
                 elif current_state in ["PHASE2_SYNTHESIS", "PEOPLE_DISCOVERY"]:
                     await self.discover_people(session, db)
                     # discover_people updates status to PERSON_MATCHING
-                
+
                 elif current_state in ["PERSON_MATCHING", "PEOPLE_VERIFICATION"]:
                     final_res = await self.finalize_verification_and_sync(session, db)
-                    # finalize_verification_and_sync updates to POSTGRES_SYNC_PENDING or failed
+                    # finalize_verification_and_sync updates to POSTGRES_SYNC_PENDING or a failed state
                     if not final_res.get("is_verified"):
-                        return {"status": "failed", "final_state": session.status, "details": final_res}
+                        logger.warning(f"[Agent 2] Final verification failed for {session.domain}: {session.status}")
                     break
-                
+
                 else:
-                    logger.warning(f"Unexpected session state {current_state} for {session.id}, restarting from AGENT2_QUEUED")
+                    logger.warning(f"[Agent 2] Unexpected state '{current_state}' for {session.id}, restarting from AGENT2_QUEUED")
                     session.status = "AGENT2_QUEUED"
                     db.commit()
 

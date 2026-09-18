@@ -128,23 +128,53 @@ export default function App() {
   const [triggeringDocIds, setTriggeringDocIds] = useState({});
   const [rerunningAgent2, setRerunningAgent2] = useState(false);
 
+  // Terminal states where polling should stop
+  const AGENT2_TERMINAL_STATES = new Set([
+    'VERIFIED', 'POSTGRES_VERIFIED', 'POSTGRES_SYNC_PENDING',
+    'VERIFICATION_FAILED', 'INSUFFICIENT_EVIDENCE', 'CRAWL_FAILED',
+    'LINKEDIN_EVIDENCE_INSUFFICIENT', 'PHASE1_BLOCKED'
+  ]);
+
   const handleRerunAgent2 = async (sessionId) => {
     if (!sessionId) return;
     setRerunningAgent2(true);
     try {
       const res = await fetch(`${API_BASE}/agent2/rerun/${sessionId}`, { method: 'POST' });
-      if (res.ok) {
-        const refreshed = await fetch(`${API_BASE}/agent2/cards/${sessionId}`).then(r => r.ok ? r.json() : null);
-        if (refreshed) setAgent2Detail(refreshed);
-        await fetchAgent2Sessions();
-      } else {
+      if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         alert(`Re-run failed: ${err.detail || 'Internal server error'}`);
+        return;
       }
+
+      // Poll until we reach a terminal state or timeout (90s max)
+      const MAX_POLL_MS = 90000;
+      const POLL_INTERVAL_MS = 2500;
+      const startTime = Date.now();
+
+      const pollUntilDone = async () => {
+        while (Date.now() - startTime < MAX_POLL_MS) {
+          await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+          try {
+            const detail = await fetch(`${API_BASE}/agent2/cards/${sessionId}`).then(r => r.ok ? r.json() : null);
+            if (detail) {
+              setAgent2Detail(detail);
+              if (AGENT2_TERMINAL_STATES.has(detail.status)) {
+                break; // Pipeline finished — stop polling
+              }
+            }
+          } catch (pollErr) {
+            console.warn('[RerunPoll] Error fetching detail:', pollErr);
+          }
+        }
+        await fetchAgent2Sessions();
+        setRerunningAgent2(false);
+      };
+
+      // Fire poll loop without blocking the UI thread
+      pollUntilDone();
     } catch (err) {
       console.error("Failed to trigger re-run:", err);
       alert("Failed to trigger re-run.");
-    } finally {
       setRerunningAgent2(false);
     }
   };
@@ -264,26 +294,48 @@ export default function App() {
     setTriggeringDocIds(prev => ({ ...prev, [docId]: true }));
     try {
       const res = await fetch(`${API_BASE}/agent2/process/${docId}`, { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        setLeadView('agent2');
-        await fetchAgent2Sessions();
-        if (data.session_id) {
-          setSelectedAgent2Id(data.session_id);
-          const detailRes = await fetch(`${API_BASE}/agent2/cards/${data.session_id}`);
-          if (detailRes.ok) {
-            const detailData = await detailRes.json();
-            setAgent2Detail(detailData);
-          }
-        }
-      } else {
+      if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         alert(`Could not trigger Agent 2: ${err.detail || 'Internal server error'}`);
+        return;
+      }
+
+      const data = await res.json();
+      setLeadView('agent2');
+      await fetchAgent2Sessions();
+
+      if (data.session_id) {
+        setSelectedAgent2Id(data.session_id);
+
+        // Poll until terminal state (max 90s, every 2.5s)
+        const MAX_POLL_MS = 90000;
+        const POLL_INTERVAL_MS = 2500;
+        const startTime = Date.now();
+
+        const pollUntilDone = async () => {
+          while (Date.now() - startTime < MAX_POLL_MS) {
+            await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+            try {
+              const detail = await fetch(`${API_BASE}/agent2/cards/${data.session_id}`).then(r => r.ok ? r.json() : null);
+              if (detail) {
+                setAgent2Detail(detail);
+                if (AGENT2_TERMINAL_STATES.has(detail.status)) break;
+              }
+            } catch (pollErr) {
+              console.warn('[TriggerPoll] Error fetching detail:', pollErr);
+            }
+          }
+          await fetchAgent2Sessions();
+          setTriggeringDocIds(prev => ({ ...prev, [docId]: false }));
+        };
+
+        pollUntilDone();
+      } else {
+        setTriggeringDocIds(prev => ({ ...prev, [docId]: false }));
       }
     } catch (err) {
       console.error('Error triggering Agent 2:', err);
       alert('Failed to trigger Agent 2.');
-    } finally {
       setTriggeringDocIds(prev => ({ ...prev, [docId]: false }));
     }
   };
@@ -1967,7 +2019,7 @@ export default function App() {
                       const recMap = audit.recommended_fields || {};
                       const keys = Object.keys(recMap).length > 0
                         ? Object.keys(recMap)
-                        : ['location_region', 'verified_contact_email', 'company_size_tier', 'company_linkedin_url', 'key_people', 'founded_year', 'phone'];
+                        : ['location_region', 'verified_contact_email', 'company_size_tier', 'company_linkedin_url', 'key_people'];
 
                       return keys.map((key, idx) => {
                         const fieldData = recMap[key] || {};

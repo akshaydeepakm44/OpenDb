@@ -64,12 +64,10 @@ Fields to extract:
   "description": string or null,
   "headquarters": string or null,
   "country": string or null,
-  "founded_year": int or null,
   "website": string or null,
   "industries": array of strings,
   "employee_count": string or null,
   "contact_email": string or null,
-  "contact_phone": string or null,
   "social_media": object with keys twitter, linkedin, facebook (values string or null)
 }
 

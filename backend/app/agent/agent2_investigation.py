@@ -70,16 +70,6 @@ REQUIRED_FIELD_STRATEGIES = {
         "required_source_types": ["social_links_or_text"],
         "min_searches": 0,
     },
-    "phone": {
-        "min_sources_checked": 1,
-        "required_source_types": ["contact_or_metadata"],
-        "min_searches": 0,
-    },
-    "founded_year": {
-        "min_sources_checked": 1,
-        "required_source_types": ["metadata_or_text"],
-        "min_searches": 0,
-    },
 }
 
 
