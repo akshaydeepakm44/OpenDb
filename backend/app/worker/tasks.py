@@ -109,7 +109,18 @@ def _has_active_celery_worker() -> bool:
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
     except Exception:
-        is_active = False
+        pass
+
+    if not is_active:
+        try:
+            from app.worker.celery_app import celery_app, REDIS_AVAILABLE
+            if REDIS_AVAILABLE:
+                insp = celery_app.control.inspect(timeout=0.4)
+                pings = insp.ping()
+                if pings:
+                    is_active = True
+        except Exception:
+            pass
 
     _worker_check_cache["active"] = is_active
     _worker_check_cache["last_check"] = now

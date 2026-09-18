@@ -203,21 +203,40 @@ class CrawlerService:
                                     else:
                                         raise ValueError(f"Crawl4AI returned success=False for {curr_url}")
                                 except Exception as c_err:
-                                    crawl_dur = time.time() - t_crawl_start
-                                    is_timeout = isinstance(c_err, asyncio.TimeoutError)
-                                    evt_name = "CRAWL_TIMEOUT" if is_timeout else "CRAWL_FAILED"
-                                    tracer.log_event(
-                                        level="ERROR",
-                                        checkpoint=Checkpoint.CP18_CRAWL_EXECUTION,
-                                        event=evt_name,
-                                        message=f"{evt_name} — Browser rendering {'timed out after 35s' if is_timeout else 'failed'} for {curr_url}: {c_err}",
-                                        lead_id=base_host,
-                                        duration=crawl_dur,
-                                        status="FAILED",
-                                        extra={"url": curr_url, "error": str(c_err), "timeout": crawl_timeout if is_timeout else None, "attempt": 1},
-                                        exc_info=True
-                                    )
-                                    raise RuntimeError(f"CRAWL_FAILED: Browser rendering failed for {curr_url} ({c_err})")
+                                    logger.warning(f"[CrawlerService] Browser crawl failed for {curr_url} ({c_err}). Invoking fast HTTP fallback...")
+                                    try:
+                                        import httpx
+                                        fallback_headers = {
+                                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                                            "Accept-Language": "en-US,en;q=0.9",
+                                        }
+                                        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=fallback_headers, verify=False) as http_client:
+                                            http_resp = await http_client.get(curr_url)
+                                            status_code = http_resp.status_code
+                                            if http_resp.text:
+                                                html_raw = http_resp.text
+                                                canonical_url = str(http_resp.url)
+                                                markdown_raw = html_raw
+                                                logger.info(f"[CrawlerService] Fast HTTP fallback succeeded for {curr_url} (HTTP {status_code}, {len(html_raw)} bytes)")
+                                            else:
+                                                raise ValueError(f"HTTP fallback returned empty text with status {status_code}")
+                                    except Exception as http_err:
+                                        crawl_dur = time.time() - t_crawl_start
+                                        is_timeout = isinstance(c_err, asyncio.TimeoutError)
+                                        evt_name = "CRAWL_TIMEOUT" if is_timeout else "CRAWL_FAILED"
+                                        tracer.log_event(
+                                            level="ERROR",
+                                            checkpoint=Checkpoint.CP18_CRAWL_EXECUTION,
+                                            event=evt_name,
+                                            message=f"{evt_name} — Browser and HTTP fallback failed for {curr_url}: {c_err} | {http_err}",
+                                            lead_id=base_host,
+                                            duration=crawl_dur,
+                                            status="FAILED",
+                                            extra={"url": curr_url, "browser_error": str(c_err), "http_error": str(http_err)},
+                                            exc_info=True
+                                        )
+                                        raise RuntimeError(f"CRAWL_FAILED: All crawl methods failed for {curr_url} ({c_err} | {http_err})")
 
                                 soup = BeautifulSoup(html_raw, "html.parser")
                                 title = normalizer.normalize_string(soup.title.string) if soup.title else ""
