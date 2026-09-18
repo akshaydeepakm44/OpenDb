@@ -420,13 +420,11 @@ class QualityFilter:
 
         # Reject informational article prefixes & action titles
         article_prefixes = (
-            "what is", "what are", "what does", "how to", "definition of",
-            "guide to", "introduction to", "tutorial", "key concepts", "types of",
-            "top 10", "best 10", "versus", "is whatsapp", "reservar", "car rental",
-            "rent a car", "vehicle rental", "best", "top", "guide", "list of",
-            "dishes", "recipes", "food guide", "how-to", "review"
+            "what is ", "what are ", "what does ", "how to ", "definition of ",
+            "guide to ", "introduction to ", "tutorial: ", "key concepts of ",
+            "top 10 ", "best 10 ", "top 5 ", "best 5 ", "versus ", "how-to "
         )
-        if name_lower.startswith(article_prefixes) or "guide" in name_lower or "best" in name_lower:
+        if name_lower.startswith(article_prefixes):
             return False, f"Informational article/guide title rejected: '{canonical_name}'"
 
         # Junk entity names

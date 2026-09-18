@@ -238,7 +238,15 @@ export default function App() {
 
       if (results[0].status === 'fulfilled' && results[0].value) setAgentStatus(results[0].value);
       if (results[1].status === 'fulfilled' && results[1].value) setServicesHealth(results[1].value);
-      if (results[2].status === 'fulfilled' && results[2].value) setOperationsData(results[2].value);
+      if (results[2].status === 'fulfilled' && results[2].value) {
+        const ops = results[2].value;
+        setOperationsData(ops);
+        if (ops.tab_counts) {
+          if (ops.tab_counts.crawled !== undefined) setCrawledMeta(prev => ({ ...prev, total: ops.tab_counts.crawled }));
+          if (ops.tab_counts.in_verification !== undefined) setAgent2Meta(prev => ({ ...prev, total: ops.tab_counts.in_verification }));
+          if (ops.tab_counts.verified !== undefined) setVerifiedTotalCount(ops.tab_counts.verified);
+        }
+      }
     } finally {
       isOpsPollingRef.current = false;
     }
@@ -285,7 +293,14 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setCrawledDocs(data.results || []);
-        setCrawledMeta({ total: data.total || 0, pages: data.pages || 1 });
+        // Only update total when filters are active (search/filter changes the total) OR as fallback
+        // The authoritative total for the tab counter comes from fetchOperations → tab_counts
+        setCrawledMeta(prev => ({
+          total: (searchQuery || selectedDomain !== 'All' || selectedCountry !== 'All')
+            ? (data.total || 0)
+            : (prev.total > 0 ? prev.total : (data.total || 0)),
+          pages: data.pages || 1
+        }));
       }
     } catch (err) {
       console.error('Error fetching crawled documents:', err);
@@ -302,7 +317,11 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setAgent2Sessions(data.results || []);
-        setAgent2Meta({ total: data.total || 0, pages: data.pages || 1 });
+        // Only override the authoritative tab total as a fallback (ops endpoint is source of truth)
+        setAgent2Meta(prev => ({
+          total: searchQuery ? (data.total || 0) : (prev.total > 0 ? prev.total : (data.total || 0)),
+          pages: data.pages || 1
+        }));
       }
     } catch (err) {
       console.error('Error fetching Agent 2 sessions:', err);

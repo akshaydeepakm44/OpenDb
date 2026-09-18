@@ -5,6 +5,7 @@ Queue management, explicit card processing, field-level evidence inspection,
 LinkedIn candidate audit, and chronological session timelines.
 """
 
+import re
 import asyncio
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks

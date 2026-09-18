@@ -1,4 +1,5 @@
 import os
+import uuid
 import redis
 import logging
 import asyncio
@@ -7,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import text, or_
+from sqlalchemy import text, or_, and_
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ from app.agent.discovery_agent import discovery_agent
 from app.persistence.models import (
     BatchResult, KeywordPerformance, Company, Domain,
     Document, CanonicalEvidence, VerificationSession, CrawlError,
-    SearchHistory, CrawlActivityLog, KeyPerson
+    SearchHistory, CrawlActivityLog, KeyPerson, utc_now
 )
 from app.storage.file_storage import file_storage
 from app.cache.redis_cache import cache_get, cache_set
@@ -443,7 +444,9 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
                     )
                 )
             ).count()
-            db_pending_jobs = db.query(CrawlJob).filter(CrawlJob.status.in_(["pending", "running"])).count()
+            db_pending_jobs = db.query(Document).filter(
+                Document.lifecycle_state == "CRAWLED_PENDING_AGENT_2"
+            ).count()
             queue_depth = db_queued + db_pending_jobs
         except Exception:
             db.rollback()
@@ -464,11 +467,22 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         people_facts = 0
 
     # 4. Storage Usage & Document Count
-    doc_count = 0
+    # total_doc_count = raw count for storage display
+    # crawled_count = count of docs whose URLs pass quality filter (matches what /documents returns)
+    total_doc_count = 0
+    crawled_count = 0
     try:
-        doc_count = db.query(Document).count()
+        total_doc_count = db.query(Document).count()
+        # Count only docs whose URL passes the quality filter (mirrors /documents endpoint logic)
+        all_docs = db.query(Document.id, Document.url).all()
+        for doc_id, doc_url in all_docs:
+            keep, _ = quality_filter.filter_url(doc_url or "", log_tracer=False)
+            if keep:
+                crawled_count += 1
     except Exception:
         db.rollback()
+        crawled_count = total_doc_count
+    doc_count = total_doc_count  # keep for storage display
 
     pg_size_str = "0 MB"
     try:
@@ -691,17 +705,29 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         db.rollback()
 
     persisted_companies_count = db.query(Company).count()
+    in_verification_count = 0
+    try:
+        # Count VerificationSessions that have an associated document (same as /agent2/cards)
+        in_verification_count = db.query(VerificationSession).count()
+    except Exception:
+        db.rollback()
 
     return {
+        "tab_counts": {
+            "crawled": crawled_count,
+            "in_verification": in_verification_count,
+            "verified": verified_leads_count,
+        },
         "stat_cards": {
             "persisted_companies": persisted_companies_count,
             "verified_leads": verified_leads_count,
             "active_crawl_queue": queue_depth,
-            "crawled_documents": doc_count,
+            "crawled_documents": crawled_count,
+            "in_verification": in_verification_count,
             "decision_makers_identified": people_facts,
             "storage_usage": {
                 "postgres": pg_size_str,
-                "minio_objects": doc_count,
+                "minio_objects": total_doc_count,
                 "formatted": f"{storage_mode_label} / Postgres: {pg_size_str}"
             }
         },
@@ -803,6 +829,16 @@ def get_crawled_documents(
     if not all_matching_docs:
         return {"total": 0, "page": page, "pages": 1, "results": []}
 
+    # Fetch any active or completed verification sessions for these documents
+    doc_ids = [d.id for d in all_matching_docs]
+    sess_map = {}
+    if doc_ids:
+        try:
+            for s in db.query(VerificationSession).filter(VerificationSession.document_id.in_(doc_ids)).all():
+                sess_map[s.document_id] = s
+        except Exception:
+            db.rollback()
+
     filtered_doc_results = []
     for d in all_matching_docs:
         name, clean_dom = _parse_url(d.url or "")
@@ -813,14 +849,12 @@ def get_crawled_documents(
             continue
 
         c_name = _clean_name(d.title or name, clean_dom)
-        keep_ent, _ = quality_filter.filter_entity(c_name, d.url or "", 0.8)
-        if not keep_ent:
-            continue
+        sess = sess_map.get(d.id)
+        live_status = (sess.status if sess else None) or getattr(d, 'lifecycle_state', None) or "CRAWLED_PENDING_AGENT_2"
 
         created_time = d.created_at or getattr(d, 'retrieved_at', None)
         raw_meta = getattr(d, 'raw_metadata', None) or {}
         raw_artifacts = getattr(d, 'raw_artifacts', None) or []
-        lifecycle = getattr(d, 'lifecycle_state', None) or "CRAWLED_PENDING_AGENT_2"
 
         # CanonicalEvidence-based raw fields only
         page_title = raw_meta.get("raw_page_title") or d.title or name
@@ -854,8 +888,9 @@ def get_crawled_documents(
             "linkedin_url": comp_linkedin,
             "company_linkedin_url": comp_linkedin,
             "http_status": d.http_status or 200,
-            "lifecycle_state": lifecycle,
-            "status": "CRAWLED_PENDING_AGENT_2",
+            "lifecycle_state": live_status,
+            "status": live_status,
+            "agent2_session_id": sess.id if sess else None,
             "crawl_status": "COMPLETED",
             "pages_crawled": pages_count,
             "word_count": d.word_count or 0,
