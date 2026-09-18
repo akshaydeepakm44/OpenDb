@@ -77,13 +77,15 @@ engines:
     engine: brave
     categories: general
     shortcut: br
-    disabled: true
+    weight: 2
+    enabled: true
 
   - name: duckduckgo
     engine: duckduckgo
     categories: general
     shortcut: ddg
-    disabled: true
+    weight: 3
+    enabled: true
 
   - name: google
     engine: google

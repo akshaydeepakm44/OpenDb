@@ -860,19 +860,19 @@ export default function App() {
 
           {/* PANEL 2: AGENT 2 — LEVEL-2 AGENTIC ENRICHMENT FLEET (LIVE LOGS) */}
           <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem', paddingBottom: '0.4rem', borderBottom: isDarkMode ? '1px solid #1e293b' : '1px solid #334155' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
-                <span style={{ height: '9px', width: '9px', borderRadius: '50%', backgroundColor: '#a855f7', boxShadow: '0 0 10px rgba(168, 85, 247, 0.9)' }} />
-                <span style={{ fontSize: '0.9rem' }}>🧠</span>
-                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#c084fc', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.6rem', paddingBottom: '0.4rem', borderBottom: isDarkMode ? '1px solid #1e293b' : '1px solid #334155' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0 }}>
+                <span style={{ height: '8px', width: '8px', borderRadius: '50%', backgroundColor: '#a855f7', boxShadow: '0 0 8px rgba(168, 85, 247, 0.9)', flexShrink: 0 }} />
+                <span style={{ fontSize: '0.85rem', flexShrink: 0 }}>🧠</span>
+                <span style={{ fontSize: '0.78rem', fontWeight: 800, color: '#c084fc', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   LEVEL-2 AGENTIC ENRICHMENT FLEET (LIVE LOGS)
                 </span>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '0.68rem', color: '#f472b6', fontFamily: 'monospace', fontWeight: 800, background: 'rgba(168, 85, 247, 0.15)', padding: '0.2rem 0.55rem', borderRadius: '0.25rem', border: '1px solid rgba(168, 85, 247, 0.35)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.65rem', color: '#f472b6', fontFamily: 'monospace', fontWeight: 800, background: 'rgba(168, 85, 247, 0.15)', padding: '0.15rem 0.45rem', borderRadius: '0.25rem', border: '1px solid rgba(168, 85, 247, 0.35)', whiteSpace: 'nowrap' }}>
                   ⚡ 16x AGENTS ACTIVE
                 </span>
-                <span style={{ fontSize: '0.68rem', color: '#38bdf8', fontFamily: 'monospace', display: 'inline-block' }}>
+                <span style={{ fontSize: '0.65rem', color: '#38bdf8', fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
                   Phones: ~1 | 13497.6 leads/s
                 </span>
               </div>
