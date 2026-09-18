@@ -171,7 +171,7 @@ class QualityFilter:
     3. Entity level (after extraction, before DB write)
     """
 
-    def filter_url(self, url: str, db: Session = None) -> Tuple[bool, str]:
+    def filter_url(self, url: str, db: Session = None, log_tracer: bool = True) -> Tuple[bool, str]:
         """
         Stage 1: URL-level filter.
         Enforces safety guardrails: blocklist check + code-level heuristic check.
@@ -266,39 +266,42 @@ class QualityFilter:
         ]
         for pattern in BLACKLISTED_PATH_PATTERNS + app_paths:
             if re.search(pattern, url.lower()):
+                if log_tracer:
+                    from app.audit.tracer import tracer, Checkpoint
+                    tracer.log_event(
+                        level="DEBUG",
+                        checkpoint=Checkpoint.CP07_DOMAIN_FILTER,
+                        event="DOMAIN_FILTER_REJECTED",
+                        message=f"Rejected URL {url}: Matched blacklisted pattern '{pattern}'",
+                        lead_id=domain,
+                        extra={"url": url, "decision": "REJECT", "reason": "BLACKLISTED_PATH"}
+                    )
+                return False, f"Blacklisted URL pattern: {pattern}"
+
+        # Require at least a recognizable TLD
+        if "." not in domain:
+            if log_tracer:
                 from app.audit.tracer import tracer, Checkpoint
                 tracer.log_event(
                     level="DEBUG",
                     checkpoint=Checkpoint.CP07_DOMAIN_FILTER,
                     event="DOMAIN_FILTER_REJECTED",
-                    message=f"Rejected URL {url}: Matched blacklisted pattern '{pattern}'",
+                    message=f"Rejected domain {domain}: Missing TLD",
                     lead_id=domain,
-                    extra={"url": url, "decision": "REJECT", "reason": "BLACKLISTED_PATH"}
+                    extra={"domain": domain, "decision": "REJECT", "reason": "NO_TLD"}
                 )
-                return False, f"Blacklisted URL pattern: {pattern}"
+            return False, "No TLD in domain"
 
-        # Require at least a recognizable TLD
-        if "." not in domain:
+        if log_tracer:
             from app.audit.tracer import tracer, Checkpoint
             tracer.log_event(
                 level="DEBUG",
                 checkpoint=Checkpoint.CP07_DOMAIN_FILTER,
-                event="DOMAIN_FILTER_REJECTED",
-                message=f"Rejected domain {domain}: Missing TLD",
+                event="DOMAIN_FILTER_ACCEPTED",
+                message=f"Accepted domain: {domain} ({url})",
                 lead_id=domain,
-                extra={"domain": domain, "decision": "REJECT", "reason": "NO_TLD"}
+                extra={"domain": domain, "decision": "ACCEPT", "reason": "VALID_B2B_CANDIDATE"}
             )
-            return False, "No TLD in domain"
-
-        from app.audit.tracer import tracer, Checkpoint
-        tracer.log_event(
-            level="DEBUG",
-            checkpoint=Checkpoint.CP07_DOMAIN_FILTER,
-            event="DOMAIN_FILTER_ACCEPTED",
-            message=f"Accepted domain: {domain} ({url})",
-            lead_id=domain,
-            extra={"domain": domain, "decision": "ACCEPT", "reason": "VALID_B2B_CANDIDATE"}
-        )
         return True, "OK"
 
     def filter_content(self, url: str, html_content: str, text_content: str,

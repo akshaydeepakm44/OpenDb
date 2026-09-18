@@ -1026,6 +1026,16 @@ class Agent2Orchestrator:
                 "final_state": session.status,
                 "verified_at": session.verified_at.isoformat() if session.verified_at else None,
             }
+        except Exception as err:
+            from sqlalchemy.orm import exc as orm_exc
+            if isinstance(err, orm_exc.StaleDataError) or "staledataerror" in str(err).lower():
+                logger.info(f"[Agent 2] Verification session for doc {document_id} was reset/purged during run. Terminating gracefully.")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                return {"status": "purged", "message": "Session reset during run"}
+            raise
         finally:
             db.close()
 

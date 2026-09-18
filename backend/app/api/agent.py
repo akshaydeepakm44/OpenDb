@@ -808,7 +808,7 @@ def get_crawled_documents(
         name, clean_dom = _parse_url(d.url or "")
 
         # Quality Filter Stage: Block non-B2B domains (news, docs, edu, gov)
-        keep_url, _ = quality_filter.filter_url(d.url or "")
+        keep_url, _ = quality_filter.filter_url(d.url or "", log_tracer=False)
         if not keep_url:
             continue
 
@@ -832,10 +832,18 @@ def get_crawled_documents(
 
         logo_url = f"https://www.google.com/s2/favicons?domain={clean_dom}&sz=128"
 
-        # Filter by domain query if requested
-        if domain and domain != "All":
-            if domain.lower() not in clean_dom.lower():
-                continue
+        # Extract or resolve Company LinkedIn URL
+        comp_linkedin = raw_meta.get("company_linkedin_url") or raw_meta.get("linkedin_url")
+        if not comp_linkedin:
+            for s in raw_meta.get("detected_social_links") or []:
+                u = s.get("url") if isinstance(s, dict) else str(s)
+                if "linkedin.com/company" in u.lower():
+                    comp_linkedin = u.strip()
+                    break
+        if not comp_linkedin and clean_dom:
+            slug = re.sub(r'[^a-zA-Z0-9]', '', clean_dom.split(".")[0]).lower()
+            if len(slug) >= 2 and slug not in ["www", "app", "get", "use"]:
+                comp_linkedin = f"https://www.linkedin.com/company/{slug}"
 
         filtered_doc_results.append({
             "id": d.id,
@@ -843,6 +851,8 @@ def get_crawled_documents(
             "domain": clean_dom,
             "canonical_name": c_name,
             "logo_url": logo_url,
+            "linkedin_url": comp_linkedin,
+            "company_linkedin_url": comp_linkedin,
             "http_status": d.http_status or 200,
             "lifecycle_state": lifecycle,
             "status": "CRAWLED_PENDING_AGENT_2",
@@ -1085,7 +1095,7 @@ def get_entities_list(
         clean_domain = parsed_netloc.replace("www.", "")
         
         # Filter check: block non-B2B domains & article titles
-        keep_u, _ = quality_filter.filter_url(r.url or "")
+        keep_u, _ = quality_filter.filter_url(r.url or "", log_tracer=False)
         if not keep_u:
             continue
         clean_c_name = _clean_name(r.canonical_name, r.url or "")
@@ -1147,7 +1157,11 @@ def get_entities_list(
             verified_emails=emails,
         )
         warmth = round(min(10.0, ev_score / 10.0), 1)
-        comp_linkedin = dom_data.get("company_linkedin_url") or (r.metadata_json or {}).get("company_linkedin_url")
+        comp_linkedin = getattr(r, "linkedin_url", None) or dom_data.get("company_linkedin_url") or (r.metadata_json or {}).get("company_linkedin_url")
+        if not comp_linkedin and clean_domain:
+            slug = re.sub(r'[^a-zA-Z0-9]', '', clean_domain.split(".")[0]).lower()
+            if len(slug) >= 2 and slug not in ["www", "app", "get", "use"]:
+                comp_linkedin = f"https://www.linkedin.com/company/{slug}"
 
         results.append({
             "id": r.id,

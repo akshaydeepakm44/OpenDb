@@ -1411,7 +1411,13 @@ def agent2_process_card_task(self, document_id: str, trace_ctx: Optional[Dict[st
         agent_id="AGENT-02",
         status="STARTED"
     )
-    return run_async(agent2_orchestrator.execute_full_verification(document_id))
+    try:
+        return run_async(agent2_orchestrator.execute_full_verification(document_id))
+    except Exception as e:
+        if "staledataerror" in str(e).lower():
+            logger.info(f"[Celery Agent 2] Document {document_id} was reset/deleted. Ending task gracefully.")
+            return {"status": "purged", "document_id": document_id}
+        raise
 
 
 @celery_app.task(name="tasks.agent2_verify_phase1", bind=True)

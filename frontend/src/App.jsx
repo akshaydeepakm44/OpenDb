@@ -1151,10 +1151,30 @@ export default function App() {
                         <div style={{ fontWeight: 800, fontSize: '0.98rem', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {doc.canonical_name || doc.domain}
                         </div>
-                        <a href={doc.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                          style={{ fontSize: '0.75rem', color: '#2563eb', fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                          🌐 {doc.domain} ↗
-                        </a>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.15rem' }}>
+                          <a href={doc.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                            style={{ fontSize: '0.75rem', color: '#2563eb', fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                            🌐 {doc.domain} ↗
+                          </a>
+                          {(doc.linkedin_url || doc.company_linkedin_url) && (
+                            <a href={doc.linkedin_url || doc.company_linkedin_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                              style={{
+                                fontSize: '0.66rem',
+                                color: '#2563eb',
+                                background: 'rgba(37, 99, 235, 0.1)',
+                                border: '1px solid rgba(37, 99, 235, 0.3)',
+                                padding: '0.1rem 0.45rem',
+                                borderRadius: '0.25rem',
+                                textDecoration: 'none',
+                                fontWeight: 700,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.2rem'
+                              }}>
+                              👔 LinkedIn ↗
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1347,10 +1367,30 @@ export default function App() {
                         <div style={{ fontWeight: 800, fontSize: '0.98rem', color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {session.company_name}
                         </div>
-                        <a href={`https://${session.domain}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                          style={{ fontSize: '0.75rem', color: '#2563eb', fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                          🌐 {session.domain} ↗
-                        </a>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap', marginTop: '0.15rem' }}>
+                          <a href={`https://${session.domain}`} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                            style={{ fontSize: '0.75rem', color: '#2563eb', fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                            🌐 {session.domain} ↗
+                          </a>
+                          {(session.linkedin_url || session.company_linkedin_url) && (
+                            <a href={session.linkedin_url || session.company_linkedin_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                              style={{
+                                fontSize: '0.66rem',
+                                color: '#2563eb',
+                                background: 'rgba(37, 99, 235, 0.1)',
+                                border: '1px solid rgba(37, 99, 235, 0.3)',
+                                padding: '0.1rem 0.45rem',
+                                borderRadius: '0.25rem',
+                                textDecoration: 'none',
+                                fontWeight: 700,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.2rem'
+                              }}>
+                              👔 LinkedIn ↗
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1479,8 +1519,8 @@ export default function App() {
                             style={{ fontSize: '0.72rem', color: '#38bdf8', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
                             🌐 {domain} ↗
                           </a>
-                          {ent.linkedin_url && (
-                            <a href={ent.linkedin_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                          {(ent.linkedin_url || ent.company_linkedin_url) && (
+                            <a href={ent.linkedin_url || ent.company_linkedin_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
                               style={{
                                 fontSize: '0.66rem',
                                 color: '#60a5fa',

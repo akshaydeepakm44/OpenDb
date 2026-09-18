@@ -97,6 +97,12 @@ def list_agent2_cards(
 
     results = []
     for s in sessions:
+        li_val = (s.phase1_data or {}).get("company_linkedin_url", {}).get("value")
+        if not li_val and s.domain:
+            dom_slug = re.sub(r'[^a-zA-Z0-9]', '', s.domain.replace("www.", "").split(".")[0]).lower()
+            if len(dom_slug) >= 2 and dom_slug not in ["app", "get", "use", "the"]:
+                li_val = f"https://www.linkedin.com/company/{dom_slug}"
+
         results.append({
             "session_id": s.id,
             "document_id": s.document_id,
@@ -113,6 +119,8 @@ def list_agent2_cards(
             "verified_industry": (s.phase1_data or {}).get("industry_sector", {}).get("value"),
             "verified_location": (s.phase1_data or {}).get("location_region", {}).get("value"),
             "verified_contact": (s.phase1_data or {}).get("verified_contact_email", {}).get("value"),
+            "linkedin_url": li_val,
+            "company_linkedin_url": li_val,
         })
 
     return {
@@ -190,6 +198,11 @@ def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Di
     # Authoritative Verification Contract Evaluation
     from app.verification.verification_contract import verification_contract
     verification_audit = verification_contract.evaluate_session(session, db)
+    li_val = (session.phase1_data or {}).get("company_linkedin_url", {}).get("value")
+    if not li_val and session.domain:
+        dom_slug = re.sub(r'[^a-zA-Z0-9]', '', session.domain.replace("www.", "").split(".")[0]).lower()
+        if len(dom_slug) >= 2 and dom_slug not in ["app", "get", "use", "the"]:
+            li_val = f"https://www.linkedin.com/company/{dom_slug}"
 
     return {
         "session_id": session.id,
@@ -201,6 +214,8 @@ def get_agent2_card_detail(session_id: str, db: Session = Depends(get_db)) -> Di
         "priority_reasons": session.priority_reasons or [],
         "phase1_data": session.phase1_data or {},
         "phase2_data": session.phase2_data or {},
+        "linkedin_url": li_val,
+        "company_linkedin_url": li_val,
         "recrawl_count": session.recrawl_count,
         "search_rounds": session.search_rounds,
         "verified_at": session.verified_at.isoformat() if session.verified_at else None,
