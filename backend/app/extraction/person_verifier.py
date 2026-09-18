@@ -226,6 +226,8 @@ class PersonCompanyVerifier:
 
         # Check if candidate is explicitly working at a different organization
         # e.g. "at Lumo", "at Siemens Mobility France", "at Connected Brighton"
+        primary_employer_conflict = False
+        conflicting_org = None
         other_org_match = re.search(
             r"(?:at|@|founder\s+of|ceo\s+(?:at|of)|coo\s+(?:at|of)|cto\s+(?:at|of))\s+([A-Z][A-Za-z0-9\s&]{2,30})",
             final_evidence
@@ -259,6 +261,13 @@ class PersonCompanyVerifier:
                         "confidence_score": 0.15,
                         "reason": f"Person affiliated with another company ('{other_org_match.group(1).strip()}'), no evidence for '{clean_cname}'"
                     }
+                else:
+                    # Target company/domain appears in evidence BUT person's primary employer
+                    # is a different organization — target is likely just a product/subsidiary/brand
+                    # mentioned secondarily (e.g. CEO at SpektraSystems mentioning SaaSify product).
+                    # Flag this conflict to reduce the scoring weight later.
+                    primary_employer_conflict = True
+                    conflicting_org = other_org_match.group(1).strip()
 
         # ── POSITIVE MATCHING SIGNALS ──────────────────────────────────────────
         score = 0.0
@@ -285,15 +294,21 @@ class PersonCompanyVerifier:
         company_mentioned = False
         if clean_domain and clean_domain in combined_evidence:
             company_mentioned = True
-            score += 0.40
-            signals.append(f"exact_domain_in_evidence({clean_domain})")
+            # If person's primary employer is a different org, domain mention is only a weak
+            # secondary signal (product/brand reference), not primary employment evidence
+            domain_score = 0.10 if primary_employer_conflict else 0.40
+            score += domain_score
+            signal_label = f"exact_domain_in_evidence({clean_domain})"
+            if primary_employer_conflict:
+                signal_label += f"[secondary:primary_employer={conflicting_org}]"
+            signals.append(signal_label)
         elif cname_words and any(re.search(rf"\b{re.escape(w)}\b", combined_evidence) for w in cname_words):
             company_mentioned = True
-            score += 0.35
+            score += 0.10 if primary_employer_conflict else 0.35
             signals.append("company_name_in_evidence")
         elif base_brand and re.search(rf"\b{re.escape(base_brand)}\b", combined_evidence):
             company_mentioned = True
-            score += 0.35
+            score += 0.10 if primary_employer_conflict else 0.35
             signals.append(f"brand_in_evidence({base_brand})")
 
         # Signal 3: Official Website DOM verification
@@ -310,6 +325,13 @@ class PersonCompanyVerifier:
         # Normalize score
         score = round(min(1.0, score), 2)
 
+        # If primary employer conflict detected, cap score to REVIEW max (0.74)
+        # A person primarily employed elsewhere cannot be VERIFIED for the target company
+        # unless their official website DOM explicitly names them
+        if primary_employer_conflict and "person_named_on_official_website" not in signals:
+            score = min(0.65, score)
+            signals.append(f"CAPPED:primary_employer_conflict({conflicting_org})")
+
         # Require company reference for any score >= 0.50
         if not company_mentioned and "person_named_on_official_website" not in signals:
             score = min(0.40, score)
@@ -323,7 +345,7 @@ class PersonCompanyVerifier:
             reason = f"High confidence evidence: {', '.join(signals)}"
         elif score >= 0.50:
             status = "REVIEW"
-            reason = f"Partial evidence: {', '.join(signals)}"
+            reason = f"Partial evidence — possible product/subsidiary affiliation: {', '.join(signals)}"
         else:
             status = "REJECTED"
             reason = f"Insufficient evidence: {', '.join(signals) if signals else 'No matching signals'}"
