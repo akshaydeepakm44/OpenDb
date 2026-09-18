@@ -150,80 +150,117 @@ class SearXNGService:
             extra={"query": query, "retries_exhausted": True, "error": str(last_err)}
         )
 
-        # Multi-Tier Resilient Fallback: DuckDuckGo -> Wikipedia OpenSearch -> B2B Industry Seed Catalog
+        # Multi-Tier Live Web Search Fallback: DuckDuckGo -> DuckDuckGo Lite -> Mojeek -> Wikipedia Live API
         fb_results, is_fb, fb_log = await self._multi_tier_fallback(query, clean_category, max_results)
         if fb_results:
-            cache_set("search", query, clean_category, max_results, value=(fb_results, True, fb_log), ttl=SEARCH_CACHE_TTL)
             return fb_results, True, fb_log
 
         return [], False, f"SearXNG failed after retries: {last_err} (DEGRADED)"
 
     async def _multi_tier_fallback(self, query: str, category: str, max_results: int = 20) -> Tuple[List[Dict[str, Any]], bool, str]:
-        """Try DuckDuckGo, then Wikipedia OpenSearch, then curated B2B Seed Catalog."""
-        # Tier 1: DuckDuckGo Fallback
+        """Query genuine live web search engines directly without any hardcoded test seeds."""
+        # Tier 1: DuckDuckGo HTML & Lite Live Search
         ddg_res, is_ddg, ddg_log = await self._duckduckgo_fallback(query, max_results)
         if ddg_res:
             return ddg_res, is_ddg, ddg_log
 
-        # Tier 2: Wikipedia OpenSearch API (unrestricted, high coverage for tech & businesses)
+        # Tier 2: Mojeek Live Clearnet Search
+        mojeek_res, is_mj, mj_log = await self._mojeek_fallback(query, max_results)
+        if mojeek_res:
+            return mojeek_res, is_mj, mj_log
+
+        # Tier 3: Wikipedia OpenSearch API (unrestricted live corporate/tech entity discovery)
         wiki_res, is_wiki, wiki_log = await self._wikipedia_fallback(query, max_results)
         if wiki_res:
             return wiki_res, is_wiki, wiki_log
 
-        # Tier 3: Curated B2B Industry Seed Catalog
-        seed_res, is_seed, seed_log = self._seed_directory_fallback(query, category, max_results)
-        if seed_res:
-            return seed_res, is_seed, seed_log
-
-        return [], True, "All fallback tiers exhausted"
+        return [], True, "All live search engines exhausted"
 
     async def _duckduckgo_fallback(self, query: str, max_results: int = 20) -> Tuple[List[Dict[str, Any]], bool, str]:
-        """Direct web search fallback when self-hosted SearXNG is unavailable."""
+        """Live DuckDuckGo web search fallback (HTML & Lite)."""
+        from bs4 import BeautifulSoup
+        from urllib.parse import unquote
+
+        # Try HTML first, then Lite
+        for endpoint in ["https://html.duckduckgo.com/html/", "https://lite.duckduckgo.com/lite/"]:
+            try:
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                }
+                async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+                    resp = await client.get(endpoint, params={"q": query}, headers=headers)
+                    if resp.status_code != 200:
+                        resp = await client.post(endpoint, data={"q": query}, headers=headers)
+                    if resp.status_code == 200:
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        cleaned = []
+                        for result in soup.select(".result, .result-link, tr"):
+                            link_el = result.select_one(".result__title a, .result-link a, a.result-link")
+                            snippet_el = result.select_one(".result__snippet, .result-snippet")
+                            if link_el:
+                                raw_href = link_el.get("href", "")
+                                if "uddg=" in raw_href:
+                                    actual_url = unquote(raw_href.split("uddg=")[1].split("&")[0])
+                                else:
+                                    actual_url = raw_href
+                                title = link_el.get_text(strip=True)
+                                snippet = snippet_el.get_text(strip=True) if snippet_el else ""
+                                if actual_url.startswith("http") and "duckduckgo.com" not in actual_url:
+                                    cleaned.append({
+                                        "title": title or "Corporate Website",
+                                        "url": actual_url,
+                                        "snippet": snippet,
+                                        "engine": "live_duckduckgo",
+                                        "score": 1.0,
+                                    })
+                                    if len(cleaned) >= max_results:
+                                        break
+                        if cleaned:
+                            logger.info(f"🌐 [LiveSearch] DuckDuckGo recovered {len(cleaned)} live URLs for '{query}'")
+                            return cleaned, True, f"DuckDuckGo Live ({len(cleaned)} URLs found)"
+            except Exception as e:
+                logger.debug(f"DuckDuckGo {endpoint} probe note: {e}")
+        return [], True, "DuckDuckGo returned 0 results"
+
+    async def _mojeek_fallback(self, query: str, max_results: int = 15) -> Tuple[List[Dict[str, Any]], bool, str]:
+        """Live Mojeek search engine fallback."""
         try:
             from bs4 import BeautifulSoup
-            from urllib.parse import unquote
-            url = "https://html.duckduckgo.com/html/"
+            url = "https://www.mojeek.com/search"
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
             }
-            async with httpx.AsyncClient(timeout=7.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
                 resp = await client.get(url, params={"q": query}, headers=headers)
-                if resp.status_code != 200:
-                    resp = await client.post(url, data={"q": query}, headers=headers)
                 if resp.status_code == 200:
                     soup = BeautifulSoup(resp.text, "html.parser")
                     cleaned = []
-                    for result in soup.select(".result"):
-                        link_el = result.select_one(".result__title a")
-                        snippet_el = result.select_one(".result__snippet")
-                        if link_el:
-                            raw_href = link_el.get("href", "")
-                            if "uddg=" in raw_href:
-                                actual_url = unquote(raw_href.split("uddg=")[1].split("&")[0])
-                            else:
-                                actual_url = raw_href
-                            title = link_el.get_text(strip=True)
-                            snippet = snippet_el.get_text(strip=True) if snippet_el else ""
-                            if actual_url.startswith("http") and "duckduckgo.com" not in actual_url:
+                    for item in soup.select("ul.results-standard > li, div.results-standard > div"):
+                        link = item.select_one("a.title, a.ob")
+                        snippet_el = item.select_one("p.s")
+                        if link:
+                            actual_url = link.get("href", "")
+                            if actual_url.startswith("http") and "mojeek.com" not in actual_url:
                                 cleaned.append({
-                                    "title": title or "B2B Organization",
+                                    "title": link.get_text(strip=True) or "Web Organization",
                                     "url": actual_url,
-                                    "snippet": snippet,
-                                    "engine": "duckduckgo_fallback",
-                                    "score": 1.0,
+                                    "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
+                                    "engine": "live_mojeek",
+                                    "score": 0.95,
                                 })
                                 if len(cleaned) >= max_results:
                                     break
                     if cleaned:
-                        logger.info(f"🌐 [DuckDuckGo Fallback] Recovered {len(cleaned)} results for '{query}'")
-                        return cleaned, True, f"DuckDuckGo Fallback ({len(cleaned)} URLs)"
-        except Exception as ddg_err:
-            logger.warning(f"DuckDuckGo search fallback failed for '{query}': {ddg_err}")
-        return [], True, "DuckDuckGo fallback returned 0 results"
+                        logger.info(f"🌐 [LiveSearch] Mojeek recovered {len(cleaned)} live URLs for '{query}'")
+                        return cleaned, True, f"Mojeek Live ({len(cleaned)} URLs found)"
+        except Exception as mj_err:
+            logger.debug(f"Mojeek fallback note: {mj_err}")
+        return [], True, "Mojeek returned 0 results"
 
     async def _wikipedia_fallback(self, query: str, max_results: int = 15) -> Tuple[List[Dict[str, Any]], bool, str]:
-        """Query Wikipedia OpenSearch API for relevant corporate/technology entities."""
+        """Live Wikipedia OpenSearch API for relevant corporate/technology entities."""
         try:
             url = "https://en.wikipedia.org/w/api.php"
             params = {
@@ -246,78 +283,16 @@ class SearXNGService:
                                 cleaned.append({
                                     "title": t or "Corporate Profile",
                                     "url": u,
-                                    "snippet": s or f"Wikipedia encyclopedic profile for {t}",
-                                    "engine": "wikipedia_opensearch",
+                                    "snippet": s or f"Wikipedia reference for {t}",
+                                    "engine": "live_wikipedia",
                                     "score": 0.95,
                                 })
                         if cleaned:
-                            logger.info(f"📚 [Wikipedia Fallback] Found {len(cleaned)} targets for '{query}'")
-                            return cleaned, True, f"Wikipedia API Fallback ({len(cleaned)} targets)"
+                            logger.info(f"📚 [LiveSearch] Wikipedia found {len(cleaned)} live targets for '{query}'")
+                            return cleaned, True, f"Wikipedia Live ({len(cleaned)} targets)"
         except Exception as wiki_err:
             logger.warning(f"[Wikipedia Fallback] Failed for '{query}': {wiki_err}")
         return [], True, "Wikipedia fallback returned 0 results"
-
-    def _seed_directory_fallback(self, query: str, category: str, max_results: int = 10) -> Tuple[List[Dict[str, Any]], bool, str]:
-        """Deterministic industry target catalog fallback to prevent crawler starvation under bans."""
-        import random
-        DOMAINS_CATALOG = {
-            "it": [
-                {"name": "Stripe", "domain": "stripe.com", "desc": "Financial infrastructure for the internet"},
-                {"name": "Datadog", "domain": "datadoghq.com", "desc": "Cloud-scale monitoring and security platform"},
-                {"name": "Snowflake", "domain": "snowflake.com", "desc": "Data Cloud enabling enterprise AI and analytics"},
-                {"name": "Atlassian", "domain": "atlassian.com", "desc": "Enterprise collaboration and issue tracking software"},
-                {"name": "HubSpot", "domain": "hubspot.com", "desc": "Inbound CRM, sales and marketing automation software"},
-                {"name": "Twilio", "domain": "twilio.com", "desc": "Customer engagement and communication APIs"},
-                {"name": "Cloudflare", "domain": "cloudflare.com", "desc": "Security, performance, and reliability for the web"},
-                {"name": "HashiCorp", "domain": "hashicorp.com", "desc": "Multi-cloud infrastructure automation tools"},
-                {"name": "Postman", "domain": "postman.com", "desc": "API platform for building and using APIs"},
-                {"name": "MongoDB", "domain": "mongodb.com", "desc": "Developer data platform with document database"},
-                {"name": "Elastic", "domain": "elastic.co", "desc": "Search, observability, and security solutions"},
-                {"name": "Confluent", "domain": "confluent.io", "desc": "Data streaming platform built on Apache Kafka"},
-                {"name": "GitLab", "domain": "gitlab.com", "desc": "DevSecOps platform for software innovation"},
-                {"name": "Snyk", "domain": "snyk.io", "desc": "Developer security platform for code and dependencies"},
-                {"name": "Vercel", "domain": "vercel.com", "desc": "Frontend cloud platform for digital experiences"},
-                {"name": "Supabase", "domain": "supabase.com", "desc": "Open source Firebase alternative with Postgres"},
-                {"name": "Linear", "domain": "linear.app", "desc": "Issue tracking tool designed for high-performance teams"},
-                {"name": "Notion", "domain": "notion.so", "desc": "Connected workspace for docs, wikis, and projects"},
-            ],
-            "business": [
-                {"name": "Workday", "domain": "workday.com", "desc": "Enterprise management cloud for finance and HR"},
-                {"name": "ServiceNow", "domain": "servicenow.com", "desc": "Digital workflows for enterprise operations"},
-                {"name": "Salesforce", "domain": "salesforce.com", "desc": "Customer relationship management CRM solutions"},
-                {"name": "SAP", "domain": "sap.com", "desc": "Enterprise application software and ERP solutions"},
-                {"name": "Oracle", "domain": "oracle.com", "desc": "Cloud applications and database management systems"},
-                {"name": "Adobe", "domain": "adobe.com", "desc": "Creativity, digital experience, and marketing software"},
-                {"name": "Gartner", "domain": "gartner.com", "desc": "Technological research and consulting firm"},
-                {"name": "ZoomInfo", "domain": "zoominfo.com", "desc": "Go-to-market intelligence and business data"},
-            ],
-            "general": [
-                {"name": "Stripe", "domain": "stripe.com", "desc": "Online payment processing for internet businesses"},
-                {"name": "Shopify", "domain": "shopify.com", "desc": "Commerce platform powering millions of businesses"},
-                {"name": "Figma", "domain": "figma.com", "desc": "Collaborative interface design tool for digital teams"},
-                {"name": "Canva", "domain": "canva.com", "desc": "Visual communication platform for graphic design"},
-                {"name": "Airtable", "domain": "airtable.com", "desc": "Low-code platform for building collaborative apps"},
-                {"name": "Asana", "domain": "asana.com", "desc": "Work management platform to organize team goals"},
-                {"name": "Miro", "domain": "miro.com", "desc": "Visual workspace for innovation and distributed teams"},
-                {"name": "Slack", "domain": "slack.com", "desc": "Productivity platform for team communication"},
-            ]
-        }
-        cat_key = "it" if any(k in query.lower() or k in category.lower() for k in ["tech", "software", "saas", "cloud", "it", "code"]) else \
-                  "business" if any(k in query.lower() or k in category.lower() for k in ["business", "finance", "hr", "consult"]) else "general"
-        pool = list(DOMAINS_CATALOG.get(cat_key, DOMAINS_CATALOG["general"]))
-        random.shuffle(pool)
-        selected = pool[:max_results]
-        cleaned = [
-            {
-                "title": f"{item['name']} — Enterprise Organization",
-                "url": f"https://{item['domain']}",
-                "snippet": item["desc"],
-                "engine": "b2b_catalog_seed",
-                "score": 1.0,
-            }
-            for item in selected
-        ]
-        return cleaned, True, f"B2B Industry Seeds ({len(cleaned)} targets)"
 
     async def search(
         self, query: str, category: str = "general", max_results: int = 20

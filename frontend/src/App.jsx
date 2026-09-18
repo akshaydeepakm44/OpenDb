@@ -382,9 +382,16 @@ export default function App() {
       setLoading(true);
       const res = await fetch(`${API_BASE}/agent/reset`, { method: 'POST' });
       if (res.ok) {
+        setCrawledDocs([]);
+        setEntitiesList([]);
+        setAgent2Sessions([]);
+        setCrawledMeta({ total: 0, pages: 1 });
+        setAgent2Meta({ total: 0, pages: 1 });
+        setVerifiedTotalCount(0);
         await fetchOperations();
         await fetchFilteredEntities();
         await fetchAgent2Sessions();
+        await fetchCrawledDocuments();
       }
     } catch (err) {
       console.error("Error resetting data:", err);
