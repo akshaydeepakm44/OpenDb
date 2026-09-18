@@ -577,6 +577,64 @@ class QualityFilter:
 
         combined = f"{title or ''} {snippet or ''}".lower()
 
+        # 1b. Check for Sports, Match Scores, Betting & Live Analytics (e.g. FotMob, Opta)
+        sports_scores_patterns = [
+            r"\blive scores?\b", r"\bmatch stats?\b", r"\bfixtures\b", r"\bmatchday\b",
+            r"\bfootball\b", r"\bnfl\b", r"\bnba\b", r"\bsoccer\b", r"\bcricket\b",
+            r"\bbetting odds\b", r"\bsports predictions?\b", r"\bleague table\b",
+            r"\bpremier league\b", r"\bsports storytelling\b", r"\blive match commentary\b"
+        ]
+        for s_pat in sports_scores_patterns:
+            if re.search(s_pat, combined):
+                return {
+                    "qualified": False,
+                    "reason": f"Sports, scores, betting or live match aggregator (matched '{s_pat}')",
+                    "candidate_type": "SPORTS_MEDIA",
+                    "company_size": "UNKNOWN",
+                    "priority": "REJECTED"
+                }
+
+        # 1c. Check for Government, Public Sector & Civic Agencies (e.g. csn.se, .gov)
+        domain_lower = urlparse(url).netloc.lower()
+        if any(domain_lower.endswith(t) for t in [".gov", ".mil", ".gov.uk", ".gov.in", ".gov.au", ".regeringen.se", ".admin.ch"]):
+            return {
+                "qualified": False,
+                "reason": f"Government or public sector agency: {domain_lower}",
+                "candidate_type": "GOVERNMENT_AGENCY",
+                "company_size": "UNKNOWN",
+                "priority": "REJECTED"
+            }
+
+        gov_patterns = [
+            r"\bmyndighet(?:en)?\b", r"\bstatlig\b", r"\bministry of\b", r"\bdepartment of\b",
+            r"\bpublic authority\b", r"\bgovernment agency\b", r"\bmunicipality\b"
+        ]
+        for g_pat in gov_patterns:
+            if re.search(g_pat, combined):
+                return {
+                    "qualified": False,
+                    "reason": f"Government or public authority (matched '{g_pat}')",
+                    "candidate_type": "GOVERNMENT_AGENCY",
+                    "company_size": "UNKNOWN",
+                    "priority": "REJECTED"
+                }
+
+        # 1d. Check for Editorial, News, Gossip & Blog-only media
+        editorial_patterns = [
+            r"\bbreaking news\b", r"\bdaily news\b", r"\bjournalism\b", r"\bop-ed\b",
+            r"\bopinion column\b", r"\bcelebrity gossip\b", r"\bnews headlines\b",
+            r"\bmagazine subscription\b", r"\bpress releases? wire\b"
+        ]
+        for ed_pat in editorial_patterns:
+            if re.search(ed_pat, combined):
+                return {
+                    "qualified": False,
+                    "reason": f"Editorial/News portal (matched '{ed_pat}')",
+                    "candidate_type": "MEDIA_EDITORIAL",
+                    "company_size": "UNKNOWN",
+                    "priority": "REJECTED"
+                }
+
         # 2. Check for multi-location consumer retail/franchise chain indicators in snippet/title:
         franchise_chain_patterns = [
             r"\bhundreds of locations\b",

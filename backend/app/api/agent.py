@@ -864,7 +864,7 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
     name, domain = _parse_url(doc.url or "")
     linked = None
     if domain:
-        linked = db.query(Company).filter(Company.url.ilike(f"%{domain}%")).first()
+        linked = db.query(Company).filter(Company.primary_domain == domain).first()
 
     raw_content = ""
     clean_text = ""
@@ -872,10 +872,10 @@ def get_document_detail(document_id: str, db: Session = Depends(get_db)):
         try:
             raw_content = file_storage.read_file_content(doc.raw_path) or ""
             if raw_content:
-                soup = BeautifulSoup(raw_content, "html.parser")
-                for element in soup(["script", "style", "head", "title", "meta", "[document]"]):
-                    element.extract()
-                clean_text = soup.get_text(separator=" ", strip=True)
+                head_chunk = raw_content[:15000]
+                no_scripts = re.sub(r'<(script|style)[^>]*>.*?</\1>', ' ', head_chunk, flags=re.DOTALL | re.IGNORECASE)
+                clean_text = re.sub(r'<[^>]+>', ' ', no_scripts)
+                clean_text = re.sub(r'\s+', ' ', clean_text).strip()
         except Exception as e:
             logger.warning(f"Error extracting clean text for doc {doc.id}: {e}")
 

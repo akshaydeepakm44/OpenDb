@@ -42,13 +42,13 @@ class SearXNGService:
             logger.debug(f"📦 Cache hit for '{query}'")
             return cached[0], cached[1], f"(cached) {cached[2]}"
 
-        # Mandatory SafeSearch=2 & B2B Category restriction
+        # SafeSearch=0 to avoid false filtering + default to general category
         url = f"{self.base_url.rstrip('/')}/search"
         params = {
             "q": query,
             "format": "json",
-            "categories": clean_category,
-            "safesearch": 2, # 2 = Strict safe search in SearXNG
+            "categories": clean_category if clean_category in ["general", "it", "business"] else "general",
+            "safesearch": 0,
         }
 
         headers = {
@@ -63,8 +63,8 @@ class SearXNGService:
             level="INFO",
             checkpoint=Checkpoint.CP04_SEARCH_EXECUTION,
             event="SEARCH_START",
-            message=f"SearXNG query dispatch: '{query}' (category={clean_category}, engines={FAST_ENGINES})",
-            extra={"query": query, "category": clean_category, "max_results": max_results}
+            message=f"SearXNG query dispatch: '{query}' (category={params['categories']}, engines={FAST_ENGINES})",
+            extra={"query": query, "category": params["categories"], "max_results": max_results}
         )
 
         t0 = time.time()
@@ -76,7 +76,7 @@ class SearXNGService:
                 async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
                     response = await client.get(url, params=params, headers=headers)
                     if response.status_code != 200:
-                        params_retry = {"q": query, "format": "json", "categories": clean_category, "safesearch": 2}
+                        params_retry = {"q": query, "format": "json", "categories": "general", "safesearch": 0}
                         response = await client.get(url, params=params_retry, headers=headers)
 
                     if response.status_code == 200:
@@ -95,7 +95,6 @@ class SearXNGService:
                                 "score": item.get("score", 1.0),
                             }
                             cleaned.append(item_clean)
-                            # Log every single search result at DEBUG level
                             tracer.log_event(
                                 level="DEBUG",
                                 checkpoint=Checkpoint.CP05_SEARCH_RESULTS,
@@ -105,18 +104,20 @@ class SearXNGService:
                             )
 
                         dur = time.time() - t0
-                        tracer.log_event(
-                            level="INFO",
-                            checkpoint=Checkpoint.CP05_SEARCH_RESULTS,
-                            event="SEARCH_END",
-                            message=f"SearXNG query '{query}' completed: {len(cleaned)} results found",
-                            duration=dur,
-                            status="SUCCESS",
-                            extra={"query": query, "results_count": len(cleaned)}
-                        )
                         if cleaned:
+                            tracer.log_event(
+                                level="INFO",
+                                checkpoint=Checkpoint.CP05_SEARCH_RESULTS,
+                                event="SEARCH_END",
+                                message=f"SearXNG query '{query}' completed: {len(cleaned)} results found",
+                                duration=dur,
+                                status="SUCCESS",
+                                extra={"query": query, "results_count": len(cleaned)}
+                            )
                             cache_set("search", query, clean_category, max_results, value=(cleaned, False, "SearXNG OK"), ttl=SEARCH_CACHE_TTL)
-                        return cleaned, False, f"SearXNG returned {len(cleaned)} results."
+                            return cleaned, False, f"SearXNG returned {len(cleaned)} results."
+                        else:
+                            logger.info(f"SearXNG returned 0 results on attempt {attempt} for '{query}'.")
                     else:
                         tracer.log_event(
                             level="WARNING",

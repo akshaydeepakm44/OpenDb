@@ -483,7 +483,10 @@ class AutonomousDiscoveryAgent:
         
         INSTRUCTIONS:
         1. If the batch progress is >= {BATCH_SIZE}, you MUST call 'evaluate_batch'.
-        2. Otherwise, call 'search_web' with a new query variation to discover more companies. Use dynamic geographic or intent modifiers (e.g., 'SaaS companies Germany', 'top fintech startups Brazil').
+        2. Otherwise, call 'search_web' with a new query variation specifically targeting B2B companies (1-200 employees, startups, SaaS, vendors).
+           - ALWAYS include commercial intent signals in your query, such as: "pricing", "book a demo", "solutions", or "platform" (e.g., 'B2B developer tools software "pricing"', 'fintech SaaS startups "book a demo" Europe').
+           - NEVER generate vague single-word or generic queries like 'developer tools' or 'sports' or 'news'.
+           - NEVER search for blogs, listicles, or news articles. Focus strictly on corporate homepages.
         3. If you notice a gap in the taxonomy based on your knowledge, call 'discover_new_subdomain'.
         
         Decide your next action by calling a tool.

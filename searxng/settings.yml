@@ -40,21 +40,21 @@ search:
 engines:
   - name: bing
     engine: bing
-    categories: general
+    categories: [general, it, business]
     shortcut: b
     weight: 3
     enabled: true
 
   - name: mojeek
     engine: mojeek
-    categories: general
+    categories: [general, it, business]
     shortcut: mj
     weight: 2
     enabled: true
 
   - name: yahoo
     engine: yahoo
-    categories: general
+    categories: [general, it, business]
     shortcut: yh
     weight: 2
     enabled: true

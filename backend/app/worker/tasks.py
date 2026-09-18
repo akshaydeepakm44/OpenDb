@@ -218,9 +218,9 @@ def _safe_dispatch(task_func, **kwargs):
     agent_id = trace_ctx.get("agent_id") or "AGENT-01"
     task_id = str(uuid.uuid4())
 
-    # Attempt Celery dispatch if worker is active or Redis is reachable
+    # Attempt Celery dispatch if Redis is reachable
     from app.worker.celery_app import REDIS_AVAILABLE
-    if has_worker or REDIS_AVAILABLE:
+    if REDIS_AVAILABLE:
         try:
             return _dispatch_task(task_func, **kwargs)
         except Exception as dispatch_err:

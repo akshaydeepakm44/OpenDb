@@ -185,24 +185,29 @@ GEO_MODIFIERS = [
     "South Korea", "Middle East", "Africa", "Latin America",
 ]
 
-# ─── Intent Modifiers ─────────────────────────────────────────────────────────
-# ─── Intent Modifiers (Startup / SMB / Growth 1-200 Focus) ───────────────────
+# ─── Intent Modifiers (B2B Commercial Intent & SMB 1-200 Focus) ─────────────
 INTENT_MODIFIERS = [
-    "startups", "emerging startups", "early stage startups", "growth stage companies",
-    "startups 1-200 employees", "B2B startups", "startups official website",
-    "innovative startups", "funded startups", "fast growing startups",
-    "seed and series a startups", "tech startups", "startup founders",
-    "emerging companies 2024", "emerging companies 2025"
+    'SaaS company "pricing"',
+    'software company "book a demo"',
+    'B2B software "solutions"',
+    'technology company "pricing"',
+    'software platform "request demo"',
+    'B2B startup "get started"',
+    'software startups "about us"',
+    'cloud software "pricing"',
+    'B2B tech startups official website',
+    'software companies 1-200 employees "pricing"',
+    'innovative software startups "platform"',
+    'funded B2B startups "solutions"'
 ]
 
 STARTUP_FOCUS_MODIFIERS = [
-    "startups 1-200 employees",
-    "early stage companies",
-    "emerging startups",
-    "growth stage startups",
-    "startups official website",
-    "startup founders",
-    "companies 10-200 employees"
+    'SaaS company "pricing"',
+    'early stage B2B software "solutions"',
+    'emerging software startups "book a demo"',
+    'growth stage tech companies "pricing"',
+    'B2B software startups official website',
+    'software companies 10-200 employees "pricing"'
 ]
 
 # ─── Source Discovery Queries (listing pages) ─────────────────────────────────
