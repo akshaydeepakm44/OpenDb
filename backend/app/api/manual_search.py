@@ -524,8 +524,16 @@ def get_investigation_status(
 
     company = db.query(Company).filter(Company.id == session.company_id).first() if session.company_id else None
     evidence_items = db.query(CanonicalEvidence).filter(CanonicalEvidence.verification_session_id == session_id).all()
-    key_people = db.query(KeyPerson).filter(KeyPerson.company_id == session.company_id).all() if session.company_id else []
     phase2 = session.phase2_data or {}
+    if session.company_id:
+        key_people = db.query(KeyPerson).filter(
+            or_(
+                KeyPerson.company_id == session.company_id,
+                KeyPerson.verification_session_id == session.id
+            )
+        ).all()
+    else:
+        key_people = db.query(KeyPerson).filter(KeyPerson.verification_session_id == session.id).all()
 
     # Query matching Document to calculate crawl telemetry
     doc = None
@@ -671,7 +679,18 @@ def get_company_result(
         .first()
     )
     evidence_items = db.query(CanonicalEvidence).filter(CanonicalEvidence.company_id == company.id).all()
-    key_people = db.query(KeyPerson).filter(KeyPerson.company_id == company.id).all()
+    company_session_ids = [s.id for s in db.query(VerificationSession.id).filter(VerificationSession.company_id == company.id).all()]
+    if latest_session and latest_session.id not in company_session_ids:
+        company_session_ids.append(latest_session.id)
+    if company_session_ids:
+        key_people = db.query(KeyPerson).filter(
+            or_(
+                KeyPerson.company_id == company.id,
+                KeyPerson.verification_session_id.in_(company_session_ids)
+            )
+        ).all()
+    else:
+        key_people = db.query(KeyPerson).filter(KeyPerson.company_id == company.id).all()
     phase2 = (latest_session.phase2_data or {}) if latest_session else {}
 
     return {

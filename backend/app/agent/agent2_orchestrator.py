@@ -622,14 +622,18 @@ class Agent2Orchestrator:
         # ─── 1. LINKEDIN FOUNDER & LEADERSHIP DISCOVERY (ZERO-CRAWL SEARCH) ───
         # As specified: site:linkedin.com/in/ "{company_name}" founder OR CEO
         # Do NOT crawl LinkedIn URLs; extract verified leader identity directly from search snippet.
+        # Clean brand name stripped of taglines, slogans, or separator phrases
+        clean_brand = re.split(r'[\-–—|:•·]', target_brand)[0].strip() or domain_brand
+
         queries = [
             # Open-web queries that Bing/Mojeek/Yahoo respond to
-            f'{target_brand} CEO founder linkedin profile',
-            f'{target_brand} founder linkedin',
+            f'{clean_brand} CEO founder linkedin profile',
+            f'{clean_brand} founder linkedin',
+            f'"{clean_brand}" founder OR CEO linkedin',
             f'{domain} CEO founder linkedin',
-            f'{target_brand} co-founder executive linkedin',
+            f'{clean_brand} co-founder executive linkedin',
             # site: variants as a supplementary pass (works if Google/Brave enabled)
-            f'site:linkedin.com/in/ "{target_brand}" founder OR CEO',
+            f'site:linkedin.com/in/ "{clean_brand}" founder OR CEO',
             f'site:linkedin.com/in/ "{domain_brand}" founder OR CEO',
         ]
 
@@ -639,7 +643,7 @@ class Agent2Orchestrator:
                 break
 
             session.search_rounds = rnd
-            round_queries = queries if rnd == 1 else generate_dynamic_linkedin_queries(target_brand, domain, search_round=rnd)
+            round_queries = queries if rnd == 1 else generate_dynamic_linkedin_queries(clean_brand, domain, search_round=rnd)
 
             for q in round_queries:
                 try:
@@ -708,6 +712,7 @@ class Agent2Orchestrator:
 
             p_cand = Agent2PersonCandidate(
                 session_id=session.id,
+                company_id=session.company_id,
                 person_name=cand["name"],
                 linkedin_url=cand["url"],
                 title=cand["title"],
@@ -852,6 +857,11 @@ class Agent2Orchestrator:
                 if li_comp_url:
                     univ.linkedin_url = li_comp_url
                 doc.company_id = univ.id
+            if univ:
+                session.company_id = univ.id
+                db.query(Agent2PersonCandidate).filter(
+                    Agent2PersonCandidate.session_id == session.id
+                ).update({"company_id": univ.id})
             db.commit()
 
         tracer.log_event(

@@ -248,10 +248,9 @@ class VerificationContract:
             missing_required.append("raw_storage_vault_path")
             critical_issues.append("MinIO raw storage artifact vault path unverified.")
 
-        # Field: crawled_page_text
         text_ev = evidence_by_field.get("crawled_page_text") or {}
         text_val = text_ev.get("value") or ""
-        chars_match = re.search(r"(\d+)\s*chars", str(text_val))
+        chars_match = re.search(r"(\d+)\s*(?:chars|characters)", str(text_val), re.IGNORECASE)
         chars_cnt = int(chars_match.group(1)) if chars_match else len(str(text_val))
         is_text_valid = chars_cnt >= REQUIRED_CORE_FIELDS["crawled_page_text"]["min_len"] and text_ev.get("status") == "VERIFIED"
         required_results["crawled_page_text"] = {
