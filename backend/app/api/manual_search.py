@@ -15,7 +15,7 @@ from sqlalchemy import or_
 from app.config import settings
 from app.persistence.database import get_db
 from app.persistence.models import (
-    Company, VerificationSession, CanonicalEvidence, KeyPerson, utc_now
+    Company, Document, VerificationSession, CanonicalEvidence, KeyPerson, utc_now
 )
 from app.safety.guardrails import (
     extract_domain, get_root_domain, check_content_heuristics, is_domain_blocked
@@ -349,6 +349,78 @@ def get_investigation_status(
         "evidence": [{"field": e.field_name, "value": e.value, "status": e.verification_status, "source_url": e.source_url, "snippet": e.evidence_snippet} for e in evidence_items],
         "key_people": [{"name": p.full_name, "title": p.title, "linkedin_url": p.linkedin_url, "verification_status": p.verification_status, "confidence": p.confidence_score} for p in key_people if p.verification_status != "REJECTED"],
         "error": session.error_message,
+    }
+
+
+@router.get("/track/{domain:path}")
+def track_domain_investigation(
+    domain: str,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    Unified real-time tracking by domain.
+    Eliminates client-side card scraping by checking:
+    1. Active or latest VerificationSession for the domain/company.
+    2. If no session yet, checks Document to see if Agent 1 crawl finished and Agent 2 is queued.
+    3. If neither, reports Agent 1 crawl in progress.
+    """
+    clean = extract_domain(domain) or domain.strip().lower().replace("www.", "")
+    root = get_root_domain(clean) or clean
+
+    # 1. Check existing VerificationSession
+    session = (
+        db.query(VerificationSession)
+        .filter(or_(
+            VerificationSession.domain == root,
+            VerificationSession.domain == clean,
+            VerificationSession.domain.ilike(f"%{root}%")
+        ))
+        .order_by(VerificationSession.updated_at.desc())
+        .first()
+    )
+    if session:
+        return get_investigation_status(session.id, db)
+
+    # 2. Check if Company has a session
+    company = db.query(Company).filter(Company.primary_domain == root).first()
+    if company:
+        c_sess = (
+            db.query(VerificationSession)
+            .filter(VerificationSession.company_id == company.id)
+            .order_by(VerificationSession.updated_at.desc())
+            .first()
+        )
+        if c_sess:
+            return get_investigation_status(c_sess.id, db)
+
+    # 3. Check Document table (Agent 1 crawl outcome)
+    doc = (
+        db.query(Document)
+        .filter(or_(
+            Document.domain == root,
+            Document.domain == clean,
+            Document.domain.ilike(f"%{root}%")
+        ))
+        .order_by(Document.created_at.desc())
+        .first()
+    )
+    if doc:
+        return {
+            "session_id": None,
+            "status": "AGENT2_QUEUED",
+            "domain": root,
+            "company_name": doc.title or root,
+            "message": "Website crawled successfully. Queued for Agent 2 verification (worker active)...",
+            "is_fresh": False,
+        }
+
+    # 4. Still in Agent 1 crawl queue or actively crawling
+    return {
+        "session_id": None,
+        "status": "AGENT1_QUEUED",
+        "domain": root,
+        "message": "Agent 1 is crawling website & extracting metadata...",
+        "is_fresh": False,
     }
 
 
