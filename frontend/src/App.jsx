@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './index.css';
+import ManualSearch from './ManualSearch';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -79,6 +80,8 @@ export const safeText = (val, fallback = '') => {
 };
 
 export default function App() {
+  // Manual Search page navigation (does not touch any existing state)
+  const [activePage, setActivePage] = useState('dashboard');
   // Agent & Operations State
   const [agentStatus, setAgentStatus] = useState(null);
   const [servicesHealth, setServicesHealth] = useState(null);
@@ -87,8 +90,6 @@ export default function App() {
   
   // Search & Filter State
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedDomain, setSelectedDomain] = useState('All');
-  const [selectedCountry, setSelectedCountry] = useState('All');
   const [selectedCompanyTier, setSelectedCompanyTier] = useState('All');
   const [entitiesList, setEntitiesList] = useState([]);
   
@@ -208,18 +209,15 @@ export default function App() {
 
   const handleResetFilters = () => {
     setSearchQuery('');
-    setSelectedDomain('All');
-    setSelectedCountry('All');
     setSelectedCompanyTier('All');
     setCurrentPage(1);
     setCrawledPage(1);
+    setAgent2Page(1);
   };
 
   const isFilterActive = Boolean(
     searchQuery ||
-    (selectedDomain && selectedDomain !== 'All') ||
-    (selectedCountry && selectedCountry !== 'All') ||
-    (selectedCompanyTier && selectedCompanyTier !== 'All')
+    (selectedCompanyTier && selectedCompanyTier !== 'All' && !selectedCompanyTier.includes('All Company Tiers'))
   );
 
   const isOpsPollingRef = React.useRef(false);
@@ -256,8 +254,6 @@ export default function App() {
     try {
       const params = new URLSearchParams();
       if (searchQuery) params.append('query', searchQuery);
-      if (selectedDomain && selectedDomain !== 'All') params.append('domain', selectedDomain);
-      if (selectedCountry && selectedCountry !== 'All') params.append('country', selectedCountry);
       if (selectedCompanyTier && selectedCompanyTier !== 'All' && !selectedCompanyTier.includes('All Company Tiers')) {
         params.append('company_tier', selectedCompanyTier);
       }
@@ -284,8 +280,6 @@ export default function App() {
       params.append('page', crawledPage);
       params.append('limit', CARDS_PER_PAGE);
       if (searchQuery) params.append('query', searchQuery);
-      if (selectedDomain && selectedDomain !== 'All') params.append('domain', selectedDomain);
-      if (selectedCountry && selectedCountry !== 'All') params.append('country', selectedCountry);
       if (selectedCompanyTier && selectedCompanyTier !== 'All' && !selectedCompanyTier.includes('All Company Tiers')) {
         params.append('company_tier', selectedCompanyTier);
       }
@@ -296,7 +290,7 @@ export default function App() {
         // Only update total when filters are active (search/filter changes the total) OR as fallback
         // The authoritative total for the tab counter comes from fetchOperations → tab_counts
         setCrawledMeta(prev => ({
-          total: (searchQuery || selectedDomain !== 'All' || selectedCountry !== 'All')
+          total: isFilterActive
             ? (data.total || 0)
             : (prev.total > 0 ? prev.total : (data.total || 0)),
           pages: data.pages || 1
@@ -438,7 +432,7 @@ export default function App() {
     } else {
       fetchCrawledDocuments();
     }
-  }, [searchQuery, selectedDomain, selectedCountry, selectedCompanyTier, leadView, crawledPage, agent2Page]);
+  }, [searchQuery, selectedCompanyTier, leadView, crawledPage, agent2Page]);
 
   // Periodic polling: telemetry stream every 4s, card data every 7s (staggered, non-overlapping)
   useEffect(() => {
@@ -454,7 +448,7 @@ export default function App() {
       clearInterval(opsInterval);
       clearInterval(cardsInterval);
     };
-  }, [leadView, crawledPage, agent2Page, searchQuery, selectedDomain, selectedCountry, selectedCompanyTier]);
+  }, [leadView, crawledPage, agent2Page, searchQuery, selectedCompanyTier]);
 
   // Fetch detail view data when an entity is selected
   useEffect(() => {
@@ -763,6 +757,27 @@ export default function App() {
               🗑️ CLEAN DATA
             </button>
 
+            {/* MANUAL SEARCH NAV BUTTON */}
+            <button
+              id="btn-manual-search-nav"
+              onClick={() => setActivePage(p => p === 'manual-search' ? 'dashboard' : 'manual-search')}
+              title="Manual Company Search"
+              style={{
+                padding: '0.8rem 1.4rem',
+                borderRadius: '9999px',
+                border: activePage === 'manual-search' ? '1px solid #6366f1' : (isDarkMode ? '1px solid #334155' : '1px solid #cbd5e1'),
+                background: activePage === 'manual-search' ? 'linear-gradient(135deg, #6366f1, #4f46e5)' : (isDarkMode ? '#1e293b' : '#ffffff'),
+                color: activePage === 'manual-search' ? 'white' : (isDarkMode ? '#94a3b8' : '#475569'),
+                fontSize: '0.9rem',
+                fontWeight: 800,
+                cursor: 'pointer',
+                boxShadow: activePage === 'manual-search' ? '0 4px 14px rgba(99,102,241,0.4)' : '0 1px 2px rgba(0,0,0,0.05)',
+                transition: 'all 0.2s ease'
+              }}
+            >
+              🔍 Manual Search
+            </button>
+
             <button
               onClick={toggleRunPause}
               disabled={loading}
@@ -786,6 +801,12 @@ export default function App() {
       </header>
 
       {error && <div className="error-message">Error: {error}</div>}
+
+      {/* MANUAL SEARCH PAGE — rendered instead of the dashboard when active */}
+      {activePage === 'manual-search' ? (
+        <ManualSearch isDarkMode={isDarkMode} />
+      ) : (
+        <>
 
       {/* 2. REAL STAT CARDS (TOP ROW) */}
       {/* 2. REAL STAT CARDS (TOP ROW) */}
@@ -1049,7 +1070,13 @@ export default function App() {
         </div>
 
         {/* Search & Filter Bar (Harmonized controls) */}
-        <div style={{ display: 'grid', gridTemplateColumns: isFilterActive ? '1.8fr 1fr 1fr 1.4fr auto' : '1.8fr 1fr 1fr 1.4fr', gap: '1rem', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: isFilterActive ? '1.8fr 1.4fr auto' : '1.8fr 1.4fr',
+          gap: '1rem',
+          marginBottom: '1.5rem',
+          alignItems: 'flex-end'
+        }}>
           <div>
             <label className="data-label">Full-Text Search</label>
             <input type="text" className="search-input"
@@ -1058,28 +1085,10 @@ export default function App() {
               value={searchQuery} onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); setCrawledPage(1); }} />
           </div>
           <div>
-            <label className="data-label">Filter Industry / Domain</label>
-            <select className="search-input"
-              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem' }}
-              value={selectedDomain} onChange={(e) => { setSelectedDomain(e.target.value); setCurrentPage(1); }}>
-              <option value="All">All Domains</option>
-              {Array.isArray(operationsData?.filter_options?.domains) && operationsData.filter_options.domains.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="data-label">Filter Country Region</label>
-            <select className="search-input"
-              style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem' }}
-              value={selectedCountry} onChange={(e) => { setSelectedCountry(e.target.value); setCurrentPage(1); }}>
-              <option value="All">All Countries</option>
-              {Array.isArray(operationsData?.filter_options?.countries) && operationsData.filter_options.countries.map(c => <option key={c} value={c}>{c}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="data-label" style={{ color: '#2563eb' }}>Filter Company Tier & Level</label>
+            <label className="data-label" style={{ color: '#2563eb', fontWeight: 700 }}>Filter Company Tier & Level</label>
             <select className="search-input"
               style={{ width: '100%', height: '42px', boxSizing: 'border-box', borderRadius: '0.5rem', padding: '0.45rem 0.85rem', fontSize: '0.875rem', background: '#ffffff', color: '#1d4ed8', border: '1px solid #93c5fd', fontWeight: 700 }}
-              value={selectedCompanyTier} onChange={(e) => { setSelectedCompanyTier(e.target.value); setCurrentPage(1); }}>
+              value={selectedCompanyTier} onChange={(e) => { setSelectedCompanyTier(e.target.value); setCurrentPage(1); setCrawledPage(1); }}>
               <option value="All">🏢 All Company Tiers & Ranges</option>
               <option value="Early-Stage Startups (1-20)">🌱 Early-Stage Startups (1-20)</option>
               <option value="Growth SMBs (20-100)">🚀 Growth SMBs (20-100)</option>
@@ -1201,10 +1210,13 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* 2. Crawl Metrics Pills (HTTP, Pages Crawled, Artifacts, Words) */}
+                    {/* 2. Crawl Metrics Pills (HTTP, Pages Crawled, Artifacts, Words, Tier) */}
                     <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.72rem', fontWeight: 600 }}>
                       <span style={{ background: '#ecfdf5', color: '#059669', border: '1px solid #a7f3d0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         ✓ HTTP {doc.http_status || 200} OK
+                      </span>
+                      <span style={{ background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem', fontWeight: 700 }}>
+                        🏢 {doc.company_tier || doc.company_size || 'Early-Stage Startups (1-20)'}
                       </span>
                       <span style={{ background: '#f8fafc', color: '#1e40af', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         📄 {pagesCrawled} Pages
@@ -1419,6 +1431,9 @@ export default function App() {
 
                     {/* Verification Metrics Pills */}
                     <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.72rem', fontWeight: 600 }}>
+                      <span style={{ background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem', fontWeight: 700 }}>
+                        🏢 {session.company_tier || session.company_size || 'Growth SMBs (20-100)'}
+                      </span>
                       <span style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         🎯 Priority: {Math.round(session.priority_score || 0)}/100
                       </span>
@@ -1566,6 +1581,9 @@ export default function App() {
 
                     {/* 2. Metadata Pills (Location, Industry & Email) */}
                     <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.72rem', fontWeight: 600 }}>
+                      <span style={{ background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem', fontWeight: 700 }}>
+                        🏢 {ent.company_tier || ent.company_size || 'Growth SMBs (20-100)'}
+                      </span>
                       <span style={{ background: '#f8fafc', color: '#475569', border: '1px solid #e2e8f0', padding: '0.18rem 0.5rem', borderRadius: '0.375rem' }}>
                         📍 {locationStr}
                       </span>
@@ -2597,6 +2615,8 @@ export default function App() {
             )}
           </div>
         </div>
+      )}
+      </>
       )}
     </div>
   );

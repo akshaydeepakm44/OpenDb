@@ -17,7 +17,7 @@ if sys.platform == 'win32':
 from app.config import settings
 from app.audit.tracer import tracer, Checkpoint
 from app.persistence.database import init_db
-from app.api import health, crawl, documents, schemas, agent, admin_safety, agent2
+from app.api import health, crawl, documents, schemas, agent, admin_safety, agent2, manual_search
 
 tracer.initialize(log_level=settings.LOG_LEVEL)
 logger = logging.getLogger("opendb")
@@ -87,6 +87,7 @@ app.include_router(crawl.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 app.include_router(schemas.router, prefix="/api")
 app.include_router(agent2.router, prefix="/api/agent2", tags=["Agent 2"])
+app.include_router(manual_search.router, prefix="/api")
 
 @app.get("/")
 def root():

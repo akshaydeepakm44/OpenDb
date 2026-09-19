@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 10
     MAX_TASKS_PER_WORKER: int = 50
 
+    # Manual Company Search — Cache freshness window.
+    # If a company's VerificationSession was updated within this many days AND
+    # is in a terminal VERIFIED state, Manual Search returns cached intelligence
+    # without re-invoking Agent 1 or Agent 2.
+    COMPANY_INTELLIGENCE_TTL_DAYS: int = 7
+
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
