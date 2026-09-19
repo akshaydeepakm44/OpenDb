@@ -127,9 +127,10 @@ def _has_active_celery_worker() -> bool:
     return is_active
 
 
-def _dispatch_task(task_func, **kwargs):
+def _dispatch_task(task_func, priority: int = 0, **kwargs):
     """
     Enqueues Celery task into Redis task queue with serialized trace context and telemetry.
+    Supports priority scheduling (0=normal background, 9=high manual search).
     """
     from app.audit.tracer import tracer, Checkpoint
     task_name = getattr(task_func, 'name', str(task_func))
@@ -140,16 +141,24 @@ def _dispatch_task(task_func, **kwargs):
     run_id = trace_ctx.get("run_id") or tracer.get_run_id() or "RUN-CELERY"
     agent_id = trace_ctx.get("agent_id") or "AGENT-01"
 
+    # Propagate priority from trace context if not explicitly passed
+    effective_priority = priority if priority > 0 else int(trace_ctx.get("priority", 0))
+    if effective_priority > 0:
+        trace_ctx["priority"] = effective_priority
+
     try:
         # Route dynamically via celery_app.conf.task_routes (discovery, crawl, verification)
-        task_res = task_func.apply_async(kwargs=kwargs)
+        apply_options = {"kwargs": kwargs}
+        if effective_priority > 0:
+            apply_options["priority"] = effective_priority
+        task_res = task_func.apply_async(**apply_options)
         task_id = getattr(task_res, "id", str(uuid.uuid4()))
         
         tracer.log_event(
             level="INFO",
             checkpoint=Checkpoint.CP27_QUEUE_PROCESSING,
             event="TASK_ENQUEUED",
-            message=f"Enqueued Celery task '{task_name}' into Redis queue (execution_mode=CELERY, task_id={task_id})",
+            message=f"Enqueued Celery task '{task_name}' into Redis queue (execution_mode=CELERY, priority={effective_priority}, task_id={task_id})",
             task_id=task_id,
             status="QUEUED",
             extra={
@@ -158,6 +167,7 @@ def _dispatch_task(task_func, **kwargs):
                 "agent_id": agent_id,
                 "execution_mode": "CELERY",
                 "status": "QUEUED",
+                "priority": effective_priority,
                 "task": task_name,
                 "celery_task_id": task_id
             }
@@ -212,10 +222,10 @@ def _dispatch_task(task_func, **kwargs):
         raise RuntimeError(f"QUEUE_FAILED ({failure_class}): Redis task queue unreachable ({e})")
 
 
-def _safe_dispatch(task_func, **kwargs):
+def _safe_dispatch(task_func, priority: int = 0, **kwargs):
     """
     Controlled Task Dispatch Execution Adapter:
-    1. If an active Celery worker exists: Dispatches via Celery Redis queue (execution_mode=CELERY).
+    1. If an active Celery worker exists: Dispatches via Celery Redis queue (execution_mode=CELERY) with priority.
     2. If no Celery worker exists and task is NOT Agent 2: Runs the EXACT SAME task function locally in a background daemon thread
        (execution_mode=LOCAL_THREAD) with full telemetry.
     3. If no Celery worker exists and task IS Agent 2: FAILS CLOSED. Agent 2 must run on dedicated verification workers.
@@ -230,11 +240,15 @@ def _safe_dispatch(task_func, **kwargs):
     agent_id = trace_ctx.get("agent_id") or "AGENT-01"
     task_id = str(uuid.uuid4())
 
+    effective_priority = priority if priority > 0 else int(trace_ctx.get("priority", 0))
+    if effective_priority > 0:
+        trace_ctx["priority"] = effective_priority
+
     # Attempt Celery dispatch if Redis is reachable
     from app.worker.celery_app import REDIS_AVAILABLE
     if REDIS_AVAILABLE:
         try:
-            return _dispatch_task(task_func, **kwargs)
+            return _dispatch_task(task_func, priority=effective_priority, **kwargs)
         except Exception as dispatch_err:
             logger.warning(f"[_safe_dispatch] Celery dispatch failed for {task_name}, evaluating fallback: {dispatch_err}")
 

@@ -286,3 +286,46 @@ def test_status_endpoint_returns_session_data(client, mock_db):
     assert data["session_id"] == "sess-1"
     assert data["status"] == "VERIFIED"
     assert data["company"]["canonical_name"] == "Acme"
+    assert "telemetry" in data
+    assert data["telemetry"]["priority"] in ("HIGH (9)", "NORMAL (0)")
+
+
+def test_investigate_dispatches_with_high_priority(client, mock_db):
+    """Verifies that manual search dispatches crawl_entity_task with priority=9."""
+    mock_db.query.return_value.filter.return_value.first.return_value = None
+
+    with patch("app.worker.tasks._safe_dispatch") as mock_dispatch:
+        res = client.post("/api/manual-search/investigate", json={"company_name": "PriorityCo", "domain": "priorityco.io"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "AGENT1_QUEUED"
+        assert data["priority"] == "HIGH (9)"
+        assert mock_dispatch.called
+        from app.worker.tasks import crawl_entity_task
+        args, kwargs = mock_dispatch.call_args
+        assert args[0] == crawl_entity_task
+        assert kwargs.get("priority") == 9
+        assert kwargs["domain"] == "priorityco.io"
+
+
+def test_resolve_exact_identity_returns_resolution_timing(client, mock_db):
+    """Verifies that exact domain identity lookup succeeds and returns real resolution_ms."""
+    mock_comp = MagicMock()
+    mock_comp.id = "comp-exact"
+    mock_comp.canonical_name = "Exact Corp"
+    mock_comp.primary_domain = "exact.com"
+    mock_comp.status = "ACTIVE"
+
+    mock_query = MagicMock()
+    mock_db.query.return_value = mock_query
+    mock_query.filter.return_value = mock_query
+    mock_query.all.return_value = [mock_comp]
+
+    res = client.post("/api/manual-search/resolve", json={"company_name": "exact.com"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "EXISTING"
+    assert len(data["candidates"]) == 1
+    assert data["candidates"][0]["domain"] == "exact.com"
+    assert "resolution_ms" in data
+    assert isinstance(data["resolution_ms"], (int, float))

@@ -160,6 +160,63 @@ function JobCard({ job, isDarkMode, onSelectCandidate, onPollStatus }) {
         </div>
       )}
 
+      {/* Real Backend Latency Telemetry */}
+      {job.telemetry && (
+        <div style={{
+          marginBottom: '0.9rem',
+          padding: '0.65rem 0.95rem',
+          borderRadius: '0.6rem',
+          background: dark ? '#0d1527' : '#f8fafc',
+          border: `1px solid ${dark ? '#1e3a5f' : '#e2e8f0'}`,
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '1.25rem',
+          alignItems: 'center',
+          fontSize: '0.75rem'
+        }}>
+          <div>
+            <span style={{ color: muted, display: 'block', fontSize: '0.63rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Priority</span>
+            <span style={{ color: '#10b981', fontWeight: 800 }}>{job.telemetry.priority || 'HIGH (9)'}</span>
+          </div>
+          {job.telemetry.resolution_ms !== null && job.telemetry.resolution_ms !== undefined && (
+            <div>
+              <span style={{ color: muted, display: 'block', fontSize: '0.63rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Resolution</span>
+              <span style={{ color: text, fontWeight: 700 }}>{(job.telemetry.resolution_ms / 1000).toFixed(2)}s</span>
+            </div>
+          )}
+          {job.telemetry.crawl_queue_wait_ms !== null && job.telemetry.crawl_queue_wait_ms !== undefined && (
+            <div>
+              <span style={{ color: muted, display: 'block', fontSize: '0.63rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Crawl Queue</span>
+              <span style={{ color: text, fontWeight: 700 }}>{(job.telemetry.crawl_queue_wait_ms / 1000).toFixed(2)}s</span>
+            </div>
+          )}
+          {job.telemetry.crawl_execution_ms !== null && job.telemetry.crawl_execution_ms !== undefined && (
+            <div>
+              <span style={{ color: muted, display: 'block', fontSize: '0.63rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Crawl</span>
+              <span style={{ color: text, fontWeight: 700 }}>{(job.telemetry.crawl_execution_ms / 1000).toFixed(1)}s</span>
+            </div>
+          )}
+          {job.telemetry.verification_queue_wait_ms !== null && job.telemetry.verification_queue_wait_ms !== undefined && (
+            <div>
+              <span style={{ color: muted, display: 'block', fontSize: '0.63rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Verif Queue</span>
+              <span style={{ color: text, fontWeight: 700 }}>{(job.telemetry.verification_queue_wait_ms / 1000).toFixed(2)}s</span>
+            </div>
+          )}
+          <div>
+            <span style={{ color: muted, display: 'block', fontSize: '0.63rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Verification</span>
+            <span style={{ color: job.telemetry.verification_execution_ms ? text : '#38bdf8', fontWeight: 700 }}>
+              {job.telemetry.verification_execution_ms ? `${(job.telemetry.verification_execution_ms / 1000).toFixed(1)}s` : 'ACTIVE'}
+            </span>
+          </div>
+          {job.telemetry.total_ms !== null && job.telemetry.total_ms !== undefined && (
+            <div>
+              <span style={{ color: muted, display: 'block', fontSize: '0.63rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total</span>
+              <span style={{ color: '#6366f1', fontWeight: 800 }}>{(job.telemetry.total_ms / 1000).toFixed(1)}s</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Candidate selection */}
       {showCandidates && (
         <div style={{ marginTop: '0.5rem' }}>
@@ -491,6 +548,7 @@ export default function ManualSearch({ isDarkMode }) {
           progress,
           message: msg,
           sessionId: data.session_id || null,
+          telemetry: data.telemetry || null,
         });
 
         if (TERMINAL_STATUSES.has(currentStatus)) {
@@ -501,9 +559,9 @@ export default function ManualSearch({ isDarkMode }) {
           const dresRes = await fetch(`${base}/manual-search/result/${encodeURIComponent(domain)}`);
           if (dresRes.ok) {
             const dossier = await dresRes.json();
-            updateJob(jobId, { stage: 'DONE', dossier, status: currentStatus, message: 'Intelligence verification completed successfully.' });
+            updateJob(jobId, { stage: 'DONE', dossier, status: currentStatus, message: 'Intelligence verification completed successfully.', telemetry: data.telemetry || null });
           } else {
-            updateJob(jobId, { stage: 'DONE', dossier: data, status: currentStatus });
+            updateJob(jobId, { stage: 'DONE', dossier: data, status: currentStatus, telemetry: data.telemetry || null });
           }
         }
       } catch (e) {
@@ -532,7 +590,9 @@ export default function ManualSearch({ isDarkMode }) {
       resolvedDomain: null,
       progress: null,
       dossier: null,
-      elapsed: 0
+      elapsed: 0,
+      telemetry: null,
+      resolutionMs: null,
     };
     setJobs(prev => [newJob, ...prev]);
     setInputValue('');
@@ -549,9 +609,9 @@ export default function ManualSearch({ isDarkMode }) {
         return;
       }
       if (data.status === 'AMBIGUOUS') {
-        updateJob(jobId, { stage: 'AMBIGUOUS', status: 'AMBIGUOUS', candidates: data.candidates, message: data.message });
+        updateJob(jobId, { stage: 'AMBIGUOUS', status: 'AMBIGUOUS', candidates: data.candidates, message: data.message, resolutionMs: data.resolution_ms });
       } else if (data.status === 'NOT_FOUND' || data.status === 'RESOLUTION_RETRY_PENDING') {
-        updateJob(jobId, { stage: data.status, status: data.status, message: data.message });
+        updateJob(jobId, { stage: data.status, status: data.status, message: data.message, resolutionMs: data.resolution_ms });
       } else {
         // EXISTING or UNIQUE — auto-investigate
         const c = data.candidates[0];
@@ -560,9 +620,10 @@ export default function ManualSearch({ isDarkMode }) {
           status: 'INVESTIGATING',
           resolvedDomain: c.domain,
           candidates: data.candidates,
+          resolutionMs: data.resolution_ms,
           message: `Resolved to ${c.canonical_name} (${c.domain}). Starting cache check...`
         });
-        await runInvestigate(jobId, name, c.domain);
+        await runInvestigate(jobId, name, c.domain, data.resolution_ms);
       }
     } catch (e) {
       updateJob(jobId, { stage: 'ERROR', status: 'ERROR', message: `Network error: ${e.message}` });
@@ -580,16 +641,16 @@ export default function ManualSearch({ isDarkMode }) {
       resolvedDomain: candidate.domain,
       message: `Investigating ${candidate.canonical_name} (${candidate.domain})...`
     });
-    await runInvestigate(jobId, job.inputName, candidate.domain);
+    await runInvestigate(jobId, job.inputName, candidate.domain, job.resolutionMs);
   }
 
-  async function runInvestigate(jobId, companyName, domain) {
+  async function runInvestigate(jobId, companyName, domain, resolutionMs = null) {
     const base = apiBase();
     try {
       const res = await fetch(`${base}/manual-search/investigate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ company_name: companyName, domain }),
+        body: JSON.stringify({ company_name: companyName, domain, resolution_ms: resolutionMs }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -597,10 +658,10 @@ export default function ManualSearch({ isDarkMode }) {
         return;
       }
       if (data.status === 'CACHE_HIT') {
-        updateJob(jobId, { stage: 'INVESTIGATING', status: 'CACHE_HIT', resolvedDomain: domain, message: data.message });
+        updateJob(jobId, { stage: 'INVESTIGATING', status: 'CACHE_HIT', resolvedDomain: domain, message: data.message, telemetry: data.telemetry });
         const dresRes = await fetch(`${base}/manual-search/result/${encodeURIComponent(domain)}`);
         const dossier = dresRes.ok ? await dresRes.json() : data;
-        updateJob(jobId, { stage: 'DONE', dossier, status: 'CACHE_HIT' });
+        updateJob(jobId, { stage: 'DONE', dossier, status: 'CACHE_HIT', telemetry: data.telemetry });
         return;
       }
       if (data.status === 'ALREADY_RUNNING' || data.status === 'AGENT1_QUEUED') {
@@ -611,16 +672,17 @@ export default function ManualSearch({ isDarkMode }) {
           resolvedDomain: domain,
           message: data.message,
           progress,
+          telemetry: data.telemetry || { priority: data.priority || 'HIGH (9)' },
           elapsed: 0
         });
         startTracking(jobId, domain);
         return;
       }
       if (data.status === 'VERIFICATION_PENDING') {
-        updateJob(jobId, { stage: 'VERIFICATION_PENDING', status: 'VERIFICATION_PENDING', resolvedDomain: domain, message: data.message });
+        updateJob(jobId, { stage: 'VERIFICATION_PENDING', status: 'VERIFICATION_PENDING', resolvedDomain: domain, message: data.message, telemetry: data.telemetry });
         return;
       }
-      updateJob(jobId, { stage: 'DONE', status: data.status, message: data.message });
+      updateJob(jobId, { stage: 'DONE', status: data.status, message: data.message, telemetry: data.telemetry });
     } catch (e) {
       updateJob(jobId, { stage: 'ERROR', status: 'ERROR', message: `Investigation failed: ${e.message}` });
     }

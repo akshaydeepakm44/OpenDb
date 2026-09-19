@@ -46,6 +46,14 @@ celery_app.conf.update(
     # Worker recycling & memory bounds
     worker_max_tasks_per_child=getattr(settings, "MAX_TASKS_PER_WORKER", 50),
     worker_prefetch_multiplier=1,
+    # Native Priority Queue support for Redis broker (§5, §7)
+    # Allows high-priority Manual Searches (priority=9) to jump ahead of background discovery tasks (priority=0)
+    broker_transport_options={
+        "priority_steps": list(range(10)),
+        "sep": ":",
+        "queue_order_strategy": "priority",
+    },
+    task_default_priority=0,
     # Dedicated Queue Routing (§3 of Hardening Master Prompt)
     task_routes={
         "tasks.search_and_discover": {"queue": "discovery"},

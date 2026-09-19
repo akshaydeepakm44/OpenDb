@@ -79,6 +79,7 @@ _current_parent_task_id: ContextVar[Optional[str]] = ContextVar("current_parent_
 _current_lead_id: ContextVar[Optional[str]] = ContextVar("current_lead_id", default=None)
 _current_checkpoint: ContextVar[Optional[str]] = ContextVar("current_checkpoint", default=None)
 _current_parent_event_id: ContextVar[Optional[str]] = ContextVar("current_parent_event_id", default=None)
+_current_priority: ContextVar[int] = ContextVar("current_priority", default=0)
 
 
 # ─── Secret Redaction ─────────────────────────────────────────────────────────
@@ -294,6 +295,7 @@ class Tracer:
         lead_id: Optional[str] = None,
         checkpoint: Optional[str] = None,
         parent_event_id: Optional[str] = None,
+        priority: Optional[int] = None,
     ):
         if run_id:
             _current_run_id.set(run_id)
@@ -311,6 +313,11 @@ class Tracer:
             _current_checkpoint.set(checkpoint)
         if parent_event_id:
             _current_parent_event_id.set(parent_event_id)
+        if priority is not None:
+            try:
+                _current_priority.set(int(priority))
+            except (ValueError, TypeError):
+                pass
 
     def get_context_dict(self) -> Dict[str, Any]:
         """Serialize current trace context into dictionary for Celery/Thread boundary crossing."""
@@ -323,6 +330,7 @@ class Tracer:
             "lead_id": _current_lead_id.get(),
             "checkpoint": _current_checkpoint.get(),
             "parent_event_id": _current_parent_event_id.get(),
+            "priority": _current_priority.get() or 0,
         }
 
     def restore_context_dict(self, ctx: Optional[Dict[str, Any]]):
@@ -338,6 +346,7 @@ class Tracer:
             lead_id=ctx.get("lead_id"),
             checkpoint=ctx.get("checkpoint"),
             parent_event_id=ctx.get("parent_event_id"),
+            priority=ctx.get("priority"),
         )
 
     # ── Event Logging ─────────────────────────────────────────────────────────
