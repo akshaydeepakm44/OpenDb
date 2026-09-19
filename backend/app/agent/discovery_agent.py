@@ -302,12 +302,27 @@ class AutonomousDiscoveryAgent:
             finally:
                 db.close()
 
-            # ── 2. INVOKE AGENT LLM (NETWORK CALL - NO DB LOCK HELD) ──
-            tool_calls = await self._invoke_llm_agent(prompt)
-            generation_mode = "LLM" if tool_calls else "DETERMINISTIC"
+            # ── 2. INVOKE AGENT LLM WITH STRICT 2.5s TIMEOUT ──────────────────
+            # The deterministic keyword expander is the FAST PATH (0ms).
+            # The LLM is tried opportunistically with a strict 2.5s cap.
+            # If the LLM is unreachable, slow, or returns no tool call within
+            # 2.5s, we immediately fall back to deterministic expansion.
+            # This prevents the 12s LLM timeout from blocking each cycle.
+            tool_calls = None
+            generation_mode = "DETERMINISTIC"
+            try:
+                tool_calls = await asyncio.wait_for(
+                    self._invoke_llm_agent(prompt),
+                    timeout=2.5
+                )
+                if tool_calls:
+                    generation_mode = "LLM"
+            except (asyncio.TimeoutError, Exception) as llm_err:
+                logger.debug(f"[Agent] LLM invocation skipped (fast-path): {llm_err}")
+                tool_calls = None
 
             if not tool_calls:
-                # Fallback to deterministic expansion if LLM fails or doesn't use tools
+                # Deterministic fast-path: pre-computed taxonomy expansion, 0ms latency.
                 query_info = keyword_expander.get_next_query(domain=current_domain)
                 tool_calls = [{
                     "function": {

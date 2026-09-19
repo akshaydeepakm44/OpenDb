@@ -10,8 +10,8 @@ server:
   public_instance: false
 
 outgoing:
-  request_timeout: 8.0
-  max_request_timeout: 12.0
+  request_timeout: 4.0
+  max_request_timeout: 6.0
   pool_connections: 100
   pool_maxsize: 100
   enable_http2: true
@@ -75,19 +75,10 @@ engines:
     weight: 2
     enabled: true
 
-  - name: wikipedia
-    engine: wikipedia
-    categories: [general, it, business]
-    shortcut: wp
-    weight: 2
-    enabled: true
-
-  - name: wikidata
-    engine: wikidata
-    categories: [general, it, business]
-    shortcut: wd
-    weight: 2
-    enabled: true
+  # Wikipedia and Wikidata are intentionally excluded from all categories.
+  # They return encyclopedic pages, never company homepages or B2B leads,
+  # and add 4-6s response latency to every search cycle.
+  # If needed for research queries, re-enable in a separate 'research' category only.
 
   - name: mojeek
     engine: mojeek

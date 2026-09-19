@@ -800,16 +800,20 @@ export default function App() {
 
         <div style={{ background: isDarkMode ? '#0f172a' : '#ffffff', borderRadius: '1rem', padding: '1.25rem', border: isDarkMode ? '1px solid #1e293b' : '1px solid #e2e8f0', borderTop: '4px solid #2563eb', boxShadow: isDarkMode ? '0 4px 15px rgba(0,0,0,0.3)' : '0 1px 3px rgba(0, 0, 0, 0.05)' }}>
           <span style={{ fontSize: '0.75rem', fontWeight: 700, color: isDarkMode ? '#94a3b8' : '#64748b', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>ACTIVE CRAWL QUEUE</span>
-          <div style={{ fontSize: '2.2rem', fontWeight: 900, color: '#38bdf8', marginBottom: '0.2rem', lineHeight: '1', letterSpacing: '-0.02em' }}>
-            {(operationsData?.stat_cards?.active_crawl_queue || 0).toLocaleString()}
+          <div style={{ fontSize: '2.2rem', fontWeight: 900, color: operationsData?.stat_cards?.active_crawl_queue == null ? '#ef4444' : '#38bdf8', marginBottom: '0.2rem', lineHeight: '1', letterSpacing: '-0.02em' }}>
+            {operationsData?.stat_cards?.active_crawl_queue == null
+              ? 'Unavail.'
+              : (operationsData.stat_cards.active_crawl_queue).toLocaleString()}
           </div>
-          <span style={{ fontSize: '0.75rem', color: isDarkMode ? '#64748b' : '#94a3b8' }}>Celery Redis Queue Depth</span>
+          <span style={{ fontSize: '0.75rem', color: isDarkMode ? '#64748b' : '#94a3b8' }}>
+            {operationsData?.stat_cards?.active_crawl_queue == null ? 'Redis offline — queue unavailable' : 'Crawl queue + running slots'}
+          </span>
         </div>
 
         <div style={{ background: isDarkMode ? '#0f172a' : '#ffffff', borderRadius: '1rem', padding: '1.25rem', border: isDarkMode ? '1px solid #1e293b' : '1px solid #e2e8f0', borderTop: '4px solid #7c3aed', boxShadow: isDarkMode ? '0 4px 15px rgba(0,0,0,0.3)' : '0 1px 3px rgba(0, 0, 0, 0.05)' }}>
           <span style={{ fontSize: '0.75rem', fontWeight: 700, color: isDarkMode ? '#94a3b8' : '#64748b', display: 'block', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>RAW DOCUMENTS</span>
           <div style={{ fontSize: '2.2rem', fontWeight: 900, color: '#a78bfa', marginBottom: '0.2rem', lineHeight: '1', letterSpacing: '-0.02em' }}>
-            {(operationsData?.stat_cards?.crawled_documents || crawledMeta.total || crawledDocs.length || 0).toLocaleString()}
+            {(operationsData?.stat_cards?.crawled_documents ?? 0).toLocaleString()}
           </div>
           <span style={{ fontSize: '0.75rem', color: isDarkMode ? '#64748b' : '#94a3b8' }}>Ingested Page Documents</span>
         </div>

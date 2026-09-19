@@ -17,7 +17,9 @@ SEARCH_CACHE_TTL = 300
 ALLOWED_CATEGORIES = {"general", "business", "it", "news"}
 
 # Engines that reliably return clean clearnet results
-FAST_ENGINES = "bing,duckduckgo,google,yahoo,qwant,brave,wikipedia,wikidata"
+# Wikipedia and Wikidata are EXCLUDED: they return encyclopedic pages (not company leads)
+# and add 4-6s latency to each fallback cascade.
+FAST_ENGINES = "bing,duckduckgo,google,yahoo,qwant,brave"
 
 
 class SearchResultList(list):
@@ -81,7 +83,9 @@ class SearXNGService:
 
         for attempt in range(1, max_retries + 1):
             try:
-                async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+                # httpx timeout is set ABOVE SearXNG's internal request_timeout (6s)
+                # so that SearXNG can complete its engine calls before Python cuts the connection.
+                async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
                     response = await client.get(url, params=params, headers=headers)
                     if response.status_code == 200:
                         data = response.json()
@@ -149,17 +153,23 @@ class SearXNGService:
                 await asyncio.sleep(0.5 * attempt)
 
         dur = time.time() - t0
+        latency_ms = int(dur * 1000)
         tracer.log_event(
             level="WARNING",
             checkpoint=Checkpoint.CP30_FAILURE_RECOVERY,
             event="SEARCH_FALLBACK_TRIGGERED",
-            message=f"SearXNG unavailable after {max_retries} retries ({last_err}). Invoking live web search fallback for '{query}'...",
+            message=f"SearXNG unavailable after {max_retries} retries ({latency_ms}ms, {last_err}). Invoking live web search fallback for '{query}'...",
             duration=dur,
             status="DEGRADED",
-            extra={"query": query, "retries_exhausted": True, "error": str(last_err)}
+            extra={"query": query, "retries_exhausted": True, "error": str(last_err), "latency_ms": latency_ms}
         )
 
-        # Multi-Tier Live Web Search Fallback: Yahoo -> DuckDuckGo API -> Wikipedia -> Targeted LinkedIn
+        # Multi-Tier Live Web Search Fallback:
+        # Tier 1: Yahoo (Bing index, tolerant of cloud IPs)
+        # Tier 2: DuckDuckGo API (instant answer)
+        # Tier 3: DuckDuckGo HTML/Lite
+        # Tier 4: Direct entity extraction from query
+        # Wikipedia/Wikidata is EXCLUDED: returns encyclopedic pages, not company homepages.
         fb_results, is_fb, fb_log = await self._multi_tier_fallback(query, clean_category, max_results)
         if fb_results:
             cache_set("search", query, clean_category, max_results, value=(fb_results, True, fb_log), ttl=SEARCH_CACHE_TTL)
@@ -168,7 +178,11 @@ class SearXNGService:
         return SearchResultList(), False, f"SearXNG failed after retries: {last_err} (DEGRADED)"
 
     async def _multi_tier_fallback(self, query: str, category: str, max_results: int = 20) -> Tuple[SearchResultList, bool, str]:
-        """Query resilient web search sources directly when local SearXNG engine is rate-limited."""
+        """Query resilient web search sources directly when local SearXNG engine is rate-limited.
+        
+        Wikipedia/Wikidata tier is intentionally excluded: it returns encyclopedic pages
+        that are never company lead candidates and adds 4-6s latency to every failed cycle.
+        """
         # Special Handler: If query is specifically looking for LinkedIn URLs or Profiles
         if "linkedin.com" in query.lower() or "linkedin" in query.lower():
             li_res, is_li, li_log = await self._targeted_linkedin_fallback(query, max_results)
@@ -190,16 +204,12 @@ class SearXNGService:
         if ddg_res:
             return ddg_res, is_ddg, ddg_log
 
-        # Tier 4: Wikipedia Search & Wikidata API
-        wiki_res, is_wiki, wiki_log = await self._wikipedia_search_fallback(query, max_results)
-        if wiki_res:
-            return wiki_res, is_wiki, wiki_log
-
-        # Tier 5: Entity-extracted direct resolution fallback
+        # Tier 4: Entity-extracted direct resolution fallback (domain in query text)
         direct_res, is_dir, dir_log = self._entity_direct_fallback(query, max_results)
         if direct_res:
             return direct_res, is_dir, dir_log
 
+        # Wikipedia/Wikidata tier REMOVED: encyclopedic noise, not company leads.
         return SearchResultList(), True, "All live search engines exhausted"
 
     async def _targeted_linkedin_fallback(self, query: str, max_results: int = 5) -> Tuple[SearchResultList, bool, str]:

@@ -400,89 +400,27 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
     """
     Operations Dashboard Data: Real service metrics, active crawl queue depth,
     MinIO/Postgres storage size, real live ingestion stream, and failure stream.
+    Stats are sourced from the centralized agent1_telemetry service to ensure
+    consistency between stat cards, tab pills, and document counts.
     """
-    # 1. Verified Leads & Persisted Companies
-    persisted_companies_count = 0
-    verified_leads_count = 0
-    try:
-        persisted_companies_count = db.query(Company).count()
-        verified_leads_count = db.query(Company).filter(
-            Company.status.in_(["VERIFIED", "Verified", "POSTGRES_VERIFIED"])
-        ).count()
-    except Exception:
-        db.rollback()
+    # ── Centralized Telemetry Snapshot ───────────────────────────────────────
+    # All primary counters (documents, queue depth, companies, decision makers)
+    # are computed atomically via the telemetry service to prevent race conditions
+    # between independently computed stat card values.
+    from app.audit.agent1_telemetry import get_operational_snapshot
+    telemetry = get_operational_snapshot(db)
 
-    # 2. Pipeline Queue Depth (Redis Celery Queue + Database Queued Stream Items)
-    queue_depth = 0
-    try:
-        from urllib.parse import urlparse
-        p = urlparse(settings.REDIS_URL.replace("localhost", "127.0.0.1"))
-        h = p.hostname or "127.0.0.1"
-        pt = p.port or 6379
-        r = redis.Redis(
-            host=h,
-            port=pt,
-            password=p.password or settings.REDIS_PASSWORD,
-            socket_connect_timeout=1.0,
-            socket_timeout=1.0,
-            retry_on_timeout=False
-        )
-        queue_depth = r.llen("celery") or 0
-    except Exception:
-        queue_depth = 0
-
-    if queue_depth == 0:
-        try:
-            from datetime import timedelta
-            recent_threshold = utc_now() - timedelta(seconds=60)
-            db_queued = db.query(CrawlActivityLog).filter(
-                or_(
-                    CrawlActivityLog.status == "QUEUED",
-                    and_(
-                        CrawlActivityLog.stage.in_(["CRAWL", "SEARCH"]),
-                        CrawlActivityLog.timestamp >= recent_threshold
-                    )
-                )
-            ).count()
-            db_pending_jobs = db.query(Document).filter(
-                Document.lifecycle_state == "CRAWLED_PENDING_AGENT_2"
-            ).count()
-            queue_depth = db_queued + db_pending_jobs
-        except Exception:
-            db.rollback()
-
-    # 3. Decision Makers Identified
-    people_facts = 0
-    try:
-        people_facts = db.query(CanonicalEvidence).filter(
-            or_(
-                CanonicalEvidence.field_name.like("%people%"),
-                CanonicalEvidence.field_name.like("%founder%"),
-                CanonicalEvidence.field_name.like("%ceo%"),
-                CanonicalEvidence.field_name.like("%executive%")
-            )
-        ).count()
-    except Exception:
-        db.rollback()
-        people_facts = 0
-
-    # 4. Storage Usage & Document Count
-    # total_doc_count = raw count for storage display
-    # crawled_count = count of docs whose URLs pass quality filter (matches what /documents returns)
-    total_doc_count = 0
-    crawled_count = 0
-    try:
-        total_doc_count = db.query(Document).count()
-        # Count only docs whose URL passes the quality filter (mirrors /documents endpoint logic)
-        all_docs = db.query(Document.id, Document.url).all()
-        for doc_id, doc_url in all_docs:
-            keep, _ = quality_filter.filter_url(doc_url or "", log_tracer=False)
-            if keep:
-                crawled_count += 1
-    except Exception:
-        db.rollback()
-        crawled_count = total_doc_count
-    doc_count = total_doc_count  # keep for storage display
+    persisted_companies_count = telemetry["companies"]["persisted"]
+    verified_leads_count = telemetry["companies"]["verified"]
+    people_facts = telemetry["decision_makers"]
+    # raw_documents_count is the authoritative PostgreSQL Document row count.
+    # Both 'RAW DOCUMENTS' stat card and 'Crawled (N)' tab pill must read this.
+    total_doc_count = telemetry["raw_documents_count"]
+    crawled_count = telemetry["raw_documents_count"]
+    doc_count = total_doc_count
+    # Active Crawl Queue: real Redis crawl+discovery queue depth + running slots.
+    # Reports None when Redis is offline (frontend will display 'Unavailable').
+    queue_depth = telemetry["queues"]["active_crawl_queue"]
 
     pg_size_str = "0 MB"
     try:
@@ -496,7 +434,7 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
                 sz_mb = os.path.getsize(db_file) / (1024 * 1024)
                 pg_size_str = f"{sz_mb:.1f} MB"
             else:
-                pg_size_str = "12.4 MB"
+                pg_size_str = "Active"
         except Exception:
             pg_size_str = "Active"
 
@@ -704,16 +642,12 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         logger.debug(f"Agent2 stream build notice: {e}")
         db.rollback()
 
-    persisted_companies_count = db.query(Company).count()
-    in_verification_count = 0
-    try:
-        # Count VerificationSessions that have an associated document (same as /agent2/cards)
-        in_verification_count = db.query(VerificationSession).count()
-    except Exception:
-        db.rollback()
+    in_verification_count = telemetry["tab_counts"]["in_verification"]
 
     return {
         "tab_counts": {
+            # crawled = raw_documents_count (same authoritative PostgreSQL count)
+            # so that 'Crawled (N)' tab pill and 'RAW DOCUMENTS' stat card always agree.
             "crawled": crawled_count,
             "in_verification": in_verification_count,
             "verified": verified_leads_count,
@@ -721,10 +655,13 @@ def get_operations_dashboard(db: Session = Depends(get_db)):
         "stat_cards": {
             "persisted_companies": persisted_companies_count,
             "verified_leads": verified_leads_count,
+            # queue_depth is None when Redis is offline (frontend should display 'Unavailable').
             "active_crawl_queue": queue_depth,
+            # crawled_documents == raw_documents_count: no secondary filter applied.
             "crawled_documents": crawled_count,
             "in_verification": in_verification_count,
             "decision_makers_identified": people_facts,
+            "queue_detail": telemetry["queues"],
             "storage_usage": {
                 "postgres": pg_size_str,
                 "minio_objects": total_doc_count,
@@ -843,10 +780,10 @@ def get_crawled_documents(
     for d in all_matching_docs:
         name, clean_dom = _parse_url(d.url or "")
 
-        # Quality Filter Stage: Block non-B2B domains (news, docs, edu, gov)
-        keep_url, _ = quality_filter.filter_url(d.url or "", log_tracer=False)
-        if not keep_url:
-            continue
+        # NOTE: No secondary quality_filter.filter_url() is applied here.
+        # Documents in this table were already validated and persisted by Agent 1's
+        # pre-persistence quality gate (tasks.py crawl_entity_task Stage 2).
+        # Applying a second filter here caused the RAW DOCUMENTS vs Crawled count mismatch.
 
         c_name = _clean_name(d.title or name, clean_dom)
         sess = sess_map.get(d.id)
